@@ -5,6 +5,15 @@ app_description = "Custom ERPNext and HRMS customizations"
 app_email = "info@smartedge.com"
 app_license = "mit"
 
+fixtures = [
+    {
+        "dt": "Custom Field",
+        "filters": [
+            ["module", "=", "smart_edge_custom"]
+        ]
+    }
+]
+
 # Apps
 # ------------------
 

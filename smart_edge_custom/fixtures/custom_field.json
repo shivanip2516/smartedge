@@ -1,0 +1,46 @@
+[
+    {
+        "doctype": "Custom Field",
+        "name": "Item-item_category",
+        "dt": "Item",
+        "fieldname": "item_category",
+        "fieldtype": "Link",
+        "label": "Item Category",
+        "insert_after": "item_group",
+        "options": "Item Category",
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Item-material_type",
+        "dt": "Item",
+        "fieldname": "material_type",
+        "fieldtype": "Link",
+        "label": "Material Type",
+        "insert_after": "item_category",
+        "options": "Material Type",
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Item-color",
+        "dt": "Item",
+        "fieldname": "color",
+        "fieldtype": "Link",
+        "label": "Color",
+        "insert_after": "material_type",
+        "options": "Color",
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Item-shade",
+        "dt": "Item",
+        "fieldname": "shade",
+        "fieldtype": "Link",
+        "label": "Shade",
+        "insert_after": "color",
+        "options": "Shade",
+        "module": "smart_edge_custom"
+    }
+]
