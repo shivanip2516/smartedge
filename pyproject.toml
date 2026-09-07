@@ -4,7 +4,7 @@ authors = [
     { name = "Smart Edge", email = "info@smartedge.com"}
 ]
 description = "Custom ERPNext and HRMS customizations"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = []
@@ -23,7 +23,7 @@ packages = []
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
