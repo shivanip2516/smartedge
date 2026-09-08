@@ -1,0 +1,10 @@
+{
+    "doctype": "Property Setter",
+    "name": "Color-color-reqd",
+    "doc_type": "Color",
+    "doctype_or_field": "DocField",
+    "field_name": "color",
+    "property": "reqd",
+    "value": "0",
+    "property_type": "Check"
+}
