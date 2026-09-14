@@ -4,3 +4,6 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+smart_edge_custom.patches.update_pvc_edge_band_masters
+smart_edge_custom.patches.remove_duplicate_item_fields
+smart_edge_custom.patches.remove_pvc_type_short_code_master
