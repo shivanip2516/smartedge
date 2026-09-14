@@ -2,12 +2,12 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "field:shade_name",
- "creation": "2026-09-04 00:00:00.000000",
+ "creation": "2026-09-14 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "shade_name",
-  "remark"
+  "enabled"
  ],
  "fields": [
   {
@@ -19,17 +19,19 @@
    "unique": 1
   },
   {
-   "fieldname": "remark",
-   "fieldtype": "Small Text",
-   "label": "Remark"
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-09-04 00:00:00.000000",
+ "modified": "2026-09-14 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "smart_edge_custom",
- "name": "Shade",
+ "name": "Base Shade",
  "owner": "Administrator",
  "permissions": [
   {

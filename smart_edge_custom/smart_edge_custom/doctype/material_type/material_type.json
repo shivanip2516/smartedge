@@ -6,7 +6,8 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "material_type_name"
+  "material_type_name",
+  "remark"
  ],
  "fields": [
   {
@@ -16,6 +17,11 @@
    "label": "Material Type Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "remark",
+   "fieldtype": "Small Text",
+   "label": "Remark"
   }
  ],
  "index_web_pages_for_search": 1,
