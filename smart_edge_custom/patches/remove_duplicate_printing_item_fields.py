@@ -1,9 +1,10 @@
 import frappe
 
 DUPLICATE_ITEM_FIELDS = (
-	"Item-item_category",
-	"Item-material_type",
-	"Item-color",
+	"Item-base_shade",
+	"Item-base_colour",
+	"Item-printing_1st_design",
+	"Item-printing_2nd_design",
 )
 
 

@@ -1,6 +1,5 @@
 import frappe
 
-
 TYPE_SHORT_CODE_CUSTOM_FIELD = "Item-custom_type_short_code"
 TYPE_SHORT_CODE_FIELD_PROPERTIES = (
 	"dt",

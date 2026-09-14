@@ -3,7 +3,6 @@ import re
 import frappe
 from frappe import _
 
-
 PVC_EDGE_BAND_NAME_PATTERN = re.compile(r"^.+ EB .+ .+ \(.+\)$")
 PVC_EDGE_BAND_NAME_FIELDS = (
 	"custom_size",
@@ -101,9 +100,7 @@ def _validate_wood_grain_printing_details(doc):
 
 	if missing_labels:
 		frappe.throw(
-			_("The following fields are required for Wood Grain items: {0}").format(
-				", ".join(missing_labels)
-			)
+			_("The following fields are required for Wood Grain items: {0}").format(", ".join(missing_labels))
 		)
 
 

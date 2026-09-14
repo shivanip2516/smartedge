@@ -7,3 +7,5 @@
 smart_edge_custom.patches.update_pvc_edge_band_masters
 smart_edge_custom.patches.remove_duplicate_item_fields
 smart_edge_custom.patches.remove_pvc_type_short_code_master
+smart_edge_custom.patches.remove_duplicate_printing_item_fields
+smart_edge_custom.patches.remove_item_product_code

@@ -1,6 +1,5 @@
 import frappe
 
-
 PRODUCT_TYPE_VALUES = ("Solid", "Wood Grain", "Texture", "Other")
 
 
@@ -23,9 +22,7 @@ def seed_product_types():
 
 
 def migrate_shade_to_shade_name():
-	if not frappe.db.has_column("Item", "shade") or not frappe.db.has_column(
-		"Item", "custom_shade_name"
-	):
+	if not frappe.db.has_column("Item", "shade") or not frappe.db.has_column("Item", "custom_shade_name"):
 		return
 
 	frappe.db.sql(

@@ -45,16 +45,6 @@
     },
     {
         "doctype": "Custom Field",
-        "name": "Item-product_code",
-        "dt": "Item",
-        "fieldname": "product_code",
-        "fieldtype": "Data",
-        "label": "Product Code",
-        "insert_after": "item_code",
-        "module": "smart_edge_custom"
-    },
-    {
-        "doctype": "Custom Field",
         "name": "Item-pvc_edge_band_details_section",
         "dt": "Item",
         "fieldname": "pvc_edge_band_details_section",
@@ -175,9 +165,10 @@
         "name": "Item-custom_base_shade",
         "dt": "Item",
         "fieldname": "custom_base_shade",
-        "fieldtype": "Data",
+        "fieldtype": "Link",
         "label": "Base Shade",
         "insert_after": "pvc_edge_band_printing_column",
+        "options": "Base Shade",
         "depends_on": "eval:doc.custom_product_type_design_category==\"Wood Grain\"",
         "mandatory_depends_on": "eval:doc.custom_product_type_design_category==\"Wood Grain\"",
         "module": "smart_edge_custom"
