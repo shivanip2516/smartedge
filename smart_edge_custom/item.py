@@ -23,6 +23,7 @@ def validate_pvc_edge_band_item(doc, method=None):
 		return
 
 	_sync_type_short_code_from_finish(doc)
+	_sync_product_code(doc)
 	_sync_item_name(doc)
 	_validate_wood_grain_printing_details(doc)
 	_warn_for_customer_order_code_mismatch(doc)
@@ -83,6 +84,38 @@ def _sync_type_short_code_from_finish(doc):
 		"abbreviation",
 	)
 	doc.set("custom_type_short_code", abbreviation)
+
+
+def _sync_product_code(doc):
+	if not doc.get("custom_shade_name"):
+		doc.set("product_code", None)
+		return
+
+	company_abbreviation = _get_company_abbreviation(doc)
+	shade_abbreviation = frappe.db.get_value("Shade", doc.custom_shade_name, "abbreviation")
+
+	if not shade_abbreviation:
+		doc.set("product_code", None)
+		frappe.throw(_("Shade Name Abbreviation is required to generate Product Code."))
+
+	if not company_abbreviation:
+		doc.set("product_code", None)
+		return
+
+	doc.set("product_code", "{0} - {1}".format(company_abbreviation, shade_abbreviation))
+
+
+def _get_company_abbreviation(doc):
+	company = (
+		doc.get("company")
+		or frappe.defaults.get_user_default("Company")
+		or frappe.defaults.get_global_default("company")
+	)
+
+	if not company:
+		return None
+
+	return frappe.db.get_value("Company", company, "abbr")
 
 
 def _validate_wood_grain_printing_details(doc):
