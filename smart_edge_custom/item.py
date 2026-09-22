@@ -6,7 +6,7 @@ from frappe import _
 PVC_EDGE_BAND_NAME_PATTERN = re.compile(r"^.+ EB .+ .+ \(.+\)$")
 PVC_EDGE_BAND_NAME_FIELDS = (
 	"custom_size",
-	"custom_shade_name",
+	"custom_base_colour",
 	"custom_type_short_code",
 	"custom_customer_order_code",
 )
@@ -39,7 +39,7 @@ def _sync_item_name(doc):
 
 	generated_item_name = "{0} EB {1} {2} ({3})".format(
 		doc.custom_size,
-		doc.custom_shade_name,
+		doc.custom_base_colour,
 		doc.custom_type_short_code,
 		doc.custom_customer_order_code,
 	)
@@ -87,22 +87,17 @@ def _sync_type_short_code_from_finish(doc):
 
 
 def _sync_product_code(doc):
-	if not doc.get("custom_shade_name"):
+	if not doc.get("custom_base_colour"):
 		doc.set("product_code", None)
 		return
 
 	company_abbreviation = _get_company_abbreviation(doc)
-	shade_abbreviation = frappe.db.get_value("Shade", doc.custom_shade_name, "abbreviation")
-
-	if not shade_abbreviation:
-		doc.set("product_code", None)
-		frappe.throw(_("Shade Name Abbreviation is required to generate Product Code."))
 
 	if not company_abbreviation:
 		doc.set("product_code", None)
 		return
 
-	doc.set("product_code", "{0} - {1}".format(company_abbreviation, shade_abbreviation))
+	doc.set("product_code", "{0} - {1}".format(company_abbreviation, doc.custom_base_colour))
 
 
 def _get_company_abbreviation(doc):
@@ -138,7 +133,7 @@ def _validate_wood_grain_printing_details(doc):
 
 
 def _warn_for_customer_order_code_mismatch(doc):
-	if not (doc.get("custom_shade_name") and doc.get("custom_customer_order_code")):
+	if not (doc.get("custom_base_colour") and doc.get("custom_customer_order_code")):
 		return
 
 	matching_item = _get_item_with_different_customer_order_code(
@@ -152,7 +147,7 @@ def _warn_for_customer_order_code_mismatch(doc):
 	frappe.msgprint(
 		_(
 			"Customer Order Code {0} differs from existing Item {1}, which uses {2} "
-			"for the same Shade + Type combination. Please confirm this is intentional "
+			"for the same Base Colour + Type combination. Please confirm this is intentional "
 			"or correct the code."
 		).format(
 			frappe.bold(doc.custom_customer_order_code),
@@ -169,7 +164,7 @@ def _get_item_with_different_customer_order_code(doc, type_fieldname):
 		return None
 
 	filters = {
-		"custom_shade_name": doc.custom_shade_name,
+		"custom_base_colour": doc.custom_base_colour,
 		type_fieldname: doc.get(type_fieldname),
 		"custom_customer_order_code": ["!=", doc.custom_customer_order_code],
 	}

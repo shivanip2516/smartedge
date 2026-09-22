@@ -30,7 +30,7 @@ fixtures = [
 # ------------------
 
 # include js, css files in header of desk.html
-# app_include_css = "/assets/smart_edge_custom/css/smart_edge_custom.css"
+app_include_css = "/assets/smart_edge_custom/css/base_colour.css"
 # app_include_js = "/assets/smart_edge_custom/js/smart_edge_custom.js"
 
 # include js, css files in header of web template
@@ -50,9 +50,12 @@ fixtures = [
 # include js in doctype views
 # doctype_js = {"doctype" : "public/js/doctype.js"}
 doctype_js = {
+	"Base Colour": "public/js/base_colour.js",
 	"Item": "public/js/item.js",
 }
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+doctype_list_js = {
+	"Base Colour": "public/js/base_colour_list.js",
+}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
@@ -155,6 +158,9 @@ doctype_js = {
 # }
 
 doc_events = {
+	"Base Colour": {
+		"validate": "smart_edge_custom.base_colour.validate_base_colour",
+	},
 	"Item": {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
 	}

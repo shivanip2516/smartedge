@@ -1,10 +1,42 @@
-{
-    "doctype": "Property Setter",
-    "name": "Color-color-reqd",
-    "doc_type": "Color",
-    "doctype_or_field": "DocField",
-    "field_name": "color",
-    "property": "reqd",
-    "value": "0",
-    "property_type": "Check"
-}
+[
+    {
+        "doctype": "Property Setter",
+        "name": "Color-color-reqd",
+        "doc_type": "Color",
+        "doctype_or_field": "DocField",
+        "field_name": "color",
+        "property": "reqd",
+        "value": "0",
+        "property_type": "Check"
+    },
+    {
+        "doctype": "Property Setter",
+        "name": "Base Colour-main-search_fields",
+        "doc_type": "Base Colour",
+        "doctype_or_field": "DocType",
+        "property": "search_fields",
+        "value": "colour_name",
+        "property_type": "Data",
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Property Setter",
+        "name": "Base Colour-main-sort_field",
+        "doc_type": "Base Colour",
+        "doctype_or_field": "DocType",
+        "property": "sort_field",
+        "value": "weightage",
+        "property_type": "Data",
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Property Setter",
+        "name": "Base Colour-main-sort_order",
+        "doc_type": "Base Colour",
+        "doctype_or_field": "DocType",
+        "property": "sort_order",
+        "value": "ASC",
+        "property_type": "Data",
+        "module": "smart_edge_custom"
+    }
+]
