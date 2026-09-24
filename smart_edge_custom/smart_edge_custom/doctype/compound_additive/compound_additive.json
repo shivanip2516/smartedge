@@ -1,0 +1,43 @@
+{
+ "actions": [],
+ "creation": "2026-09-23 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "additive",
+  "quantity_kg"
+ ],
+ "fields": [
+  {
+   "columns": 4,
+   "fieldname": "additive",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Additive",
+   "options": "Additive",
+   "reqd": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "quantity_kg",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Quantity (kg)",
+   "precision": "3",
+   "reqd": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-23 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "Compound Additive",
+ "owner": "Administrator",
+ "permissions": [],
+ "quick_entry": 1,
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}
