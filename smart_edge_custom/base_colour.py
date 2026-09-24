@@ -3,7 +3,6 @@ import re
 import frappe
 from frappe import _
 
-
 BASE_COLOUR_DOCTYPE = "Base Colour"
 COLOUR_NAME_FIELD = "colour_name"
 

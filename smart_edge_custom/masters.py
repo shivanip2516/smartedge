@@ -5,7 +5,6 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-
 ADDITIVE_DOCTYPE = "Additive"
 COMPOUND_DOCTYPE = "Compound"
 SIZE_WEIGHT_DOCTYPE = "Size Weight"
@@ -99,7 +98,10 @@ def set_compound_rows(doc, rows):
 def additive_search_filters(search):
 	if not search:
 		return {}
-	return [["Additive", "additive_name", "like", f"%{search}%"], ["Additive", "remark", "like", f"%{search}%"]]
+	return [
+		["Additive", "additive_name", "like", f"%{search}%"],
+		["Additive", "remark", "like", f"%{search}%"],
+	]
 
 
 @frappe.whitelist()
@@ -132,7 +134,9 @@ def create_additive(additive_name, remark=None):
 def update_additive(name, additive_name, remark=None):
 	doc = frappe.get_doc(ADDITIVE_DOCTYPE, name)
 	doc.check_permission("write")
-	doc = rename_if_needed(ADDITIVE_DOCTYPE, doc, "additive_name", validate_text(additive_name, "Additive Name"))
+	doc = rename_if_needed(
+		ADDITIVE_DOCTYPE, doc, "additive_name", validate_text(additive_name, "Additive Name")
+	)
 	doc.additive_name = additive_name
 	doc.remark = remark
 	doc.save()
@@ -196,7 +200,9 @@ def create_compound(compound_name, note=None, additives=None):
 def update_compound(name, compound_name, note=None, additives=None):
 	doc = frappe.get_doc(COMPOUND_DOCTYPE, name)
 	doc.check_permission("write")
-	doc = rename_if_needed(COMPOUND_DOCTYPE, doc, "compound_name", validate_text(compound_name, "Compound Name"))
+	doc = rename_if_needed(
+		COMPOUND_DOCTYPE, doc, "compound_name", validate_text(compound_name, "Compound Name")
+	)
 	doc.compound_name = compound_name
 	doc.note = note
 	set_compound_rows(doc, additives)

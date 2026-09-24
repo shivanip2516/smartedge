@@ -166,7 +166,7 @@ doc_events = {
 	},
 	"Item": {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
-	}
+	},
 }
 
 # Scheduled Tasks

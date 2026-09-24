@@ -1,4 +1,6 @@
 frappe.provide("smart_edge_custom");
+window.smart_edge_custom = window.smart_edge_custom || {};
+var smart_edge_custom = window.smart_edge_custom;
 
 frappe.listview_settings["Additive"] = {
 	onload(listview) {
@@ -20,16 +22,21 @@ frappe.listview_settings["Size Weight"] = {
 
 smart_edge_custom.format_kg = (value) => `${flt(value || 0, 3).toFixed(3)} kg`;
 smart_edge_custom.format_weight = (value) => flt(value || 0, 4).toFixed(4);
-smart_edge_custom.escape = (value) => frappe.utils.escape_html(value == null || value === "" ? "" : String(value));
+smart_edge_custom.escape = (value) =>
+	frappe.utils.escape_html(value == null || value === "" ? "" : String(value));
 
 smart_edge_custom.MasterPage = class MasterPage {
 	constructor(listview, options) {
 		this.listview = listview;
 		this.options = options;
 		this.search = "";
-		this.can_create = frappe.model.can_create ? frappe.model.can_create(options.doctype) : true;
+		this.can_create = frappe.model.can_create
+			? frappe.model.can_create(options.doctype)
+			: true;
 		this.can_write = frappe.model.can_write ? frappe.model.can_write(options.doctype) : true;
-		this.can_delete = frappe.model.can_delete ? frappe.model.can_delete(options.doctype) : true;
+		this.can_delete = frappe.model.can_delete
+			? frappe.model.can_delete(options.doctype)
+			: true;
 		this.make();
 		this.refresh();
 	}
@@ -42,7 +49,9 @@ smart_edge_custom.MasterPage = class MasterPage {
 		this.listview.page.sidebar && this.listview.page.sidebar.hide();
 
 		const add_button = this.can_create
-			? `<button class="btn smart-master-add">${frappe.utils.icon("add", "sm")} ${__(this.options.add_label)}</button>`
+			? `<button class="btn smart-master-add">${frappe.utils.icon("add", "sm")} ${__(
+					this.options.add_label
+			  )}</button>`
 			: "";
 
 		this.$wrapper = $(`
@@ -90,7 +99,9 @@ smart_edge_custom.MasterPage = class MasterPage {
 		this.$rows.empty();
 
 		if (!rows.length) {
-			this.$rows.append(`<div class="smart-master-empty">${__(this.options.empty_message)}</div>`);
+			this.$rows.append(
+				`<div class="smart-master-empty">${__(this.options.empty_message)}</div>`
+			);
 			return;
 		}
 
@@ -100,12 +111,22 @@ smart_edge_custom.MasterPage = class MasterPage {
 	actions(row) {
 		const $actions = $(`<div class="smart-master-actions"></div>`);
 		if (this.can_write) {
-			$(`<button class="btn btn-xs btn-link" title="${__("Edit")}">${frappe.utils.icon("edit", "sm")}</button>`)
+			$(
+				`<button class="btn btn-xs btn-link" title="${__("Edit")}">${frappe.utils.icon(
+					"edit",
+					"sm"
+				)}</button>`
+			)
 				.on("click", () => this.show_dialog(row))
 				.appendTo($actions);
 		}
 		if (this.can_delete) {
-			$(`<button class="btn btn-xs btn-link" title="${__("Delete")}">${frappe.utils.icon("delete", "sm")}</button>`)
+			$(
+				`<button class="btn btn-xs btn-link" title="${__("Delete")}">${frappe.utils.icon(
+					"delete",
+					"sm"
+				)}</button>`
+			)
 				.on("click", () => this.confirm_delete(row))
 				.appendTo($actions);
 		}
@@ -120,7 +141,10 @@ smart_edge_custom.MasterPage = class MasterPage {
 					args: { name: row.name },
 				})
 				.then(() => {
-					frappe.show_alert({ message: __(this.options.deleted_message), indicator: "green" });
+					frappe.show_alert({
+						message: __(this.options.deleted_message),
+						indicator: "green",
+					});
 					return this.refresh();
 				});
 		});
@@ -152,7 +176,11 @@ smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custo
 					<span class="smart-master-icon additive-icon">◇</span>
 					<span>${smart_edge_custom.escape(row.additive_name || row.name)}</span>
 				</div>
-				<div>${row.remark ? smart_edge_custom.escape(row.remark) : '<span class="smart-muted">-</span>'}</div>
+				<div>${
+					row.remark
+						? smart_edge_custom.escape(row.remark)
+						: '<span class="smart-muted">-</span>'
+				}</div>
 			</div>
 		`);
 		$row.append(this.actions(row));
@@ -197,12 +225,17 @@ smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custo
 				dialog.disable_primary_action();
 				frappe
 					.call({
-						method: is_edit ? "smart_edge_custom.masters.update_additive" : "smart_edge_custom.masters.create_additive",
+						method: is_edit
+							? "smart_edge_custom.masters.update_additive"
+							: "smart_edge_custom.masters.create_additive",
 						args: is_edit ? { name: row.name, ...values } : values,
 					})
 					.then(() => {
 						dialog.hide();
-						frappe.show_alert({ message: is_edit ? __("Additive saved") : __("Additive added"), indicator: "green" });
+						frappe.show_alert({
+							message: is_edit ? __("Additive saved") : __("Additive added"),
+							indicator: "green",
+						});
 						return this.refresh();
 					})
 					.always(() => dialog.enable_primary_action());
@@ -222,7 +255,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 			add_label: "Add Compound",
 			search_placeholder: "Search compounds...",
 			class_name: "compound-master",
-			intro: __("Define recipes by combining additives with quantities. Total kg is auto-calculated as the sum of additive quantities."),
+			intro: __(
+				"Define recipes by combining additives with quantities. Total kg is auto-calculated as the sum of additive quantities."
+			),
 			columns: ["NAME", "ADDITIVES", "TOTAL (KG)", "NOTE", "ACTIONS"],
 			get_method: "smart_edge_custom.masters.get_compounds",
 			delete_method: "smart_edge_custom.masters.delete_compound",
@@ -236,9 +271,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 		const badges = (row.additives || [])
 			.map(
 				(item) =>
-					`<span class="compound-badge">${smart_edge_custom.escape(item.additive)} <b>${smart_edge_custom.escape(
-						flt(item.quantity_kg, 3)
-					)}kg</b></span>`
+					`<span class="compound-badge">${smart_edge_custom.escape(
+						item.additive
+					)} <b>${smart_edge_custom.escape(flt(item.quantity_kg, 3))}kg</b></span>`
 			)
 			.join("");
 		const $row = $(`
@@ -291,22 +326,23 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 			<p class="smart-dialog-subtitle">${__("Build a recipe from additives. Total kg updates live.")}</p>
 			<div class="smart-field">
 				<label>${__("Compound Name")} <span>*</span></label>
-				<input class="form-control compound-name-input" placeholder="${__("e.g. Black PVC Mix")}" value="${smart_edge_custom.escape(
-					row ? row.compound_name : ""
-				)}">
+				<input class="form-control compound-name-input" placeholder="${__(
+					"e.g. Black PVC Mix"
+				)}" value="${smart_edge_custom.escape(row ? row.compound_name : "")}">
 			</div>
 			<div class="smart-field">
 				<label>${__("Note")}</label>
-				<input class="form-control compound-note-input" placeholder="${__("Optional notes...")}" value="${smart_edge_custom.escape(
-					row ? row.note : ""
-				)}">
+				<input class="form-control compound-note-input" placeholder="${__(
+					"Optional notes..."
+				)}" value="${smart_edge_custom.escape(row ? row.note : "")}">
 			</div>
 			<div class="smart-section recipe-section">
 				<div class="smart-section-head">
 					<h4>${__("Additives")} (<span class="recipe-count">0</span>)</h4>
-					<button class="btn btn-sm btn-default add-recipe-row" type="button">${frappe.utils.icon("add", "sm")} ${__(
-			"Add Row"
-		)}</button>
+					<button class="btn btn-sm btn-default add-recipe-row" type="button">${frappe.utils.icon(
+						"add",
+						"sm"
+					)} ${__("Add Row")}</button>
 				</div>
 				<div class="recipe-rows"></div>
 				<div class="recipe-empty">${__("No additives added.")}</div>
@@ -323,7 +359,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 		dialog.$body = dialog.$wrapper.find(".modal-body");
 		dialog.$body.find(".add-recipe-row").on("click", () => this.add_recipe_row(dialog));
 
-		(row && row.additives ? row.additives : []).forEach((item) => this.add_recipe_row(dialog, item));
+		(row && row.additives ? row.additives : []).forEach((item) =>
+			this.add_recipe_row(dialog, item)
+		);
 		this.update_recipe_total(dialog);
 	}
 
@@ -333,7 +371,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 				(dialog._additive_options || []).map((additive) => {
 					const value = additive.name;
 					const selected = value === item.additive ? " selected" : "";
-					return `<option value="${smart_edge_custom.escape(value)}"${selected}>${smart_edge_custom.escape(
+					return `<option value="${smart_edge_custom.escape(
+						value
+					)}"${selected}>${smart_edge_custom.escape(
 						additive.additive_name || value
 					)}</option>`;
 				})
@@ -346,7 +386,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 				<input class="form-control recipe-qty" type="number" min="0" step="0.001" value="${smart_edge_custom.escape(
 					item.quantity_kg || ""
 				)}">
-				<button class="btn btn-xs btn-link recipe-remove" type="button" title="${__("Remove")}">&times;</button>
+				<button class="btn btn-xs btn-link recipe-remove" type="button" title="${__(
+					"Remove"
+				)}">&times;</button>
 			</div>
 		`);
 
@@ -399,7 +441,9 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 		dialog.disable_primary_action();
 		frappe
 			.call({
-				method: row ? "smart_edge_custom.masters.update_compound" : "smart_edge_custom.masters.create_compound",
+				method: row
+					? "smart_edge_custom.masters.update_compound"
+					: "smart_edge_custom.masters.create_compound",
 				args: {
 					name: row ? row.name : undefined,
 					compound_name,
@@ -409,7 +453,10 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 			})
 			.then(() => {
 				dialog.hide();
-				frappe.show_alert({ message: row ? __("Compound saved") : __("Compound added"), indicator: "green" });
+				frappe.show_alert({
+					message: row ? __("Compound saved") : __("Compound added"),
+					indicator: "green",
+				});
 				return this.refresh();
 			})
 			.always(() => dialog.enable_primary_action());
@@ -424,10 +471,18 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 			add_label: "Add Size",
 			search_placeholder: "Search sizes...",
 			class_name: "size-weight-master",
-			intro: `${__("Define sizes with width, thickness, and a multiplying factor. Weight per meter is auto-calculated in")} <b>${__(
-				"grams"
-			)}</b>: <code>weight/meter (g) = width × thickness × factor</code>`,
-			columns: ["SIZE NAME", "WIDTH", "THICKNESS", "FACTOR", "WEIGHT / METER (G)", "NOTE", "ACTIONS"],
+			intro: `${__(
+				"Define sizes with width, thickness, and a multiplying factor. Weight per meter is auto-calculated in"
+			)} <b>${__("grams")}</b>: <code>weight/meter (g) = width × thickness × factor</code>`,
+			columns: [
+				"SIZE NAME",
+				"WIDTH",
+				"THICKNESS",
+				"FACTOR",
+				"WEIGHT / METER (G)",
+				"NOTE",
+				"ACTIONS",
+			],
 			get_method: "smart_edge_custom.masters.get_size_weights",
 			delete_method: "smart_edge_custom.masters.delete_size_weight",
 			empty_message: "No sizes found.",
@@ -476,12 +531,14 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 
 	get_dialog_html(row) {
 		return `
-			<p class="smart-dialog-subtitle">${__("Weight per meter (in grams) = width × thickness × factor")}</p>
+			<p class="smart-dialog-subtitle">${__(
+				"Weight per meter (in grams) = width × thickness × factor"
+			)}</p>
 			<div class="smart-field">
 				<label>${__("Size Name")} <span>*</span></label>
-				<input class="form-control size-name-input" placeholder="${__("e.g. 10mm x 2mm")}" value="${smart_edge_custom.escape(
-					row ? row.size_name : ""
-				)}">
+				<input class="form-control size-name-input" placeholder="${__(
+					"e.g. 10mm x 2mm"
+				)}" value="${smart_edge_custom.escape(row ? row.size_name : "")}">
 			</div>
 			<div class="smart-field-grid">
 				<div class="smart-field">
@@ -505,9 +562,9 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 			</div>
 			<div class="smart-field">
 				<label>${__("Note")}</label>
-				<input class="form-control size-note-input" placeholder="${__("Optional...")}" value="${smart_edge_custom.escape(
-					row ? row.note : ""
-				)}">
+				<input class="form-control size-note-input" placeholder="${__(
+					"Optional..."
+				)}" value="${smart_edge_custom.escape(row ? row.note : "")}">
 			</div>
 			<div class="smart-total size-total">
 				<span>${__("Weight per meter (g)")}</span>
@@ -518,9 +575,11 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 
 	bind_size_dialog(dialog) {
 		dialog.$body = dialog.$wrapper.find(".modal-body");
-		dialog.$body.find(".size-width-input, .size-thickness-input, .size-factor-input").on("input change", () => {
-			this.update_size_total(dialog);
-		});
+		dialog.$body
+			.find(".size-width-input, .size-thickness-input, .size-factor-input")
+			.on("input change", () => {
+				this.update_size_total(dialog);
+			});
 		this.update_size_total(dialog);
 	}
 
@@ -554,12 +613,17 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 		dialog.disable_primary_action();
 		frappe
 			.call({
-				method: row ? "smart_edge_custom.masters.update_size_weight" : "smart_edge_custom.masters.create_size_weight",
+				method: row
+					? "smart_edge_custom.masters.update_size_weight"
+					: "smart_edge_custom.masters.create_size_weight",
 				args: row ? { name: row.name, ...values } : values,
 			})
 			.then(() => {
 				dialog.hide();
-				frappe.show_alert({ message: row ? __("Size / Weight saved") : __("Size / Weight added"), indicator: "green" });
+				frappe.show_alert({
+					message: row ? __("Size / Weight saved") : __("Size / Weight added"),
+					indicator: "green",
+				});
 				return this.refresh();
 			})
 			.always(() => dialog.enable_primary_action());

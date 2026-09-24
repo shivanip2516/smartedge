@@ -1,4 +1,6 @@
 frappe.provide("smart_edge_custom");
+window.smart_edge_custom = window.smart_edge_custom || {};
+var smart_edge_custom = window.smart_edge_custom;
 
 frappe.listview_settings["Base Colour"] = {
 	onload(listview) {
@@ -22,7 +24,9 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 		this.listview.page.clear_primary_action();
 
 		if (this.can_create) {
-			this.listview.page.set_primary_action(__("+ Add Base Colour"), () => this.show_dialog());
+			this.listview.page.set_primary_action(__("+ Add Base Colour"), () =>
+				this.show_dialog()
+			);
 		}
 
 		this.listview.$result.hide();
@@ -31,7 +35,9 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 		this.$wrapper = $(`
 			<div class="base-colour-master">
 				<div class="base-colour-toolbar">
-					<input class="form-control base-colour-search" type="search" placeholder="${__("Search colours...")}">
+					<input class="form-control base-colour-search" type="search" placeholder="${__(
+						"Search colours..."
+					)}">
 				</div>
 				<p class="base-colour-intro">
 					${__(
@@ -78,7 +84,9 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 		this.$rows.empty();
 
 		if (!rows.length) {
-			this.$rows.append(`<div class="base-colour-empty">${__("No Base Colours found")}</div>`);
+			this.$rows.append(
+				`<div class="base-colour-empty">${__("No Base Colours found")}</div>`
+			);
 			return;
 		}
 
@@ -100,13 +108,22 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 
 			const $actions = $row.find(".base-colour-actions");
 			if (this.can_write) {
-				$(`<button class="btn btn-xs btn-link" title="${__("Edit")}">${frappe.utils.icon("edit", "sm")}</button>`)
+				$(
+					`<button class="btn btn-xs btn-link" title="${__("Edit")}">${frappe.utils.icon(
+						"edit",
+						"sm"
+					)}</button>`
+				)
 					.on("click", () => this.show_dialog(row))
 					.appendTo($actions);
 			}
 
 			if (this.can_delete) {
-				$(`<button class="btn btn-xs btn-link" title="${__("Delete")}">${frappe.utils.icon("delete", "sm")}</button>`)
+				$(
+					`<button class="btn btn-xs btn-link" title="${__(
+						"Delete"
+					)}">${frappe.utils.icon("delete", "sm")}</button>`
+				)
 					.on("click", () => this.confirm_delete(row))
 					.appendTo($actions);
 			}
