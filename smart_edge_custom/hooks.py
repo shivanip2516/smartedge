@@ -55,6 +55,9 @@ doctype_js = {
 }
 doctype_list_js = {
 	"Base Colour": "public/js/base_colour_list.js",
+	"Additive": "public/js/manufacturing_masters.js",
+	"Compound": "public/js/manufacturing_masters.js",
+	"Size Weight": "public/js/manufacturing_masters.js",
 }
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
