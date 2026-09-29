@@ -6,6 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "additive",
+  "uom",
   "quantity_kg"
  ],
  "fields": [
@@ -20,10 +21,20 @@
   },
   {
    "columns": 2,
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "fetch_from": "additive.uom",
+   "in_list_view": 1,
+   "label": "UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
    "fieldname": "quantity_kg",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Quantity (kg)",
+   "label": "Quantity",
    "precision": "3",
    "reqd": 1
   }

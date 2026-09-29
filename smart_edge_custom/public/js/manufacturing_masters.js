@@ -21,6 +21,10 @@ frappe.listview_settings["Size Weight"] = {
 };
 
 smart_edge_custom.format_kg = (value) => `${flt(value || 0, 3).toFixed(3)} kg`;
+smart_edge_custom.format_quantity_uom = (value, uom) => {
+	const quantity = smart_edge_custom.escape(flt(value, 3));
+	return uom ? `${quantity} ${smart_edge_custom.escape(uom)}` : quantity;
+};
 smart_edge_custom.format_weight = (value) => flt(value || 0, 4).toFixed(4);
 smart_edge_custom.escape = (value) =>
 	frappe.utils.escape_html(value == null || value === "" ? "" : String(value));
@@ -160,7 +164,7 @@ smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custo
 			search_placeholder: "Search additives...",
 			class_name: "additive-master",
 			intro: __("Master list of chemical additives used in manufacturing compounds."),
-			columns: ["ADDITIVE NAME", "REMARK", "ACTIONS"],
+			columns: ["ADDITIVE NAME", "UOM", "REMARK", "ACTIONS"],
 			get_method: "smart_edge_custom.masters.get_additives",
 			delete_method: "smart_edge_custom.masters.delete_additive",
 			empty_message: "No additives found.",
@@ -176,6 +180,9 @@ smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custo
 					<span class="smart-master-icon additive-icon">◇</span>
 					<span>${smart_edge_custom.escape(row.additive_name || row.name)}</span>
 				</div>
+				<div>${
+					row.uom ? smart_edge_custom.escape(row.uom) : '<span class="smart-muted">-</span>'
+				}</div>
 				<div>${
 					row.remark
 						? smart_edge_custom.escape(row.remark)
@@ -206,6 +213,13 @@ smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custo
 					reqd: 1,
 					placeholder: __("e.g. Calcium Carbonate"),
 					default: row ? row.additive_name : "",
+				},
+				{
+					fieldname: "uom",
+					fieldtype: "Link",
+					options: "UOM",
+					label: __("UOM"),
+					default: row ? row.uom : "",
 				},
 				{
 					fieldname: "remark",
@@ -273,7 +287,10 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 				(item) =>
 					`<span class="compound-badge">${smart_edge_custom.escape(
 						item.additive
-					)} <b>${smart_edge_custom.escape(flt(item.quantity_kg, 3))}kg</b></span>`
+					)} <b>${smart_edge_custom.format_quantity_uom(
+						item.quantity_kg,
+						item.uom
+					)}</b></span>`
 			)
 			.join("");
 		const $row = $(`
@@ -356,6 +373,10 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 
 	bind_compound_dialog(dialog, row, additive_options) {
 		dialog._additive_options = additive_options;
+		dialog._additive_uom_map = {};
+		(additive_options || []).forEach((additive) => {
+			dialog._additive_uom_map[additive.name] = additive.uom || "";
+		});
 		dialog.$body = dialog.$wrapper.find(".modal-body");
 		dialog.$body.find(".add-recipe-row").on("click", () => this.add_recipe_row(dialog));
 
@@ -386,18 +407,30 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 				<input class="form-control recipe-qty" type="number" min="0" step="0.001" value="${smart_edge_custom.escape(
 					item.quantity_kg || ""
 				)}">
+				<input class="form-control recipe-uom" type="text" readonly value="${smart_edge_custom.escape(
+					item.uom || ""
+				)}" placeholder="${__("UOM")}">
 				<button class="btn btn-xs btn-link recipe-remove" type="button" title="${__(
 					"Remove"
 				)}">&times;</button>
 			</div>
 		`);
 
-		$row.find("select, input").on("input change", () => this.update_recipe_total(dialog));
+		const set_uom = () => {
+			const additive = ($row.find(".recipe-additive").val() || "").trim();
+			$row.find(".recipe-uom").val((dialog._additive_uom_map || {})[additive] || "");
+		};
+		$row.find(".recipe-additive").on("change", () => {
+			set_uom();
+			this.update_recipe_total(dialog);
+		});
+		$row.find(".recipe-qty").on("input change", () => this.update_recipe_total(dialog));
 		$row.find(".recipe-remove").on("click", () => {
 			$row.remove();
 			this.update_recipe_total(dialog);
 		});
 		dialog.$body.find(".recipe-rows").append($row);
+		set_uom();
 		this.update_recipe_total(dialog);
 	}
 
@@ -406,6 +439,7 @@ smart_edge_custom.CompoundMaster = class CompoundMaster extends smart_edge_custo
 		dialog.$body.find(".recipe-row").each(function () {
 			rows.push({
 				additive: ($(this).find(".recipe-additive").val() || "").trim(),
+				uom: ($(this).find(".recipe-uom").val() || "").trim(),
 				quantity_kg: $(this).find(".recipe-qty").val(),
 			});
 		});
