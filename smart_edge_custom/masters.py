@@ -39,6 +39,8 @@ def parse_rows(rows):
 
 def validate_additive_doc(doc):
 	doc.additive_name = validate_text(doc.additive_name, "Additive Name")
+	if doc.uom and not frappe.db.exists("UOM", doc.uom):
+		frappe.throw(_("UOM {0} does not exist.").format(frappe.bold(doc.uom)))
 	if doc.remark:
 		doc.remark = doc.remark.strip()
 
@@ -59,6 +61,7 @@ def validate_compound_doc(doc):
 		if not frappe.db.exists(ADDITIVE_DOCTYPE, row.additive):
 			frappe.throw(_("Additive {0} does not exist.").format(frappe.bold(row.additive)))
 
+		row.uom = frappe.db.get_value(ADDITIVE_DOCTYPE, row.additive, "uom")
 		row.quantity_kg = validate_number(row.quantity_kg, "Quantity")
 		total += row.quantity_kg
 
@@ -90,6 +93,7 @@ def set_compound_rows(doc, rows):
 			"additives",
 			{
 				"additive": (row.get("additive") or "").strip(),
+				"uom": row.get("uom"),
 				"quantity_kg": row.get("quantity_kg"),
 			},
 		)
@@ -100,6 +104,7 @@ def additive_search_filters(search):
 		return {}
 	return [
 		["Additive", "additive_name", "like", f"%{search}%"],
+		["Additive", "uom", "like", f"%{search}%"],
 		["Additive", "remark", "like", f"%{search}%"],
 	]
 
@@ -114,7 +119,7 @@ def get_additives(search=None, start=0, page_length=100):
 		ADDITIVE_DOCTYPE,
 		filters={},
 		or_filters=or_filters,
-		fields=["name", "additive_name", "remark"],
+		fields=["name", "additive_name", "uom", "remark"],
 		order_by="additive_name asc",
 		start=int(start or 0),
 		page_length=int(page_length or 100),
@@ -122,22 +127,24 @@ def get_additives(search=None, start=0, page_length=100):
 
 
 @frappe.whitelist()
-def create_additive(additive_name, remark=None):
+def create_additive(additive_name, uom=None, remark=None):
 	doc = frappe.new_doc(ADDITIVE_DOCTYPE)
 	doc.additive_name = additive_name
+	doc.uom = uom
 	doc.remark = remark
 	doc.insert()
 	return doc.name
 
 
 @frappe.whitelist()
-def update_additive(name, additive_name, remark=None):
+def update_additive(name, additive_name, uom=None, remark=None):
 	doc = frappe.get_doc(ADDITIVE_DOCTYPE, name)
 	doc.check_permission("write")
 	doc = rename_if_needed(
 		ADDITIVE_DOCTYPE, doc, "additive_name", validate_text(additive_name, "Additive Name")
 	)
 	doc.additive_name = additive_name
+	doc.uom = uom
 	doc.remark = remark
 	doc.save()
 	return doc.name
@@ -179,7 +186,7 @@ def get_compounds(search=None, start=0, page_length=100):
 		row.additives = frappe.get_all(
 			"Compound Additive",
 			filters={"parent": row.name, "parenttype": COMPOUND_DOCTYPE},
-			fields=["additive", "quantity_kg"],
+			fields=["additive", "uom", "quantity_kg"],
 			order_by="idx asc",
 		)
 

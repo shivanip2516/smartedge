@@ -204,7 +204,7 @@
 }
 
 .additive-master .smart-master-row {
-	grid-template-columns: minmax(260px, 1fr) minmax(240px, 1fr) 110px;
+	grid-template-columns: minmax(240px, 1fr) 130px minmax(220px, 1fr) 110px;
 }
 
 .compound-master .smart-master-row {
@@ -418,7 +418,7 @@
 
 .recipe-row {
 	display: grid;
-	grid-template-columns: minmax(220px, 1fr) 140px 32px;
+	grid-template-columns: minmax(220px, 1fr) 130px 120px 32px;
 	align-items: center;
 	gap: 10px;
 	margin-bottom: 10px;
