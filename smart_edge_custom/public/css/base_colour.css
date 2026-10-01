@@ -215,6 +215,10 @@
 	grid-template-columns: minmax(220px, 1.25fr) 130px 150px 130px 190px 160px 110px;
 }
 
+.pigment-master .smart-master-row {
+	grid-template-columns: minmax(240px, 1fr) 130px minmax(220px, 1fr) 110px;
+}
+
 .smart-master-heading {
 	min-height: 50px;
 	border-top: 0;
@@ -247,6 +251,10 @@
 
 .size-icon {
 	color: #ff9800;
+}
+
+.pigment-icon {
+	color: #0f8f7a;
 }
 
 .smart-master-actions {
@@ -339,6 +347,10 @@
 
 .size-weight-dialog .modal-dialog {
 	max-width: 560px;
+}
+
+.pigment-dialog .modal-dialog {
+	max-width: 520px;
 }
 
 .smart-dialog-subtitle {
@@ -464,6 +476,39 @@
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 14px;
+}
+
+.pigment-note {
+	margin: 0 0 20px;
+	padding: 12px 14px;
+	border: 1px solid #d8e8fb;
+	border-radius: 5px;
+	background: #f5faff;
+	color: #25517e;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.pigment-code-display {
+	margin: 0 0 20px;
+	padding: 14px 16px;
+	border: 1px solid #dfe7f1;
+	border-radius: 5px;
+	background: #f8fafc;
+}
+
+.pigment-code-display span {
+	display: block;
+	margin-bottom: 6px;
+	color: #667996;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.pigment-code-display strong {
+	color: #07366a;
+	font-size: 24px;
+	letter-spacing: .04em;
 }
 
 @media (max-width: 900px) {
