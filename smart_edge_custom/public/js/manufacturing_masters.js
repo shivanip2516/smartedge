@@ -20,6 +20,12 @@ frappe.listview_settings["Size Weight"] = {
 	},
 };
 
+frappe.listview_settings["Pigment"] = {
+	onload(listview) {
+		new smart_edge_custom.PigmentMaster(listview);
+	},
+};
+
 smart_edge_custom.format_kg = (value) => `${flt(value || 0, 3).toFixed(3)} kg`;
 smart_edge_custom.format_quantity_uom = (value, uom) => {
 	const quantity = smart_edge_custom.escape(flt(value, 3));
@@ -656,6 +662,133 @@ smart_edge_custom.SizeWeightMaster = class SizeWeightMaster extends smart_edge_c
 				dialog.hide();
 				frappe.show_alert({
 					message: row ? __("Size / Weight saved") : __("Size / Weight added"),
+					indicator: "green",
+				});
+				return this.refresh();
+			})
+			.always(() => dialog.enable_primary_action());
+	}
+};
+
+smart_edge_custom.PigmentMaster = class PigmentMaster extends smart_edge_custom.MasterPage {
+	constructor(listview) {
+		super(listview, {
+			doctype: "Pigment",
+			title: "Pigments",
+			add_label: "Add Pigment",
+			search_placeholder: "Search pigments...",
+			class_name: "pigment-master",
+			intro: __("Manage your base pigments database"),
+			columns: ["NAME", "CODE", "SUPPLIER", "ACTIONS"],
+			get_method: "smart_edge_custom.masters.get_pigments",
+			delete_method: "smart_edge_custom.masters.delete_pigment",
+			empty_message: "No pigments found.",
+			delete_message: "Are you sure you want to delete this Pigment?",
+			deleted_message: "Pigment deleted",
+		});
+	}
+
+	render_row(row) {
+		const $row = $(`
+			<div class="smart-master-row" data-name="${smart_edge_custom.escape(row.name)}">
+				<div class="smart-master-name">
+					<span class="smart-master-icon pigment-icon">${frappe.utils.icon("stock", "sm")}</span>
+					<span>${smart_edge_custom.escape(row.pigment_name || row.name)}</span>
+				</div>
+				<div class="smart-strong">${smart_edge_custom.escape(row.pigment_code || row.name)}</div>
+				<div>${
+					row.supplier
+						? smart_edge_custom.escape(row.supplier)
+						: '<span class="smart-muted">-</span>'
+				}</div>
+			</div>
+		`);
+		$row.append(this.actions(row));
+		return $row;
+	}
+
+	show_dialog(row) {
+		const is_edit = Boolean(row);
+		const dialog = new frappe.ui.Dialog({
+			title: is_edit ? __("Edit Pigment") : __("Add New Pigment"),
+			fields: [
+				{
+					fieldname: "body",
+					fieldtype: "HTML",
+					options: this.get_dialog_html(row),
+				},
+			],
+			primary_action_label: is_edit ? __("Update Pigment") : __("Create Pigment"),
+			primary_action: () => this.save_pigment(dialog, row),
+		});
+
+		dialog.show();
+		dialog.$wrapper.addClass("smart-master-dialog smart-simple-dialog pigment-dialog");
+		dialog.$body = dialog.$wrapper.find(".modal-body");
+		dialog._supplier_control = frappe.ui.form.make_control({
+			df: {
+				fieldname: "supplier",
+				fieldtype: "Link",
+				options: "Supplier",
+				label: __("Supplier"),
+			},
+			parent: dialog.$body.find(".pigment-supplier-control"),
+			render_input: true,
+		});
+		if (dialog._supplier_control && row) {
+			dialog._supplier_control.set_value(row.supplier || "");
+		}
+	}
+
+	get_dialog_html(row) {
+		const is_edit = Boolean(row);
+		const code = smart_edge_custom.escape(row ? row.pigment_code || row.name : "");
+		return `
+			<p class="smart-dialog-subtitle">${__("Enter the pigment details below")}</p>
+			${
+				is_edit
+					? `<div class="pigment-code-display">
+							<span>${__("Pigment Code (Auto-generated)")}</span>
+							<strong>${code}</strong>
+						</div>`
+					: `<div class="pigment-note">${__("Note: Pigment code will be auto-generated.")}</div>`
+			}
+			<div class="smart-field">
+				<label>${__("Pigment Name")} <span>*</span></label>
+				<input class="form-control pigment-name-input" value="${smart_edge_custom.escape(
+					row ? row.pigment_name : ""
+				)}">
+			</div>
+			<div class="smart-field pigment-supplier-control"></div>
+		`;
+	}
+
+	get_pigment_values(dialog) {
+		return {
+			pigment_name: (dialog.$body.find(".pigment-name-input").val() || "").trim(),
+			supplier: dialog._supplier_control ? dialog._supplier_control.get_value() : "",
+		};
+	}
+
+	save_pigment(dialog, row) {
+		const values = this.get_pigment_values(dialog);
+		if (!values.pigment_name) {
+			frappe.msgprint(__("Pigment Name is required."));
+			return;
+		}
+
+		dialog.disable_primary_action();
+		frappe
+			.call({
+				method: row
+					? "smart_edge_custom.masters.update_pigment"
+					: "smart_edge_custom.masters.create_pigment",
+				args: row ? { name: row.name, ...values } : values,
+			})
+			.then(() => {
+				dialog.hide();
+				frappe.show_alert({
+					message: row ? __("Pigment saved") : __("Pigment added"),
 					indicator: "green",
 				});
 				return this.refresh();
