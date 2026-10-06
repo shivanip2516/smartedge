@@ -41,13 +41,14 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 				</div>
 				<p class="base-colour-intro">
 					${__(
-						"Master list of base colours with a weightage. Use 1 for the lightest colour (processed first in the mixer) up to 10 for the darkest. Mixer sequence is built using these weightages."
+						"Master list of base colour Items with pigment recipes and weightage. Use 1 for the lightest colour up to 10 for the darkest."
 					)}
 				</p>
 				<div class="base-colour-table">
 					<div class="base-colour-row base-colour-heading">
-						<div>${__("COLOUR NAME")}</div>
+						<div>${__("BASE COLOUR NAME")}</div>
 						<div>${__("WEIGHTAGE")}</div>
+						<div>${__("TOTAL (KG)")}</div>
 						<div>${__("ACTIONS")}</div>
 					</div>
 					<div class="base-colour-rows"></div>
@@ -94,6 +95,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 			const colour_name = frappe.utils.escape_html(row.colour_name || row.name);
 			const name = frappe.utils.escape_html(row.name);
 			const weightage = cint(row.weightage);
+			const total_kg = flt(row.total_kg || 0, 3).toFixed(3);
 			const badge_class = this.get_badge_class(weightage);
 			const $row = $(`
 				<div class="base-colour-row" data-name="${name}">
@@ -102,6 +104,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 						<span>${colour_name}</span>
 					</div>
 					<div><span class="base-colour-weight ${badge_class}">${weightage || ""}</span></div>
+					<div>${total_kg}</div>
 					<div class="base-colour-actions"></div>
 				</div>
 			`);
@@ -153,16 +156,21 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 					fieldname: "subtitle",
 					fieldtype: "HTML",
 					options: `<p class="base-colour-dialog-subtitle">${__(
-						"Name + weightage (1 = lightest, 10 = darkest)."
+						"Choose a Base Colour Item and maintain its pigment recipe."
 					)}</p>`,
 				},
 				{
 					fieldname: "colour_name",
-					fieldtype: "Data",
-					label: __("Colour Name"),
+					fieldtype: "Link",
+					label: __("Base Colour Name"),
+					options: "Item",
 					reqd: 1,
-					placeholder: __("e.g. Walnut"),
 					default: row ? row.colour_name : "",
+					get_query: () => ({
+						filters: {
+							item_group: "Base Colour",
+						},
+					}),
 				},
 				{
 					fieldname: "weightage",
@@ -171,6 +179,47 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 					reqd: 1,
 					default: row ? row.weightage : 5,
 					description: __("Lower = lighter (processed first). Higher = darker."),
+				},
+				{
+					fieldname: "pigments",
+					fieldtype: "Table",
+					label: __("Pigments"),
+					data: row ? row.pigments || [] : [],
+					fields: [
+						{
+							fieldname: "pigment_item",
+							fieldtype: "Link",
+							label: __("Pigment Item"),
+							options: "Item",
+							reqd: 1,
+							in_list_view: 1,
+							columns: 4,
+							get_query: () => ({
+								filters: {
+									item_group: "Pigments",
+								},
+							}),
+						},
+						{
+							fieldname: "uom",
+							fieldtype: "Link",
+							label: __("UOM"),
+							options: "UOM",
+							fetch_from: "pigment_item.stock_uom",
+							read_only: 1,
+							in_list_view: 1,
+							columns: 2,
+						},
+						{
+							fieldname: "quantity_kg",
+							fieldtype: "Float",
+							label: __("Quantity"),
+							precision: "3",
+							reqd: 1,
+							in_list_view: 1,
+							columns: 2,
+						},
+					],
 				},
 			],
 			primary_action_label: is_edit ? __("Save") : __("Add"),
@@ -182,6 +231,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 				const method = is_edit
 					? "smart_edge_custom.base_colour.update_base_colour"
 					: "smart_edge_custom.base_colour.create_base_colour";
+				values.pigments = JSON.stringify(values.pigments || []);
 				const args = is_edit ? { name: row.name, ...values } : values;
 
 				dialog.disable_primary_action();
@@ -207,13 +257,20 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 		const weightage = Number(values.weightage);
 
 		if (!(values.colour_name || "").trim()) {
-			frappe.msgprint(__("Colour Name is required."));
+			frappe.msgprint(__("Base Colour Name is required."));
 			return false;
 		}
 
 		if (!Number.isInteger(weightage) || weightage < 1 || weightage > 10) {
 			frappe.msgprint(__("Weightage must be an integer between 1 and 10."));
 			return false;
+		}
+
+		for (const row of values.pigments || []) {
+			if (!row.pigment_item || !flt(row.quantity_kg)) {
+				frappe.msgprint(__("Every pigment row needs a Pigment Item and a valid quantity."));
+				return false;
+			}
 		}
 
 		return true;

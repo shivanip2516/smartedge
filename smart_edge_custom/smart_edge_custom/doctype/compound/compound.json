@@ -14,9 +14,10 @@
  "fields": [
   {
    "fieldname": "compound_name",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Compound Name",
+   "options": "Item",
    "reqd": 1,
    "unique": 1
   },
