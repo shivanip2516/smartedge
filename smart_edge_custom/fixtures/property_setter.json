@@ -38,5 +38,16 @@
         "value": "ASC",
         "property_type": "Data",
         "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Property Setter",
+        "name": "Item-gst_hsn_code-mandatory_depends_on",
+        "doc_type": "Item",
+        "doctype_or_field": "DocField",
+        "field_name": "gst_hsn_code",
+        "property": "mandatory_depends_on",
+        "value": "",
+        "property_type": "Data",
+        "module": "smart_edge_custom"
     }
 ]

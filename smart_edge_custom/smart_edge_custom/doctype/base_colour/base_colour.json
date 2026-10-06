@@ -7,14 +7,17 @@
  "engine": "InnoDB",
  "field_order": [
   "colour_name",
-  "enabled"
+  "enabled",
+  "pigments",
+  "total_kg"
  ],
  "fields": [
   {
    "fieldname": "colour_name",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Colour Name",
+   "label": "Base Colour Name",
+   "options": "Item",
    "reqd": 1,
    "unique": 1
   },
@@ -24,6 +27,20 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Enabled"
+  },
+  {
+   "fieldname": "pigments",
+   "fieldtype": "Table",
+   "label": "Pigments",
+   "options": "Base Colour Pigment"
+  },
+  {
+   "fieldname": "total_kg",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Total (kg)",
+   "precision": "3",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

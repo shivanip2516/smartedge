@@ -1,7 +1,16 @@
 frappe.ui.form.on("Item", {
+	onload(frm) {
+		set_dynamic_mandatory_fields(frm);
+	},
+
 	refresh(frm) {
 		configure_customer_order_code_field(frm);
+		set_dynamic_mandatory_fields(frm);
 		update_customer_order_code(frm, { silent: true });
+	},
+
+	item_group(frm) {
+		set_dynamic_mandatory_fields(frm);
 	},
 
 	custom_color(frm) {
@@ -42,6 +51,30 @@ function configure_customer_order_code_field(frm) {
 			frm.set_df_property(fieldname, "hidden", 1);
 			frm.set_df_property(fieldname, "reqd", 0);
 		}
+	}
+}
+
+const OPTIONAL_ITEM_GROUPS = ["Additives", "Compounds", "Pigments", "Base Colour"];
+const DYNAMIC_MANDATORY_FIELDS = [
+	"custom_size",
+	"custom_type_short_code",
+	"custom_color",
+	"gst_hsn_code",
+];
+
+function set_dynamic_mandatory_fields(frm) {
+	const mandatory = !OPTIONAL_ITEM_GROUPS.includes(frm.doc.item_group);
+
+	for (const fieldname of DYNAMIC_MANDATORY_FIELDS) {
+		if (!frm.fields_dict[fieldname]) {
+			continue;
+		}
+
+		if (fieldname === "gst_hsn_code") {
+			frm.set_df_property(fieldname, "mandatory_depends_on", null);
+		}
+
+		frm.toggle_reqd(fieldname, mandatory);
 	}
 }
 

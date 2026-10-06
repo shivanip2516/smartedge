@@ -8,7 +8,8 @@ from frappe.utils import flt
 ADDITIVE_DOCTYPE = "Additive"
 COMPOUND_DOCTYPE = "Compound"
 SIZE_WEIGHT_DOCTYPE = "Size Weight"
-PIGMENT_DOCTYPE = "Pigment"
+COMPOUND_ITEM_GROUP = "Compounds"
+ADDITIVE_ITEM_GROUP = "Additives"
 
 
 def validate_text(value, label):
@@ -48,6 +49,7 @@ def validate_additive_doc(doc):
 
 def validate_compound_doc(doc):
 	doc.compound_name = validate_text(doc.compound_name, "Compound Name")
+	validate_item_group(doc.compound_name, COMPOUND_ITEM_GROUP, "Compound")
 	if doc.note:
 		doc.note = doc.note.strip()
 
@@ -59,14 +61,21 @@ def validate_compound_doc(doc):
 		if not row.additive:
 			frappe.throw(_("Additive is required in every recipe row."))
 
-		if not frappe.db.exists(ADDITIVE_DOCTYPE, row.additive):
-			frappe.throw(_("Additive {0} does not exist.").format(frappe.bold(row.additive)))
+		validate_item_group(row.additive, ADDITIVE_ITEM_GROUP, "Additive")
 
-		row.uom = frappe.db.get_value(ADDITIVE_DOCTYPE, row.additive, "uom")
+		row.uom = frappe.db.get_value("Item", row.additive, "stock_uom")
 		row.quantity_kg = validate_number(row.quantity_kg, "Quantity")
 		total += row.quantity_kg
 
 	doc.total_kg = total
+
+
+def validate_item_group(item_code, item_group, label):
+	actual_item_group = frappe.db.get_value("Item", item_code, "item_group")
+	if actual_item_group != item_group:
+		frappe.throw(
+			_('Selected {0} Item must belong to Item Group "{1}".').format(_(label), item_group)
+		)
 
 
 def validate_size_weight_doc(doc):
@@ -77,12 +86,6 @@ def validate_size_weight_doc(doc):
 	if doc.note:
 		doc.note = doc.note.strip()
 	doc.weight_per_meter_g = doc.width * doc.thickness * doc.factor
-
-
-def validate_pigment_doc(doc):
-	doc.pigment_name = validate_text(doc.pigment_name, "Pigment Name")
-	if doc.supplier and not frappe.db.exists("Supplier", doc.supplier):
-		frappe.throw(_("Supplier {0} does not exist.").format(frappe.bold(doc.supplier)))
 
 
 def rename_if_needed(doctype, doc, fieldname, value):
@@ -131,6 +134,34 @@ def get_additives(search=None, start=0, page_length=100):
 		start=int(start or 0),
 		page_length=int(page_length or 100),
 	)
+
+
+@frappe.whitelist()
+def get_compound_additive_items(search=None, start=0, page_length=100):
+	if not frappe.has_permission("Item", "read"):
+		frappe.throw(_("Not permitted to read Item"), frappe.PermissionError)
+
+	filters = {"item_group": ADDITIVE_ITEM_GROUP}
+	or_filters = []
+	if search:
+		like = f"%{search}%"
+		or_filters = [["Item", "name", "like", like], ["Item", "item_name", "like", like]]
+
+	rows = frappe.get_list(
+		"Item",
+		filters=filters,
+		or_filters=or_filters,
+		fields=["name", "item_name", "stock_uom"],
+		order_by="item_name asc, name asc",
+		start=int(start or 0),
+		page_length=int(page_length or 100),
+	)
+
+	for row in rows:
+		row.additive_name = row.item_name
+		row.uom = row.stock_uom
+
+	return rows
 
 
 @frappe.whitelist()
@@ -288,55 +319,3 @@ def delete_size_weight(name):
 	doc = frappe.get_doc(SIZE_WEIGHT_DOCTYPE, name)
 	doc.check_permission("delete")
 	frappe.delete_doc(SIZE_WEIGHT_DOCTYPE, name)
-
-
-@frappe.whitelist()
-def get_pigments(search=None, start=0, page_length=100):
-	if not frappe.has_permission(PIGMENT_DOCTYPE, "read"):
-		frappe.throw(_("Not permitted to read Pigment"), frappe.PermissionError)
-
-	or_filters = []
-	if search:
-		like = f"%{search}%"
-		or_filters = [
-			["Pigment", "pigment_name", "like", like],
-			["Pigment", "pigment_code", "like", like],
-			["Pigment", "supplier", "like", like],
-		]
-
-	return frappe.get_list(
-		PIGMENT_DOCTYPE,
-		or_filters=or_filters,
-		fields=["name", "pigment_code", "pigment_name", "supplier"],
-		order_by="pigment_code asc",
-		start=int(start or 0),
-		page_length=int(page_length or 100),
-	)
-
-
-@frappe.whitelist()
-def create_pigment(pigment_name, supplier=None):
-	doc = frappe.new_doc(PIGMENT_DOCTYPE)
-	doc.pigment_name = pigment_name
-	doc.supplier = supplier
-	validate_pigment_doc(doc)
-	doc.insert()
-	return doc.name
-
-
-@frappe.whitelist()
-def update_pigment(name, pigment_name, supplier=None):
-	doc = frappe.get_doc(PIGMENT_DOCTYPE, name)
-	doc.check_permission("write")
-	doc.pigment_name = pigment_name
-	doc.supplier = supplier
-	validate_pigment_doc(doc)
-	doc.save()
-	return doc.name
-
-
-@frappe.whitelist()
-def delete_pigment(name):
-	doc = frappe.get_doc(PIGMENT_DOCTYPE, name)
-	doc.check_permission("delete")
-	frappe.delete_doc(PIGMENT_DOCTYPE, name)

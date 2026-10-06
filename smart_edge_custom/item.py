@@ -10,6 +10,18 @@ PVC_EDGE_BAND_NAME_FIELDS = (
 	"custom_type_short_code",
 	"product_code",
 )
+OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS = {
+	"Additives",
+	"Compounds",
+	"Pigments",
+	"Base Colour",
+}
+DYNAMIC_MANDATORY_ITEM_FIELDS = (
+	("custom_size", "Size"),
+	("custom_type_short_code", "Type Short Code"),
+	("custom_color", "Color"),
+	("gst_hsn_code", "HSN/SAC"),
+)
 WOOD_GRAIN_PRINTING_FIELDS = (
 	"custom_base_shade",
 	"custom_base_colour_printing",
@@ -19,17 +31,38 @@ WOOD_GRAIN_PRINTING_FIELDS = (
 
 
 def validate_pvc_edge_band_item(doc, method=None):
-	if not _has_pvc_edge_band_details(doc):
-		return
+	has_pvc_edge_band_details = _has_pvc_edge_band_details(doc)
+	if has_pvc_edge_band_details:
+		_sync_type_short_code_from_finish(doc)
+		_sync_customer_order_code(doc)
+		_sync_item_name(doc)
 
-	_sync_type_short_code_from_finish(doc)
-	_sync_customer_order_code(doc)
-	_sync_item_name(doc)
-	_validate_wood_grain_printing_details(doc)
+	_validate_dynamic_mandatory_item_fields(doc)
+
+	if has_pvc_edge_band_details:
+		_validate_wood_grain_printing_details(doc)
 
 
 def _has_pvc_edge_band_details(doc):
 	return any(doc.get(fieldname) for fieldname in PVC_EDGE_BAND_NAME_FIELDS)
+
+
+def _validate_dynamic_mandatory_item_fields(doc):
+	if doc.get("item_group") in OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS:
+		return
+
+	missing_labels = [
+		label
+		for fieldname, label in DYNAMIC_MANDATORY_ITEM_FIELDS
+		if doc.meta.has_field(fieldname) and not doc.get(fieldname)
+	]
+
+	if missing_labels:
+		frappe.throw(
+			_("The following fields are mandatory for this Item Group: {0}").format(
+				", ".join(missing_labels)
+			)
+		)
 
 
 def _sync_item_name(doc):

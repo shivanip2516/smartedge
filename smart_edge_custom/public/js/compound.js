@@ -7,8 +7,32 @@ frappe.ui.form.on("Compound Additive", {
 			return;
 		}
 
-		frappe.db.get_value("Additive", row.additive, "uom").then((response) => {
-			frappe.model.set_value(cdt, cdn, "uom", (response.message && response.message.uom) || "");
+		frappe.db.get_value("Item", row.additive, "stock_uom").then((response) => {
+			frappe.model.set_value(cdt, cdn, "uom", (response.message && response.message.stock_uom) || "");
 		});
 	},
 });
+
+frappe.ui.form.on("Compound", {
+	setup(frm) {
+		set_compound_item_queries(frm);
+	},
+
+	refresh(frm) {
+		set_compound_item_queries(frm);
+	},
+});
+
+function set_compound_item_queries(frm) {
+	frm.set_query("compound_name", () => ({
+		filters: {
+			item_group: "Compounds",
+		},
+	}));
+
+	frm.set_query("additive", "additives", () => ({
+		filters: {
+			item_group: "Additives",
+		},
+	}));
+}
