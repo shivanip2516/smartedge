@@ -269,6 +269,18 @@
     },
     {
         "doctype": "Custom Field",
+        "name": "BOM-custom_process_2",
+        "dt": "BOM",
+        "fieldname": "custom_process_2",
+        "fieldtype": "Select",
+        "label": "Process",
+        "insert_after": "uom",
+        "options": "\nExtrusion\nExtrusion Online Printing\nOffline Printing",
+        "reqd": 0,
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
         "name": "Item-custom_2nd_design_print",
         "dt": "Item",
         "fieldname": "custom_2nd_design_print",

@@ -5,7 +5,6 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-ADDITIVE_DOCTYPE = "Additive"
 COMPOUND_DOCTYPE = "Compound"
 SIZE_WEIGHT_DOCTYPE = "Size Weight"
 COMPOUND_ITEM_GROUP = "Compounds"
@@ -37,14 +36,6 @@ def parse_rows(rows):
 	if isinstance(rows, str):
 		rows = json.loads(rows or "[]")
 	return rows or []
-
-
-def validate_additive_doc(doc):
-	doc.additive_name = validate_text(doc.additive_name, "Additive Name")
-	if doc.uom and not frappe.db.exists("UOM", doc.uom):
-		frappe.throw(_("UOM {0} does not exist.").format(frappe.bold(doc.uom)))
-	if doc.remark:
-		doc.remark = doc.remark.strip()
 
 
 def validate_compound_doc(doc):
@@ -109,33 +100,6 @@ def set_compound_rows(doc, rows):
 		)
 
 
-def additive_search_filters(search):
-	if not search:
-		return {}
-	return [
-		["Additive", "additive_name", "like", f"%{search}%"],
-		["Additive", "uom", "like", f"%{search}%"],
-		["Additive", "remark", "like", f"%{search}%"],
-	]
-
-
-@frappe.whitelist()
-def get_additives(search=None, start=0, page_length=100):
-	if not frappe.has_permission(ADDITIVE_DOCTYPE, "read"):
-		frappe.throw(_("Not permitted to read Additive"), frappe.PermissionError)
-
-	or_filters = additive_search_filters(search)
-	return frappe.get_list(
-		ADDITIVE_DOCTYPE,
-		filters={},
-		or_filters=or_filters,
-		fields=["name", "additive_name", "uom", "remark"],
-		order_by="additive_name asc",
-		start=int(start or 0),
-		page_length=int(page_length or 100),
-	)
-
-
 @frappe.whitelist()
 def get_compound_additive_items(search=None, start=0, page_length=100):
 	if not frappe.has_permission("Item", "read"):
@@ -162,37 +126,6 @@ def get_compound_additive_items(search=None, start=0, page_length=100):
 		row.uom = row.stock_uom
 
 	return rows
-
-
-@frappe.whitelist()
-def create_additive(additive_name, uom=None, remark=None):
-	doc = frappe.new_doc(ADDITIVE_DOCTYPE)
-	doc.additive_name = additive_name
-	doc.uom = uom
-	doc.remark = remark
-	doc.insert()
-	return doc.name
-
-
-@frappe.whitelist()
-def update_additive(name, additive_name, uom=None, remark=None):
-	doc = frappe.get_doc(ADDITIVE_DOCTYPE, name)
-	doc.check_permission("write")
-	doc = rename_if_needed(
-		ADDITIVE_DOCTYPE, doc, "additive_name", validate_text(additive_name, "Additive Name")
-	)
-	doc.additive_name = additive_name
-	doc.uom = uom
-	doc.remark = remark
-	doc.save()
-	return doc.name
-
-
-@frappe.whitelist()
-def delete_additive(name):
-	doc = frappe.get_doc(ADDITIVE_DOCTYPE, name)
-	doc.check_permission("delete")
-	frappe.delete_doc(ADDITIVE_DOCTYPE, name)
 
 
 @frappe.whitelist()

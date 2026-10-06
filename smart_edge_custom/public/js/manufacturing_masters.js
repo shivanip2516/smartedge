@@ -2,12 +2,6 @@ frappe.provide("smart_edge_custom");
 window.smart_edge_custom = window.smart_edge_custom || {};
 var smart_edge_custom = window.smart_edge_custom;
 
-frappe.listview_settings["Additive"] = {
-	onload(listview) {
-		new smart_edge_custom.AdditiveMaster(listview);
-	},
-};
-
 frappe.listview_settings["Compound"] = {
 	onload(listview) {
 		new smart_edge_custom.CompoundMaster(listview);
@@ -152,112 +146,6 @@ smart_edge_custom.MasterPage = class MasterPage {
 					return this.refresh();
 				});
 		});
-	}
-};
-
-smart_edge_custom.AdditiveMaster = class AdditiveMaster extends smart_edge_custom.MasterPage {
-	constructor(listview) {
-		super(listview, {
-			doctype: "Additive",
-			title: "Additives",
-			add_label: "Add Additive",
-			search_placeholder: "Search additives...",
-			class_name: "additive-master",
-			intro: __("Master list of chemical additives used in manufacturing compounds."),
-			columns: ["ADDITIVE NAME", "UOM", "REMARK", "ACTIONS"],
-			get_method: "smart_edge_custom.masters.get_additives",
-			delete_method: "smart_edge_custom.masters.delete_additive",
-			empty_message: "No additives found.",
-			delete_message: "Are you sure you want to delete this Additive?",
-			deleted_message: "Additive deleted",
-		});
-	}
-
-	render_row(row) {
-		const $row = $(`
-			<div class="smart-master-row" data-name="${smart_edge_custom.escape(row.name)}">
-				<div class="smart-master-name">
-					<span class="smart-master-icon additive-icon">◇</span>
-					<span>${smart_edge_custom.escape(row.additive_name || row.name)}</span>
-				</div>
-				<div>${
-					row.uom ? smart_edge_custom.escape(row.uom) : '<span class="smart-muted">-</span>'
-				}</div>
-				<div>${
-					row.remark
-						? smart_edge_custom.escape(row.remark)
-						: '<span class="smart-muted">-</span>'
-				}</div>
-			</div>
-		`);
-		$row.append(this.actions(row));
-		return $row;
-	}
-
-	show_dialog(row) {
-		const is_edit = Boolean(row);
-		const dialog = new frappe.ui.Dialog({
-			title: is_edit ? __("Edit Additive") : __("Add Additive"),
-			fields: [
-				{
-					fieldname: "subtitle",
-					fieldtype: "HTML",
-					options: `<p class="smart-dialog-subtitle">${__(
-						"Define a chemical additive used in compound recipes."
-					)}</p>`,
-				},
-				{
-					fieldname: "additive_name",
-					fieldtype: "Data",
-					label: __("Name"),
-					reqd: 1,
-					placeholder: __("e.g. Calcium Carbonate"),
-					default: row ? row.additive_name : "",
-				},
-				{
-					fieldname: "uom",
-					fieldtype: "Link",
-					options: "UOM",
-					label: __("UOM"),
-					default: row ? row.uom : "",
-				},
-				{
-					fieldname: "remark",
-					fieldtype: "Data",
-					label: __("Remark"),
-					placeholder: __("Optional notes..."),
-					default: row ? row.remark : "",
-				},
-			],
-			primary_action_label: is_edit ? __("Save") : __("Add"),
-			primary_action: (values) => {
-				if (!(values.additive_name || "").trim()) {
-					frappe.msgprint(__("Name is required."));
-					return;
-				}
-
-				dialog.disable_primary_action();
-				frappe
-					.call({
-						method: is_edit
-							? "smart_edge_custom.masters.update_additive"
-							: "smart_edge_custom.masters.create_additive",
-						args: is_edit ? { name: row.name, ...values } : values,
-					})
-					.then(() => {
-						dialog.hide();
-						frappe.show_alert({
-							message: is_edit ? __("Additive saved") : __("Additive added"),
-							indicator: "green",
-						});
-						return this.refresh();
-					})
-					.always(() => dialog.enable_primary_action());
-			},
-		});
-
-		dialog.show();
-		dialog.$wrapper.addClass("smart-master-dialog smart-simple-dialog");
 	}
 };
 

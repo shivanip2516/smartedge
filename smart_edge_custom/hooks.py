@@ -51,12 +51,12 @@ app_include_css = "/assets/smart_edge_custom/css/base_colour.css"
 # doctype_js = {"doctype" : "public/js/doctype.js"}
 doctype_js = {
 	"Base Colour": "public/js/base_colour.js",
+	"BOM": "public/js/bom.js",
 	"Compound": "public/js/compound.js",
 	"Item": "public/js/item.js",
 }
 doctype_list_js = {
 	"Base Colour": "public/js/base_colour_list.js",
-	"Additive": "public/js/manufacturing_masters.js",
 	"Compound": "public/js/manufacturing_masters.js",
 	"Size Weight": "public/js/manufacturing_masters.js",
 }

@@ -203,10 +203,6 @@
 	font-size: 18px;
 }
 
-.additive-master .smart-master-row {
-	grid-template-columns: minmax(240px, 1fr) 130px minmax(220px, 1fr) 110px;
-}
-
 .compound-master .smart-master-row {
 	grid-template-columns: 210px minmax(520px, 1fr) 130px 150px 110px;
 }
