@@ -1,0 +1,129 @@
+{
+ "actions": [],
+ "creation": "2026-10-07 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sequence",
+  "operation",
+  "workstation",
+  "planning_category",
+  "standard_time",
+  "time_uom",
+  "planned_rate",
+  "machine_cost",
+  "labour_cost",
+  "mandatory",
+  "is_qc",
+  "is_printing",
+  "is_slitting",
+  "is_extrusion"
+ ],
+ "fields": [
+  {
+   "columns": 1,
+   "fieldname": "sequence",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Seq",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Operation",
+   "options": "Operation",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "fieldname": "workstation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Workstation",
+   "options": "Workstation"
+  },
+  {
+   "columns": 2,
+   "fieldname": "planning_category",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Category",
+   "options": "\nExtrusion\nPrinting\nSlitting\nQC\nPacking\nMixing\nOther"
+  },
+  {
+   "fieldname": "standard_time",
+   "fieldtype": "Float",
+   "label": "Standard Time",
+   "precision": "6",
+   "columns": 1,
+   "in_list_view": 1
+  },
+  {
+   "default": "Minutes",
+   "fieldname": "time_uom",
+   "fieldtype": "Select",
+   "label": "Time UOM",
+   "options": "Minutes\nHours"
+  },
+  {
+   "fieldname": "planned_rate",
+   "fieldtype": "Currency",
+   "label": "Planned Rate / Hour"
+  },
+  {
+   "fieldname": "machine_cost",
+   "fieldtype": "Currency",
+   "label": "Machine Cost",
+   "columns": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "labour_cost",
+   "fieldtype": "Currency",
+   "label": "Labour Cost",
+   "columns": 1,
+   "in_list_view": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "mandatory",
+   "fieldtype": "Check",
+   "label": "Mandatory"
+  },
+  {
+   "fieldname": "is_qc",
+   "fieldtype": "Check",
+   "label": "QC"
+  },
+  {
+   "fieldname": "is_printing",
+   "fieldtype": "Check",
+   "label": "Printing"
+  },
+  {
+   "fieldname": "is_slitting",
+   "fieldtype": "Check",
+   "label": "Slitting"
+  },
+  {
+   "fieldname": "is_extrusion",
+   "fieldtype": "Check",
+   "label": "Extrusion"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "Final EB BOM Operation",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

@@ -6,17 +6,21 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "basic_information_section",
   "colour_name",
+  "base_colour_col_2",
   "enabled",
-  "pigments",
-  "total_kg"
+  "base_colour_col_3",
+  "total_kg",
+  "pigments_section",
+  "pigments"
  ],
  "fields": [
   {
    "fieldname": "colour_name",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Base Colour Name",
+   "label": "Base Colour Item",
    "options": "Item",
    "reqd": 1,
    "unique": 1
@@ -41,6 +45,24 @@
    "label": "Total (kg)",
    "precision": "3",
    "read_only": 1
+  },
+  {
+   "fieldname": "basic_information_section",
+   "fieldtype": "Section Break",
+   "label": "Basic Information"
+  },
+  {
+   "fieldname": "base_colour_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "base_colour_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "pigments_section",
+   "fieldtype": "Section Break",
+   "label": "Pigments"
   }
  ],
  "index_web_pages_for_search": 1,

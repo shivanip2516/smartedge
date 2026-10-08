@@ -1,0 +1,402 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-10-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "job_section",
+  "naming_series",
+  "final_eb_bom_generator",
+  "company",
+  "job_col_2",
+  "status",
+  "workstation",
+  "plan_entry",
+  "job_col_3",
+  "operation",
+  "shift",
+  "timing_section",
+  "planned_start",
+  "actual_start",
+  "timing_col_2",
+  "planned_end",
+  "actual_end",
+  "timing_col_3",
+  "planned_duration_hours",
+  "actual_duration_hours",
+  "execution_section",
+  "operator_employee",
+  "supervisor_employee",
+  "execution_col_2",
+  "operator_name",
+  "supervisor_name",
+  "execution_col_3",
+  "operator_designation",
+  "operator_department",
+  "remarks",
+  "quantity_section",
+  "planned_qty_meter",
+  "planned_qty_kg",
+  "quantity_col_2",
+  "actual_qty_meter",
+  "actual_qty_kg",
+  "quantity_col_3",
+  "good_qty",
+  "quality_section",
+  "rejected_qty",
+  "quality_col_2",
+  "rework_qty",
+  "scrap_section",
+  "usable_scrap",
+  "scrap_col_2",
+  "unusable_scrap",
+  "downtime_section",
+  "downtime_minutes",
+  "downtime_col_2",
+  "downtime_reason",
+  "operator"
+ ],
+ "fields": [
+  {
+   "default": "SE-JOB-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "SE-JOB-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "plan_entry",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Plan Entry",
+   "options": "SmartEdge Production Plan Entry",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_eb_bom_generator",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Final EB BOM Generator",
+   "options": "Final EB BOM Generator",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Operation",
+   "options": "Operation",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "workstation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Workstation",
+   "options": "Workstation",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_start",
+   "fieldtype": "Datetime",
+   "label": "Planned Start",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_end",
+   "fieldtype": "Datetime",
+   "label": "Planned End",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actual_start",
+   "fieldtype": "Datetime",
+   "label": "Actual Start"
+  },
+  {
+   "fieldname": "actual_end",
+   "fieldtype": "Datetime",
+   "label": "Actual End"
+  },
+  {
+   "fieldname": "operator",
+   "fieldtype": "Link",
+   "label": "Legacy Operator User",
+   "options": "User",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "shift",
+   "fieldtype": "Link",
+   "label": "Shift",
+   "options": "Shift Type"
+  },
+  {
+   "fieldname": "planned_qty_meter",
+   "fieldtype": "Float",
+   "label": "Planned Qty Meter",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actual_qty_meter",
+   "fieldtype": "Float",
+   "label": "Actual Qty Meter",
+   "precision": "6"
+  },
+  {
+   "fieldname": "planned_qty_kg",
+   "fieldtype": "Float",
+   "label": "Planned Qty Kg",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actual_qty_kg",
+   "fieldtype": "Float",
+   "label": "Actual Qty Kg",
+   "precision": "6"
+  },
+  {
+   "fieldname": "good_qty",
+   "fieldtype": "Float",
+   "label": "Good Qty",
+   "precision": "6"
+  },
+  {
+   "fieldname": "rejected_qty",
+   "fieldtype": "Float",
+   "label": "Rejected Qty",
+   "precision": "6"
+  },
+  {
+   "fieldname": "rework_qty",
+   "fieldtype": "Float",
+   "label": "Rework Qty",
+   "precision": "6"
+  },
+  {
+   "fieldname": "usable_scrap",
+   "fieldtype": "Float",
+   "label": "Usable Scrap",
+   "precision": "6"
+  },
+  {
+   "fieldname": "unusable_scrap",
+   "fieldtype": "Float",
+   "label": "Unusable Scrap",
+   "precision": "6"
+  },
+  {
+   "fieldname": "downtime_minutes",
+   "fieldtype": "Float",
+   "label": "Downtime Minutes",
+   "precision": "2"
+  },
+  {
+   "fieldname": "downtime_reason",
+   "fieldtype": "Small Text",
+   "label": "Downtime Reason"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nIn Progress\nPaused\nCompleted\nOn Hold\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "job_section",
+   "fieldtype": "Section Break",
+   "label": "Job"
+  },
+  {
+   "fieldname": "timing_section",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "execution_section",
+   "fieldtype": "Section Break",
+   "label": "Execution"
+  },
+  {
+   "fieldname": "quantity_section",
+   "fieldtype": "Section Break",
+   "label": "Production Quantity"
+  },
+  {
+   "fieldname": "quality_section",
+   "fieldtype": "Section Break",
+   "label": "Quality"
+  },
+  {
+   "fieldname": "scrap_section",
+   "fieldtype": "Section Break",
+   "label": "Scrap & Recovery"
+  },
+  {
+   "fieldname": "downtime_section",
+   "fieldtype": "Section Break",
+   "label": "Downtime"
+  },
+  {
+   "fieldname": "job_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "job_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "timing_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "timing_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "execution_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "execution_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quantity_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quantity_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quality_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "scrap_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "downtime_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operator_employee",
+   "fieldtype": "Link",
+   "label": "Operator",
+   "options": "Employee",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "operator_name",
+   "fieldtype": "Data",
+   "label": "Employee Name",
+   "fetch_from": "operator_employee.employee_name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operator_designation",
+   "fieldtype": "Data",
+   "label": "Designation",
+   "fetch_from": "operator_employee.designation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operator_department",
+   "fieldtype": "Data",
+   "label": "Department",
+   "fetch_from": "operator_employee.department",
+   "read_only": 1
+  },
+  {
+   "fieldname": "supervisor_employee",
+   "fieldtype": "Link",
+   "label": "Supervisor",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "supervisor_name",
+   "fieldtype": "Data",
+   "label": "Supervisor Name",
+   "fetch_from": "supervisor_employee.employee_name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_duration_hours",
+   "fieldtype": "Float",
+   "label": "Planned Duration (Hours)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "actual_duration_hours",
+   "fieldtype": "Float",
+   "label": "Actual Duration (Hours)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Production Job",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,249 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-10-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "planning_section",
+  "final_eb_bom_generator",
+  "workstation",
+  "planned_date",
+  "priority",
+  "planning_col_2",
+  "operation",
+  "planning_category",
+  "planned_start_datetime",
+  "required_by",
+  "planning_col_3",
+  "sequence",
+  "status",
+  "planned_end_datetime",
+  "quantity_section",
+  "production_quantity",
+  "quantity_col_2",
+  "planned_meter",
+  "quantity_col_3",
+  "planned_kg",
+  "references_section",
+  "operation_row",
+  "production_job",
+  "references_col_2",
+  "created_from",
+  "references_col_3",
+  "remarks"
+ ],
+ "fields": [
+  {
+   "default": "SE-PLAN-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "SE-PLAN-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "final_eb_bom_generator",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Final EB BOM Generator",
+   "options": "Final EB BOM Generator",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "operation_row",
+   "fieldtype": "Data",
+   "label": "Operation Row",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Operation",
+   "options": "Operation",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "workstation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Workstation",
+   "options": "Workstation"
+  },
+  {
+   "fieldname": "planning_category",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Planning Category",
+   "options": "\nExtrusion\nPrinting\nSlitting\nQC\nPacking\nMixing\nOther"
+  },
+  {
+   "fieldname": "planned_date",
+   "fieldtype": "Date",
+   "in_standard_filter": 1,
+   "label": "Planned Date"
+  },
+  {
+   "fieldname": "planned_start_datetime",
+   "fieldtype": "Datetime",
+   "label": "Planned Start"
+  },
+  {
+   "fieldname": "planned_end_datetime",
+   "fieldtype": "Datetime",
+   "label": "Planned End"
+  },
+  {
+   "fieldname": "sequence",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Sequence",
+   "read_only": 1
+  },
+  {
+   "fieldname": "production_quantity",
+   "fieldtype": "Float",
+   "label": "Production Quantity",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_meter",
+   "fieldtype": "Float",
+   "label": "Planned Meter",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_kg",
+   "fieldtype": "Float",
+   "label": "Planned Kg",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nPlanned\nIn Progress\nCompleted\nOn Hold\nCancelled"
+  },
+  {
+   "default": "Normal",
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Priority",
+   "options": "Urgent\nHigh\nNormal\nLow"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  },
+  {
+   "fieldname": "planning_section",
+   "fieldtype": "Section Break",
+   "label": "Planning"
+  },
+  {
+   "fieldname": "planning_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "planning_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quantity_section",
+   "fieldtype": "Section Break",
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "quantity_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quantity_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "references_section",
+   "fieldtype": "Section Break",
+   "label": "References"
+  },
+  {
+   "fieldname": "references_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "references_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "required_by",
+   "fieldtype": "Date",
+   "label": "Required By"
+  },
+  {
+   "fieldname": "production_job",
+   "fieldtype": "Link",
+   "label": "Production Job",
+   "options": "SmartEdge Production Job",
+   "read_only": 1
+  },
+  {
+   "fieldname": "created_from",
+   "fieldtype": "Data",
+   "label": "Created From",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Production Plan Entry",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "planned_date",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

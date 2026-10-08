@@ -8,6 +8,10 @@ app_license = "mit"
 fixtures = [
 	{"dt": "Custom Field", "filters": [["module", "=", "smart_edge_custom"]]},
 	{"dt": "Property Setter", "filters": [["module", "=", "smart_edge_custom"]]},
+	{"dt": "Workspace", "filters": [["module", "=", "smart_edge_custom"]]},
+	{"dt": "Number Card", "filters": [["module", "=", "smart_edge_custom"]]},
+	{"dt": "SmartEdge Cost Head"},
+	{"dt": "SmartEdge Process Route"},
 ]
 
 # Apps
@@ -101,7 +105,7 @@ doctype_list_js = {
 # ------------
 
 # before_install = "smart_edge_custom.install.before_install"
-# after_install = "smart_edge_custom.install.after_install"
+after_install = "smart_edge_custom.setup.setup_smartedge_manufacturing"
 
 # Uninstallation
 # ------------

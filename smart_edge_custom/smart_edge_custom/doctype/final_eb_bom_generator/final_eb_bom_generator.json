@@ -1,0 +1,597 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-10-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "product_materials_tab",
+  "finished_product_section",
+  "naming_series",
+  "company",
+  "finished_item",
+  "finished_item_name",
+  "custom_size",
+  "production_quantity",
+  "weight_per_meter_kg",
+  "fp_col_2",
+  "status",
+  "custom_product_type_design_category",
+  "custom_base_colour",
+  "thickness_mm",
+  "weight_factor",
+  "total_eb_weight_kg",
+  "fp_col_3",
+  "stock_uom",
+  "custom_type_finish",
+  "custom_customer_order_code",
+  "width_mm",
+  "weight_per_meter_gm",
+  "prepared_components_section",
+  "compound",
+  "compound_consumption_per_meter",
+  "compound_total_required",
+  "source_warehouse",
+  "components_col_2",
+  "base_colour",
+  "shade_consumption_per_meter",
+  "shade_total_required",
+  "material_weight_difference_kg_per_meter",
+  "components_col_3",
+  "compound_item",
+  "base_colour_item",
+  "material_weight_status",
+  "allow_weight_mismatch",
+  "material_preview_section",
+  "material_preview",
+  "process_route_tab",
+  "process_configuration_section",
+  "printing_type",
+  "slitting_requirement",
+  "process_col_2",
+  "printing_route",
+  "selected_route",
+  "process_col_3",
+  "extrusion_type",
+  "warnings",
+  "operations_section",
+  "operation_preview",
+  "production_summary_tab",
+  "summary_section",
+  "item_group",
+  "custom_product_category",
+  "custom_type_short_code",
+  "summary_col_2",
+  "compound_available_qty",
+  "shade_available_qty",
+  "route_summary_html",
+  "summary_col_3",
+  "compound_shortage_qty",
+  "shade_shortage_qty",
+  "costing_tab",
+  "costing_summary_section",
+  "material_cost",
+  "operation_cost",
+  "cost_per_meter",
+  "cost_col_2",
+  "compound_cost",
+  "labour_cost",
+  "total_production_cost",
+  "cost_col_3",
+  "shade_cost",
+  "additional_consumable_cost",
+  "additional_costs_section",
+  "additional_costs"
+ ],
+ "fields": [
+  {
+   "default": "FEBG-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "FEBG-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nReady for Planning\nPartially Planned\nPlanned\nIn Production\nCompleted\nOn Hold\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "finished_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Finished Product Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "finished_item.item_name",
+   "fieldname": "finished_item_name",
+   "fieldtype": "Data",
+   "label": "Finished Item Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "default": "10000",
+   "fieldname": "production_quantity",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Production Quantity",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "fetch_from": "finished_item.stock_uom",
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "finished_item.item_group",
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "label": "Item Group",
+   "options": "Item Group",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_size",
+   "fieldtype": "Data",
+   "label": "Size",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_base_colour",
+   "fieldtype": "Data",
+   "label": "Base Colour",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_product_category",
+   "fieldtype": "Data",
+   "label": "Product Category",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_product_type_design_category",
+   "fieldtype": "Data",
+   "label": "Product Type / Design Category",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_type_finish",
+   "fieldtype": "Data",
+   "label": "Type / Finish",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_type_short_code",
+   "fieldtype": "Data",
+   "label": "Type Short Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_customer_order_code",
+   "fieldtype": "Data",
+   "label": "Customer Order Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "thickness_mm",
+   "fieldtype": "Float",
+   "label": "Thickness (mm)",
+   "precision": "3"
+  },
+  {
+   "fieldname": "width_mm",
+   "fieldtype": "Float",
+   "label": "Width (mm)",
+   "precision": "3"
+  },
+  {
+   "default": "1.5",
+   "fieldname": "weight_factor",
+   "fieldtype": "Float",
+   "label": "Weight Factor",
+   "precision": "4",
+   "reqd": 1
+  },
+  {
+   "fieldname": "weight_per_meter_gm",
+   "fieldtype": "Float",
+   "label": "Weight / Meter (gm)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "weight_per_meter_kg",
+   "fieldtype": "Float",
+   "label": "Weight / Meter (Kg)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_eb_weight_kg",
+   "fieldtype": "Float",
+   "label": "Total EB Weight (Kg)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound",
+   "fieldtype": "Link",
+   "label": "Compound",
+   "options": "Compound",
+   "reqd": 1
+  },
+  {
+   "fieldname": "compound_item",
+   "fieldtype": "Link",
+   "label": "Compound Stock Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_consumption_per_meter",
+   "fieldtype": "Float",
+   "label": "Compound Consumption / Meter (Kg)",
+   "precision": "6",
+   "reqd": 1
+  },
+  {
+   "fieldname": "compound_total_required",
+   "fieldtype": "Float",
+   "label": "Compound Required (Kg)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_available_qty",
+   "fieldtype": "Float",
+   "label": "Compound Available",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_shortage_qty",
+   "fieldtype": "Float",
+   "label": "Compound Shortage / Surplus",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "base_colour",
+   "fieldtype": "Link",
+   "label": "Base Colour / Shade",
+   "options": "Base Colour",
+   "reqd": 1
+  },
+  {
+   "fieldname": "base_colour_item",
+   "fieldtype": "Link",
+   "label": "Base Colour Stock Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shade_consumption_per_meter",
+   "fieldtype": "Float",
+   "label": "Shade Consumption / Meter (Kg)",
+   "precision": "6",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shade_total_required",
+   "fieldtype": "Float",
+   "label": "Shade Required (Kg)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shade_available_qty",
+   "fieldtype": "Float",
+   "label": "Shade Available",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shade_shortage_qty",
+   "fieldtype": "Float",
+   "label": "Shade Shortage / Surplus",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_weight_status",
+   "fieldtype": "Data",
+   "label": "Material Weight Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_weight_difference_kg_per_meter",
+   "fieldtype": "Float",
+   "label": "Difference (Kg / Meter)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_weight_mismatch",
+   "fieldtype": "Check",
+   "label": "Acknowledge Weight Mismatch"
+  },
+  {
+   "fieldname": "process_configuration_section",
+   "fieldtype": "Section Break",
+   "label": "Process Configuration"
+  },
+  {
+   "fieldname": "printing_type",
+   "fieldtype": "Select",
+   "label": "Printing Type",
+   "options": "\nSolid\nWood Grain\nHigh Gloss\nWGHG"
+  },
+  {
+   "fieldname": "printing_route",
+   "fieldtype": "Select",
+   "label": "Printing Route",
+   "options": "\nNone\nOnline\nOffline"
+  },
+  {
+   "fieldname": "extrusion_type",
+   "fieldtype": "Select",
+   "label": "Extrusion Type",
+   "options": "\nSingle Mould Extrusion\nWide Sheet Extrusion",
+   "reqd": 1
+  },
+  {
+   "fieldname": "slitting_requirement",
+   "fieldtype": "Select",
+   "label": "Slitting Requirement",
+   "options": "\nNone\nOnline 80 mm Slitting\nOffline 80 mm Slitting\n400 mm Wide Sheet Slitting"
+  },
+  {
+   "fieldname": "selected_route",
+   "fieldtype": "Link",
+   "label": "Selected Routing",
+   "options": "SmartEdge Process Route",
+   "read_only": 1
+  },
+  {
+   "fieldname": "route_summary_html",
+   "fieldtype": "HTML",
+   "label": "Product Summary"
+  },
+  {
+   "fieldname": "material_preview_section",
+   "fieldtype": "Section Break",
+   "label": "Material Preview"
+  },
+  {
+   "fieldname": "material_preview",
+   "fieldtype": "Table",
+   "label": "Material Preview",
+   "options": "EB BOM Material Preview",
+   "read_only": 1
+  },
+  {
+   "fieldname": "additional_costs_section",
+   "fieldtype": "Section Break",
+   "label": "Additional Consumable Costs"
+  },
+  {
+   "fieldname": "additional_costs",
+   "fieldtype": "Table",
+   "label": "Additional Consumable Costs",
+   "options": "EB BOM Additional Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operations_section",
+   "fieldtype": "Section Break",
+   "label": "Operation Preview"
+  },
+  {
+   "fieldname": "operation_preview",
+   "fieldtype": "Table",
+   "label": "Operation Preview",
+   "options": "Final EB BOM Operation"
+  },
+  {
+   "fieldname": "compound_cost",
+   "fieldtype": "Currency",
+   "label": "Compound Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "shade_cost",
+   "fieldtype": "Currency",
+   "label": "Shade Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_cost",
+   "fieldtype": "Currency",
+   "label": "Material Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "additional_consumable_cost",
+   "fieldtype": "Currency",
+   "label": "Additional Consumable Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operation_cost",
+   "fieldtype": "Currency",
+   "label": "Machine Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "labour_cost",
+   "fieldtype": "Currency",
+   "label": "Labour Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_production_cost",
+   "fieldtype": "Currency",
+   "label": "Total Production Cost",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cost_per_meter",
+   "fieldtype": "Currency",
+   "label": "Cost / Meter",
+   "read_only": 1
+  },
+  {
+   "fieldname": "warnings",
+   "fieldtype": "Small Text",
+   "label": "Warnings",
+   "read_only": 1
+  },
+  {
+   "fieldname": "product_materials_tab",
+   "fieldtype": "Tab Break",
+   "label": "Product & Materials"
+  },
+  {
+   "fieldname": "process_route_tab",
+   "fieldtype": "Tab Break",
+   "label": "Process Route"
+  },
+  {
+   "fieldname": "production_summary_tab",
+   "fieldtype": "Tab Break",
+   "label": "Production Summary"
+  },
+  {
+   "fieldname": "costing_tab",
+   "fieldtype": "Tab Break",
+   "label": "Costing"
+  },
+  {
+   "fieldname": "finished_product_section",
+   "fieldtype": "Section Break",
+   "label": "Finished Product"
+  },
+  {
+   "fieldname": "prepared_components_section",
+   "fieldtype": "Section Break",
+   "label": "Prepared Components"
+  },
+  {
+   "fieldname": "summary_section",
+   "fieldtype": "Section Break",
+   "label": "Production Summary"
+  },
+  {
+   "fieldname": "costing_summary_section",
+   "fieldtype": "Section Break",
+   "label": "Cost Summary"
+  },
+  {
+   "fieldname": "fp_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fp_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "components_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "components_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "process_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "process_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "summary_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "summary_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_col_3",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "Final EB BOM Generator",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Stock User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
