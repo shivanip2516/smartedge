@@ -1,0 +1,234 @@
+{
+ "app": "smart_edge_custom",
+ "charts": [],
+ "content": "[{\"id\":\"se_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>SmartEdge Manufacturing</b></span>\",\"col\":12}},{\"id\":\"se_definition\",\"type\":\"card\",\"data\":{\"card_name\":\"Production Definition\",\"col\":4}},{\"id\":\"se_formulation\",\"type\":\"card\",\"data\":{\"card_name\":\"Formulation Masters\",\"col\":4}},{\"id\":\"se_process\",\"type\":\"card\",\"data\":{\"card_name\":\"Process Configuration\",\"col\":4}},{\"id\":\"se_execution\",\"type\":\"card\",\"data\":{\"card_name\":\"Manufacturing Execution\",\"col\":4}},{\"id\":\"se_quality\",\"type\":\"card\",\"data\":{\"card_name\":\"Quality\",\"col\":4}},{\"id\":\"se_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports / Utilities\",\"col\":4}}]",
+ "creation": "2026-10-07 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "manufacturing",
+ "idx": 1,
+ "is_hidden": 0,
+ "label": "SmartEdge Manufacturing",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Production Definition",
+   "link_count": 3,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Create Production Definition",
+   "link_count": 0,
+   "link_to": "Final EB BOM Generator",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Production Planning Board",
+   "link_count": 0,
+   "link_to": "smartedge-production-planning",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Item",
+   "link_count": 0,
+   "link_to": "Item",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Formulation Masters",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Compound",
+   "link_count": 0,
+   "link_to": "Compound",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Base Colour",
+   "link_count": 0,
+   "link_to": "Base Colour",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Process Configuration",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SmartEdge Process Route",
+   "link_count": 0,
+   "link_to": "SmartEdge Process Route",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Operation",
+   "link_count": 0,
+   "link_to": "Operation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Workstation",
+   "link_count": 0,
+   "link_to": "Workstation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SmartEdge Cost Head",
+   "link_count": 0,
+   "link_to": "SmartEdge Cost Head",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Manufacturing Execution",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Production Plan Entry",
+   "link_count": 0,
+   "link_to": "SmartEdge Production Plan Entry",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Production Job",
+   "link_count": 0,
+   "link_to": "SmartEdge Production Job",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Stock Entry",
+   "link_count": 0,
+   "link_to": "Stock Entry",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Final EB BOM Generator",
+   "link_count": 0,
+   "link_to": "Final EB BOM Generator",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Quality",
+   "link_count": 1,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Quality Inspection",
+   "link_count": 0,
+   "link_to": "Quality Inspection",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Reports / Utilities",
+   "link_count": 1,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Stock Balance",
+   "link_count": 0,
+   "link_to": "Stock Balance",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Manufacturing",
+ "number_cards": [
+  {
+   "label": "Active EB BOMs",
+   "number_card_name": "Active EB BOMs"
+  }
+ ],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 12.0,
+ "shortcuts": [],
+ "title": "SmartEdge Manufacturing",
+ "type": "Workspace"
+}

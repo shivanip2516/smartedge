@@ -1,0 +1,122 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:cost_head_name",
+ "creation": "2026-10-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "cost_head_section",
+  "cost_head_name",
+  "basis",
+  "linked_item",
+  "cost_head_col_2",
+  "cost_type",
+  "rate",
+  "applicable_for",
+  "cost_head_col_3",
+  "enabled",
+  "uom"
+ ],
+ "fields": [
+  {
+   "fieldname": "cost_head_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Cost Head Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "cost_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Cost Type",
+   "options": "\nMaterial\nConsumable\nMachine\nLabour\nOther",
+   "reqd": 1
+  },
+  {
+   "fieldname": "linked_item",
+   "fieldtype": "Link",
+   "label": "Linked Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "basis",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Basis",
+   "options": "\nPer mm per meter\nPer meter\nPer Kg\nPer Hour\nFixed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Rate",
+   "reqd": 1
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "applicable_for",
+   "fieldtype": "Small Text",
+   "label": "Applicable For"
+  },
+  {
+   "fieldname": "cost_head_section",
+   "fieldtype": "Section Break",
+   "label": "Cost Head"
+  },
+  {
+   "fieldname": "cost_head_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_head_col_3",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Cost Head",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Manufacturing User"
+  }
+ ],
+ "sort_field": "cost_head_name",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

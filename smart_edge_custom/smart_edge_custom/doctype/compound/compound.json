@@ -6,17 +6,21 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "basic_information_section",
   "compound_name",
+  "compound_col_2",
+  "total_kg",
+  "compound_col_3",
   "note",
-  "additives",
-  "total_kg"
+  "additives_section",
+  "additives"
  ],
  "fields": [
   {
    "fieldname": "compound_name",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Compound Name",
+   "label": "Compound Item",
    "options": "Item",
    "reqd": 1,
    "unique": 1
@@ -41,6 +45,24 @@
    "label": "Total (kg)",
    "precision": "3",
    "read_only": 1
+  },
+  {
+   "fieldname": "basic_information_section",
+   "fieldtype": "Section Break",
+   "label": "Basic Information"
+  },
+  {
+   "fieldname": "compound_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "compound_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "additives_section",
+   "fieldtype": "Section Break",
+   "label": "Additives"
   }
  ],
  "index_web_pages_for_search": 1,
