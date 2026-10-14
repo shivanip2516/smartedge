@@ -16,6 +16,7 @@ jobs:
     env:
       FRAPPE_BRANCH: version-16
       ERPNEXT_BRANCH: version-16
+      PAYMENTS_BRANCH: version-16
     strategy:
       fail-fast: false
     name: Server
@@ -91,10 +92,12 @@ jobs:
       - name: Install
         working-directory: /home/runner/frappe-bench
         run: |
+          bench get-app payments --branch "$PAYMENTS_BRANCH"
           bench get-app erpnext --branch "$ERPNEXT_BRANCH"
           bench get-app smart_edge_custom $GITHUB_WORKSPACE
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
+          bench --site test_site install-app payments
           bench --site test_site install-app erpnext
           bench --site test_site install-app smart_edge_custom
           bench build
