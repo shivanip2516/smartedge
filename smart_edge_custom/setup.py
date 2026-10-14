@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 
 DEFAULT_COST_HEADS = (
 	{
@@ -168,12 +169,28 @@ DEFAULT_ROUTES = (
 
 
 def setup_smartedge_manufacturing():
+	validate_erpnext_manufacturing_doctypes()
 	ensure_workstation_cost_fields()
 	ensure_operation_planning_fields()
 	ensure_workstations()
 	ensure_operations()
 	ensure_cost_heads()
 	ensure_process_routes()
+
+
+def validate_erpnext_manufacturing_doctypes():
+	missing = [
+		doctype
+		for doctype in ("Workstation", "Operation", "Item", "Warehouse")
+		if not frappe.db.exists("DocType", doctype)
+	]
+	if missing:
+		frappe.throw(
+			_(
+				"SmartEdge manufacturing setup requires ERPNext to be installed before smart_edge_custom. "
+				"Missing ERPNext DocType(s): {0}."
+			).format(", ".join(missing))
+		)
 
 
 def ensure_workstation_cost_fields():

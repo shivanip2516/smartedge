@@ -16,6 +16,7 @@ OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS = {
 	"Pigments",
 	"Base Colour",
 }
+SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS = {"Products"}
 DYNAMIC_MANDATORY_ITEM_FIELDS = (
 	("custom_size", "Size"),
 	("custom_type_short_code", "Type Short Code"),
@@ -50,6 +51,8 @@ def _has_pvc_edge_band_details(doc):
 def _validate_dynamic_mandatory_item_fields(doc):
 	if doc.get("item_group") in OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS:
 		return
+	if doc.get("item_group") not in SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS:
+		return
 
 	missing_labels = [
 		label
@@ -59,9 +62,7 @@ def _validate_dynamic_mandatory_item_fields(doc):
 
 	if missing_labels:
 		frappe.throw(
-			_("The following fields are mandatory for this Item Group: {0}").format(
-				", ".join(missing_labels)
-			)
+			_("The following fields are mandatory for this Item Group: {0}").format(", ".join(missing_labels))
 		)
 
 

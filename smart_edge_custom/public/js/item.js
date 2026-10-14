@@ -55,6 +55,7 @@ function configure_customer_order_code_field(frm) {
 }
 
 const OPTIONAL_ITEM_GROUPS = ["Additives", "Compounds", "Pigments", "Base Colour"];
+const SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS = ["Products"];
 const DYNAMIC_MANDATORY_FIELDS = [
 	"custom_size",
 	"custom_type_short_code",
@@ -63,7 +64,9 @@ const DYNAMIC_MANDATORY_FIELDS = [
 ];
 
 function set_dynamic_mandatory_fields(frm) {
-	const mandatory = !OPTIONAL_ITEM_GROUPS.includes(frm.doc.item_group);
+	const mandatory =
+		SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS.includes(frm.doc.item_group) &&
+		!OPTIONAL_ITEM_GROUPS.includes(frm.doc.item_group);
 
 	for (const fieldname of DYNAMIC_MANDATORY_FIELDS) {
 		if (!frm.fields_dict[fieldname]) {
