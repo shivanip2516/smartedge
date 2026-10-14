@@ -120,9 +120,9 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 		doc.width_mm = 24
 		doc.weight_factor = 1.5
 		doc.compound = "TEST-COMPOUND"
-		doc.compound_consumption_per_meter = 0.066
+		doc.compound_consumption_batches = 66
 		doc.base_colour = "TEST-SHADE"
-		doc.shade_consumption_per_meter = 0.006
+		doc.shade_consumption_batches = 6
 		doc.printing_type = "Solid"
 		doc.printing_route = "None"
 		doc.extrusion_type = "Single Mould Extrusion"
@@ -183,16 +183,27 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 
 	def test_material_weight_match_normalizes_gram_uom(self):
 		preview = calculate_bom_preview(
-			self.get_generator(base_colour="TEST-SHADE-GRAM", shade_consumption_per_meter=6).as_dict()
+			self.get_generator(base_colour="TEST-SHADE-GRAM", shade_consumption_batches=6).as_dict()
 		)
 		self.assertEqual(preview["material_weight_status"], "Material Weight Matched")
 
-	def test_material_weight_mismatch_warning(self):
+	def test_batch_based_weight_calculation(self):
 		preview = calculate_bom_preview(
-			self.get_generator(shade_consumption_per_meter=0.001).as_dict()
+			self.get_generator(compound_consumption_batches=3, shade_consumption_batches=2).as_dict()
 		)
-		self.assertEqual(preview["material_weight_status"], "Material Weight Mismatch")
-		self.assertIn("Difference", preview["warnings"])
+		self.assertEqual(preview["compound_total_required"], 3)
+		self.assertEqual(preview["shade_total_required"], 2)
+		self.assertEqual(preview["total_eb_weight_kg"], 5)
+		self.assertAlmostEqual(preview["weight_per_meter_kg"], 0.072, places=6)
+		self.assertAlmostEqual(preview["production_quantity"], 69.444444, places=6)
+		self.assertAlmostEqual(preview["compound_consumption_per_meter"], 0.0432, places=6)
+		self.assertAlmostEqual(preview["shade_consumption_per_meter"], 0.0288, places=6)
+
+	def test_batch_based_production_quantity_uses_size_weight(self):
+		preview = calculate_bom_preview(self.get_generator().as_dict())
+		self.assertEqual(preview["total_eb_weight_kg"], 72)
+		self.assertAlmostEqual(preview["weight_per_meter_kg"], 0.072, places=6)
+		self.assertAlmostEqual(preview["production_quantity"], 1000, places=6)
 
 	def test_stock_shortage_warning(self):
 		preview = calculate_bom_preview(self.get_generator(source_warehouse=None).as_dict())

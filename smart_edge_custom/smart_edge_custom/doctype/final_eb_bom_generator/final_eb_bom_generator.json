@@ -16,6 +16,8 @@
   "weight_per_meter_kg",
   "fp_col_2",
   "status",
+  "final_manufacturing_stock_entry",
+  "final_stock_posted_qty",
   "custom_product_type_design_category",
   "custom_base_colour",
   "thickness_mm",
@@ -29,19 +31,22 @@
   "weight_per_meter_gm",
   "prepared_components_section",
   "compound",
-  "compound_consumption_per_meter",
-  "compound_total_required",
+  "compound_consumption_batches",
   "source_warehouse",
   "components_col_2",
   "base_colour",
-  "shade_consumption_per_meter",
-  "shade_total_required",
+  "shade_consumption_batches",
   "material_weight_difference_kg_per_meter",
   "components_col_3",
   "compound_item",
   "base_colour_item",
   "material_weight_status",
   "allow_weight_mismatch",
+  "legacy_consumption_section",
+  "compound_consumption_per_meter",
+  "compound_total_required",
+  "shade_consumption_per_meter",
+  "shade_total_required",
   "material_preview_section",
   "material_preview",
   "process_route_tab",
@@ -102,6 +107,20 @@
    "read_only": 1
   },
   {
+   "fieldname": "final_manufacturing_stock_entry",
+   "fieldtype": "Link",
+   "label": "Final Manufacturing Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_stock_posted_qty",
+   "fieldtype": "Float",
+   "label": "Final Stock Posted Qty",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
    "fieldname": "company",
    "fieldtype": "Link",
    "in_standard_filter": 1,
@@ -132,12 +151,13 @@
    "options": "Warehouse"
   },
   {
-   "default": "10000",
+   "default": "0",
    "fieldname": "production_quantity",
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Production Quantity",
    "non_negative": 1,
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -257,12 +277,21 @@
    "fieldname": "compound_consumption_per_meter",
    "fieldtype": "Float",
    "label": "Compound Consumption / Meter (Kg)",
+   "hidden": 1,
    "precision": "6",
-   "reqd": 1
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "compound_consumption_batches",
+   "fieldtype": "Int",
+   "label": "Compound Consumption in Batches",
+   "non_negative": 1
   },
   {
    "fieldname": "compound_total_required",
    "fieldtype": "Float",
+   "hidden": 1,
    "label": "Compound Required (Kg)",
    "precision": "6",
    "read_only": 1
@@ -298,16 +327,31 @@
   {
    "fieldname": "shade_consumption_per_meter",
    "fieldtype": "Float",
+   "hidden": 1,
    "label": "Shade Consumption / Meter (Kg)",
-   "precision": "6",
-   "reqd": 1
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "default": "0",
+   "fieldname": "shade_consumption_batches",
+   "fieldtype": "Int",
+   "label": "Shade Consumption in Batches",
+   "non_negative": 1
   },
   {
    "fieldname": "shade_total_required",
    "fieldtype": "Float",
+   "hidden": 1,
    "label": "Shade Required (Kg)",
    "precision": "6",
    "read_only": 1
+  },
+  {
+   "fieldname": "legacy_consumption_section",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Legacy Per-Meter Consumption"
   },
   {
    "fieldname": "shade_available_qty",

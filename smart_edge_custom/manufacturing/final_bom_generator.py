@@ -122,15 +122,29 @@ def derive_printing_type(product_type=None, finish=None, short_code=None):
 	return "Solid"
 
 
-def calculate_weight(thickness_mm, width_mm, weight_factor, production_quantity):
+def calculate_weight(thickness_mm, width_mm, weight_factor, total_eb_weight_kg=0):
 	weight_per_meter_gm = flt(thickness_mm) * flt(width_mm) * flt(weight_factor)
 	weight_per_meter_kg = weight_per_meter_gm / 1000
-	total_eb_weight_kg = weight_per_meter_kg * flt(production_quantity)
 	return {
 		"weight_per_meter_gm": weight_per_meter_gm,
 		"weight_per_meter_kg": weight_per_meter_kg,
-		"total_eb_weight_kg": total_eb_weight_kg,
+		"total_eb_weight_kg": flt(total_eb_weight_kg),
 	}
+
+
+def calculate_production_quantity(total_eb_weight_kg, weight_per_meter_kg):
+	total_eb_weight_kg = flt(total_eb_weight_kg)
+	weight_per_meter_kg = flt(weight_per_meter_kg)
+	if total_eb_weight_kg <= 0:
+		return 0
+	if weight_per_meter_kg <= 0:
+		frappe.throw(
+			_(
+				"Weight / Meter (Kg) must be greater than zero to calculate Production Quantity. "
+				"Configure Thickness, Width, and Weight Factor from Size Weight for the finished item."
+			)
+		)
+	return total_eb_weight_kg / weight_per_meter_kg
 
 
 def get_compound_stock_item(compound_doc):
@@ -192,25 +206,55 @@ def calculate_component_requirements(doc):
 	base_colour_item = get_base_colour_stock_item(doc.get("base_colour")) if doc.get("base_colour") else None
 
 	components = []
-	for component_type, item_code, consumption in (
-		("Compound", compound_item, doc.get("compound_consumption_per_meter")),
-		("Base Colour / Shade", base_colour_item, doc.get("shade_consumption_per_meter")),
+	legacy_consumption = {}
+	for component_type, item_code, master_doctype, master_name, batch_count, legacy_fieldname, total_fieldname in (
+		(
+			"Compound",
+			compound_item,
+			"Compound",
+			doc.get("compound"),
+			doc.get("compound_consumption_batches"),
+			"compound_consumption_per_meter",
+			"compound_total_required",
+		),
+		(
+			"Base Colour / Shade",
+			base_colour_item,
+			"Base Colour",
+			doc.get("base_colour"),
+			doc.get("shade_consumption_batches"),
+			"shade_consumption_per_meter",
+			"shade_total_required",
+		),
 	):
 		if not item_code:
 			continue
 
 		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom"], as_dict=True)
-		total_quantity = flt(consumption) * production_quantity
-		available_stock = get_stock_balance(item_code, doc.get("source_warehouse"))
+		batch_count = validate_batch_count(batch_count, component_type)
+		if batch_count:
+			batch_weight = get_prepared_component_batch_weight(master_doctype, master_name, component_type)
+			total_quantity = batch_count * batch_weight
+			consumption_per_meter = total_quantity / production_quantity if production_quantity else 0
+		else:
+			consumption_per_meter = flt(doc.get(legacy_fieldname))
+			total_quantity = consumption_per_meter * production_quantity
+		legacy_consumption[legacy_fieldname] = consumption_per_meter
+		legacy_consumption[total_fieldname] = total_quantity
+		available_stock = get_stock_balance_in_kg(
+			item_code,
+			item.stock_uom if item else None,
+			doc.get("source_warehouse"),
+		)
 		valuation_rate = get_valuation_rate(item_code, doc.get("company"), doc.get("source_warehouse"))
 		components.append(
 			{
 				"item_code": item_code,
 				"item_name": item.item_name if item else item_code,
 				"component_type": component_type,
-				"consumption_per_meter": flt(consumption),
+				"consumption_per_meter": consumption_per_meter,
 				"total_quantity": total_quantity,
-				"uom": item.stock_uom if item else "Kg",
+				"uom": "Kg",
 				"valuation_rate": valuation_rate,
 				"amount": valuation_rate * total_quantity,
 				"available_stock": available_stock,
@@ -218,11 +262,68 @@ def calculate_component_requirements(doc):
 			}
 		)
 
+	for fieldname, value in legacy_consumption.items():
+		set_doc_value(doc, fieldname, value)
 	return components
 
 
-def get_component_weight_per_meter_kg(materials):
-	return sum(normalize_material_qty_to_kg(row.get("consumption_per_meter"), row.get("uom")) for row in materials)
+def uses_batch_consumption(doc):
+	return bool(
+		validate_batch_count(doc.get("compound_consumption_batches"), "Compound")
+		or validate_batch_count(doc.get("shade_consumption_batches"), "Base Colour / Shade")
+	)
+
+
+def apply_component_consumption_per_meter(doc, materials, production_quantity):
+	production_quantity = flt(production_quantity)
+	legacy_consumption = {}
+	for row in materials:
+		consumption_per_meter = flt(row.get("total_quantity")) / production_quantity if production_quantity else 0
+		row["consumption_per_meter"] = consumption_per_meter
+		if row.get("component_type") == "Compound":
+			legacy_consumption["compound_consumption_per_meter"] = consumption_per_meter
+			legacy_consumption["compound_total_required"] = row.get("total_quantity")
+		elif row.get("component_type") == "Base Colour / Shade":
+			legacy_consumption["shade_consumption_per_meter"] = consumption_per_meter
+			legacy_consumption["shade_total_required"] = row.get("total_quantity")
+
+	for fieldname, value in legacy_consumption.items():
+		set_doc_value(doc, fieldname, value)
+
+
+def get_stock_balance_in_kg(item_code, stock_uom, warehouse=None):
+	stock_balance = get_stock_balance(item_code, warehouse)
+	if not stock_uom or stock_uom == "Kg":
+		return stock_balance
+	conversion_factor = frappe.db.get_value(
+		"UOM Conversion Detail",
+		{"parent": item_code, "uom": "Kg"},
+		"conversion_factor",
+	)
+	if flt(conversion_factor) <= 0:
+		return stock_balance
+	return stock_balance / flt(conversion_factor)
+
+
+def validate_batch_count(value, label):
+	if value in (None, ""):
+		return 0
+	if isinstance(value, bool) or flt(value) < 0 or int(flt(value)) != flt(value):
+		frappe.throw(_("{0} consumption batches must be a non-negative whole number.").format(label))
+	return int(flt(value))
+
+
+def get_prepared_component_batch_weight(doctype, name, label):
+	if not name:
+		return 0
+	batch_weight = frappe.db.get_value(doctype, name, "total_kg")
+	if flt(batch_weight) <= 0:
+		frappe.throw(_("{0} Weight per Batch (Kg) is required on {1} {2}.").format(label, doctype, name))
+	return flt(batch_weight)
+
+
+def get_component_weight_kg(materials):
+	return sum(normalize_material_qty_to_kg(row.get("total_quantity"), row.get("uom")) for row in materials)
 
 
 def normalize_material_qty_to_kg(quantity, uom):
@@ -483,15 +584,22 @@ def calculate_bom_preview(source):
 	apply_item_configuration_defaults(doc)
 	apply_process_defaults(doc)
 
+	materials = calculate_component_requirements(doc)
+	component_weight = get_component_weight_kg(materials)
 	weight = calculate_weight(
 		doc.get("thickness_mm"),
 		doc.get("width_mm"),
-		doc.get("weight_factor") or 1.5,
-		doc.get("production_quantity"),
+		doc.get("weight_factor"),
+		component_weight,
 	)
+	if uses_batch_consumption(doc):
+		set_doc_value(
+			doc,
+			"production_quantity",
+			calculate_production_quantity(component_weight, weight["weight_per_meter_kg"]),
+		)
+		apply_component_consumption_per_meter(doc, materials, doc.get("production_quantity"))
 	doc.update(weight)
-
-	materials = calculate_component_requirements(doc)
 	route_doc, route_warning = resolve_process_route(doc)
 	doc["selected_route"] = route_doc.name if route_doc else None
 	additional_costs, missing_consumables = calculate_consumable_costs(doc, route_doc)
@@ -507,7 +615,11 @@ def calculate_bom_preview(source):
 
 	compound_required = next((row for row in materials if row["component_type"] == "Compound"), {})
 	shade_required = next((row for row in materials if row["component_type"] == "Base Colour / Shade"), {})
-	component_weight_per_meter = get_component_weight_per_meter_kg((compound_required, shade_required))
+	component_weight_per_meter = (
+		get_component_weight_kg((compound_required, shade_required)) / flt(doc.get("production_quantity"))
+		if flt(doc.get("production_quantity"))
+		else 0
+	)
 	difference = flt(weight["weight_per_meter_kg"]) - component_weight_per_meter
 
 	warnings = []
@@ -538,11 +650,14 @@ def calculate_bom_preview(source):
 
 	return {
 		**weight,
+		"production_quantity": flt(doc.get("production_quantity")),
 		"compound_item": compound_required.get("item_code"),
 		"base_colour_item": shade_required.get("item_code"),
+		"compound_consumption_per_meter": compound_required.get("consumption_per_meter", 0),
 		"compound_total_required": compound_required.get("total_quantity", 0),
 		"compound_available_qty": compound_required.get("available_stock", 0),
 		"compound_shortage_qty": compound_required.get("shortage_qty", 0),
+		"shade_consumption_per_meter": shade_required.get("consumption_per_meter", 0),
 		"shade_total_required": shade_required.get("total_quantity", 0),
 		"shade_available_qty": shade_required.get("available_stock", 0),
 		"shade_shortage_qty": shade_required.get("shortage_qty", 0),
@@ -642,14 +757,17 @@ def get_route_summary(doc, route_doc):
 
 def apply_preview_to_doc(doc, preview):
 	for fieldname in (
+		"production_quantity",
 		"weight_per_meter_gm",
 		"weight_per_meter_kg",
 		"total_eb_weight_kg",
 		"compound_item",
 		"base_colour_item",
+		"compound_consumption_per_meter",
 		"compound_total_required",
 		"compound_available_qty",
 		"compound_shortage_qty",
+		"shade_consumption_per_meter",
 		"shade_total_required",
 		"shade_available_qty",
 		"shade_shortage_qty",
@@ -701,14 +819,14 @@ def validate_ready_for_planning(doc):
 
 	for fieldname, label in (
 		("production_quantity", _("Production Quantity")),
-		("thickness_mm", _("Thickness")),
-		("width_mm", _("Width")),
-		("weight_factor", _("Weight Factor")),
-		("compound_consumption_per_meter", _("Compound Consumption / Meter")),
-		("shade_consumption_per_meter", _("Shade Consumption / Meter")),
 	):
 		if flt(doc.get(fieldname)) <= 0:
 			frappe.throw(_("{0} must be greater than zero.").format(label))
+	for fieldname, label in (
+		("compound_consumption_batches", _("Compound Consumption in Batches")),
+		("shade_consumption_batches", _("Shade Consumption in Batches")),
+	):
+		validate_batch_count(doc.get(fieldname), label)
 
 	if doc.get("printing_type") != "Solid" and not doc.get("printing_route"):
 		frappe.throw(_("Printing Route must be selected for printed products."))

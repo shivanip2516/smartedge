@@ -24,6 +24,9 @@ frappe.ui.form.on("Final EB BOM Generator", {
 	},
 
 	production_quantity(frm) {
+		if (frm.__applying_preview) {
+			return;
+		}
 		frm.preview_debounced();
 	},
 
@@ -43,7 +46,7 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		frm.preview_debounced();
 	},
 
-	compound_consumption_per_meter(frm) {
+	compound_consumption_batches(frm) {
 		frm.preview_debounced();
 	},
 
@@ -51,7 +54,7 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		frm.preview_debounced();
 	},
 
-	shade_consumption_per_meter(frm) {
+	shade_consumption_batches(frm) {
 		frm.preview_debounced();
 	},
 
@@ -130,7 +133,7 @@ async function fetch_finished_item_details(frm) {
 }
 
 async function refresh_preview(frm, show_alert = false) {
-	if (!frm.doc.finished_item || !frm.doc.production_quantity) {
+	if (!frm.doc.finished_item) {
 		return;
 	}
 
@@ -156,14 +159,17 @@ async function refresh_preview(frm, show_alert = false) {
 
 function apply_preview(frm, preview) {
 	const scalar_fields = [
+		"production_quantity",
 		"weight_per_meter_gm",
 		"weight_per_meter_kg",
 		"total_eb_weight_kg",
 		"compound_item",
 		"base_colour_item",
+		"compound_consumption_per_meter",
 		"compound_total_required",
 		"compound_available_qty",
 		"compound_shortage_qty",
+		"shade_consumption_per_meter",
 		"shade_total_required",
 		"shade_available_qty",
 		"shade_shortage_qty",
@@ -182,11 +188,15 @@ function apply_preview(frm, preview) {
 		"selected_route",
 	];
 
+	frm.__applying_preview = true;
 	for (const fieldname of scalar_fields) {
-		if (preview[fieldname] !== undefined) {
+		if (preview[fieldname] !== undefined && frm.doc[fieldname] !== preview[fieldname]) {
 			frm.set_value(fieldname, preview[fieldname]);
 		}
 	}
+	setTimeout(() => {
+		frm.__applying_preview = false;
+	}, 0);
 
 	set_child_rows(frm, "material_preview", preview.materials || []);
 	set_child_rows(frm, "additional_costs", preview.additional_costs || []);
@@ -219,7 +229,7 @@ function render_configurator_summary(frm, route_summary = {}) {
 	}
 
 	const compound_plus_shade =
-		flt(frm.doc.compound_consumption_per_meter) + flt(frm.doc.shade_consumption_per_meter);
+		flt(frm.doc.compound_total_required) + flt(frm.doc.shade_total_required);
 	const rows = [
 		{
 			title: __("Finished Product"),
@@ -242,12 +252,12 @@ function render_configurator_summary(frm, route_summary = {}) {
 			items: [
 				[__("Compound"), frm.doc.compound],
 				[__("Compound Item"), frm.doc.compound_item],
-				[__("Compound / Meter"), `${format_number(frm.doc.compound_consumption_per_meter, 6)} Kg`],
+				[__("Compound Batches"), format_number(frm.doc.compound_consumption_batches, 0)],
 				[__("Compound Required"), format_number(frm.doc.compound_total_required, 3)],
 				[__("Compound Available"), format_number(frm.doc.compound_available_qty, 3)],
 				[__("Shade"), frm.doc.base_colour],
 				[__("Shade Item"), frm.doc.base_colour_item],
-				[__("Shade / Meter"), `${format_number(frm.doc.shade_consumption_per_meter, 6)} Kg`],
+				[__("Shade Batches"), format_number(frm.doc.shade_consumption_batches, 0)],
 				[__("Shade Required"), format_number(frm.doc.shade_total_required, 3)],
 				[__("Shade Available"), format_number(frm.doc.shade_available_qty, 3)],
 			],
@@ -312,7 +322,7 @@ function render_weight_validation(frm, compound_plus_shade) {
 			<div>
 				<div class="smartedge-summary-title">${__("Material Weight Validation")}</div>
 				<div>${__("Calculated EB Weight")}: <strong>${format_number(frm.doc.weight_per_meter_kg, 6)} Kg/m</strong></div>
-				<div>${__("Compound + Shade")}: <strong>${format_number(compound_plus_shade, 6)} Kg/m</strong></div>
+				<div>${__("Compound + Shade")}: <strong>${format_number(compound_plus_shade, 6)} Kg</strong></div>
 			</div>
 			<span class="indicator ${indicator}">${frappe.utils.escape_html(frm.doc.material_weight_status || "-")}</span>
 		</div>

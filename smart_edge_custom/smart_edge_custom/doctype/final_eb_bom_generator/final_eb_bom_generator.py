@@ -24,7 +24,7 @@ class FinalEBBOMGenerator(Document):
 		if self.finished_item and not self.source_warehouse:
 			self.source_warehouse = get_default_source_warehouse(self.finished_item, self.company)
 
-		if self.finished_item and self.production_quantity:
+		if self.finished_item:
 			preview = calculate_bom_preview(self.as_dict())
 			apply_preview_to_doc(self, preview)
 

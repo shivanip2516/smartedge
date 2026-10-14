@@ -35,7 +35,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			.off("click.smartedge-production-planning")
 			.on("click.smartedge-production-planning", () => {
 				if (this.$body) {
-					this.$body.find(".se-card-menu.show").removeClass("show");
+					this.close_card_menus();
 				}
 			});
 	}
@@ -69,6 +69,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.$filter_row = $(`<div class="se-filter-row"></div>`).appendTo(this.$body);
 		this.$board_container = $(`<div class="planning-board-container"></div>`).appendTo(this.$body);
 		this.$board_scroll = $(`<div class="smartedge-board-scroll"></div>`).appendTo(this.$board_container);
+		this.$board_container.on("scroll", () => this.close_card_menus());
+		this.$board_scroll.on("scroll", () => this.close_card_menus());
 		this.$board = $(`<div class="smartedge-week-board se-board"></div>`).appendTo(this.$board_scroll);
 		this.make_filters();
 	}
@@ -176,9 +178,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		for (const day of Object.values(board.days || {})) {
 			cards.push(...(day.operations || []));
 		}
-		const planned = cards.filter((card) => card.status === "Planned").length;
-		const running = cards.filter((card) => card.status === "In Progress").length;
-		const completed = cards.filter((card) => card.status === "Completed").length;
+		const planned = cards.filter((card) => get_card_status(card) === "Planned").length;
+		const running = cards.filter((card) => get_card_status(card) === "In Progress").length;
+		const completed = cards.filter((card) => get_card_status(card) === "Completed").length;
 		this.$summary.html(`
 			<span class="se-summary-pill">${__("Pending")} <strong>${(board.pending || []).length}</strong></span>
 			<span class="se-summary-pill">${__("Planned")} <strong>${planned}</strong></span>
@@ -325,15 +327,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const is_pending = !card.planned_date;
 		const qty = `${se_format_number(card.qty, 2)} m`;
 		const weight = card.planned_weight_kg ? `${se_format_number(card.planned_weight_kg, 3)} Kg` : "";
+		const released_qty = get_released_qty_label(card);
 		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
-		const status_class = `status-${String(card.status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
+		const effective_status = get_card_status(card);
+		const status_class = `status-${String(effective_status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
+		const status_label = get_status_label(effective_status);
 		const product_line = [card.size, card.item_name || card.finished_item].filter(Boolean).join(" • ");
-		const qty_line = [qty, weight].filter(Boolean).join(" • ");
+		const qty_line = [qty, weight, released_qty].filter(Boolean).join(" • ");
 		const planned_time = get_planned_time_label(card);
+		const workstation_label = card.workstation || __("Not Assigned");
 		const tooltip = [
 			card.production,
 			card.item_name || card.finished_item,
-			card.workstation,
+			workstation_label,
 			card.operation,
 			card.operator_name && `${__("Operator")}: ${card.operator_name}`,
 			card.planned_start && `${__("Start")}: ${card.planned_start}`,
@@ -347,8 +353,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					<span class="se-card-operation-title">${frappe.utils.escape_html(card.operation || "")}</span>
 					<span class="se-sequence-badge">#${frappe.utils.escape_html(card.operation_sequence || "")}</span>
 				</div>
+				<div class="se-card-status-row">
+					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(status_label)}</span>
+				</div>
 				<div class="se-card-main">
-					<div class="se-card-workstation" title="${frappe.utils.escape_html(card.workstation || "")}">${frappe.utils.escape_html(card.workstation || __("Unassigned Workstation"))}</div>
+					<div class="se-card-workstation" title="${frappe.utils.escape_html(workstation_label)}">
+						<span>${__("Workstation")}:</span> ${frappe.utils.escape_html(workstation_label)}
+					</div>
 					<div class="se-product-name" title="${frappe.utils.escape_html(product_line)}">${frappe.utils.escape_html(product_line)}</div>
 					<div class="se-card-qty">${frappe.utils.escape_html(qty_line)}</div>
 					${this.get_status_line_html(card, planned_time, status_class)}
@@ -373,13 +384,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			event.originalEvent.dataTransfer.setData("application/json", JSON.stringify(card));
 		});
 		$card.on("dragend", () => $card.removeClass("dragging"));
-		$card.find(".dropdown-item").on("click", (event) => event.preventDefault());
+		$card.find(".dropdown-item").on("click", (event) => {
+			event.preventDefault();
+			this.close_card_menus();
+		});
 		$card.find(".se-more").on("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
 			const $menu = $(event.currentTarget).closest(".se-card-menu");
-			this.$body.find(".se-card-menu.show").not($menu).removeClass("show");
+			this.close_card_menus($menu);
 			$menu.toggleClass("show");
+			if ($menu.hasClass("show")) {
+				this.position_card_menu($menu);
+			}
 		});
 		$card.find(".se-card-menu").on("click", (event) => event.stopPropagation());
 		$card.find(".se-view").on("click", () => this.open_production_drawer(card.production, card));
@@ -389,38 +406,99 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$card.find(".se-open-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
 		$card.find(".se-start").on("click", () => this.open_start_dialog(card));
 		$card.find(".se-pause").on("click", () => this.pause_production_job(card));
+		$card.find(".se-resume").on("click", () => this.resume_production_job(card));
 		$card.find(".se-complete").on("click", () => this.open_complete_dialog(card));
 		return $card;
 	}
 
+	close_card_menus($except = null) {
+		const $menus = $except ? this.$body.find(".se-card-menu.show").not($except) : this.$body.find(".se-card-menu.show");
+		$menus.removeClass("show drop-up");
+		$menus.find(".dropdown-menu").removeAttr("style");
+	}
+
+	position_card_menu($menu) {
+		const $dropdown = $menu.find(".dropdown-menu");
+		const trigger_rect = $menu.find(".se-more")[0].getBoundingClientRect();
+		const menu_width = Math.max($dropdown.outerWidth() || 170, 170);
+		const menu_height = Math.max($dropdown.outerHeight() || 150, 150);
+		const gutter = 8;
+		let top = trigger_rect.bottom + gutter;
+		let left = trigger_rect.right - menu_width;
+		if (top + menu_height > window.innerHeight - gutter) {
+			top = trigger_rect.top - menu_height - gutter;
+			$menu.addClass("drop-up");
+		}
+		left = Math.max(gutter, Math.min(left, window.innerWidth - menu_width - gutter));
+		$dropdown.css({
+			position: "fixed",
+			top: `${Math.max(gutter, top)}px`,
+			left: `${left}px`,
+			right: "auto",
+			zIndex: 1050,
+		});
+	}
+
 	get_primary_action_html(card, is_pending, status_class) {
+		const status = get_card_status(card);
+		if (status === "Completed") {
+			return `<span class="se-state-pill ${status_class}">✓</span>`;
+		}
 		if (is_pending) {
 			return `<button class="btn btn-xs btn-primary se-plan">${__("Plan")}</button>`;
 		}
-		if (card.status === "In Progress") {
+		if (status === "In Progress") {
 			return `
 				<button class="btn btn-xs btn-default se-pause">${__("Pause")}</button>
-				<button class="btn btn-xs btn-primary se-complete">${__("Complete")}</button>
+				<button class="btn btn-xs btn-primary se-complete">${__("Complete Process")}</button>
 			`;
 		}
-		if (card.status === "Completed") {
-			return `<span class="se-state-pill ${status_class}">✓</span>`;
+		if (status === "Paused") {
+			return `
+				<button class="btn btn-xs btn-default se-resume">${__("Resume")}</button>
+				<button class="btn btn-xs btn-primary se-complete">${__("Complete Process")}</button>
+			`;
 		}
 		return `<button class="btn btn-xs btn-primary se-start" title="${__("Start Production")}" aria-label="${__("Start Production")}">▶ ${__("Start")}</button>`;
 	}
 
 	get_status_line_html(card, planned_time, status_class) {
-		if (card.status === "In Progress") {
+		const status = get_card_status(card);
+		if (status === "In Progress") {
 			const running_label = card.operator_name
 				? `${__("RUNNING")} • ${frappe.utils.escape_html(card.operator_name)}`
 				: __("RUNNING");
 			return `
 				<div class="se-running-line ${status_class}">● ${running_label}</div>
-				<div class="se-running-timer" data-start="${frappe.utils.escape_html(card.job_actual_start || "")}">00:00:00</div>
+				${get_timer_html(card, true)}
 			`;
 		}
-		if (card.status === "Completed") {
-			return `<div class="se-card-time">${__("Completed")}${planned_time ? ` • ${frappe.utils.escape_html(planned_time)}` : ""}</div>`;
+		if (status === "Paused") {
+			const reason = card.downtime_reason ? frappe.utils.escape_html(card.downtime_reason) : __("Paused");
+			const employee = card.operator_name ? `<div class="se-running-line">${__("Employee")}: ${frappe.utils.escape_html(card.operator_name)}</div>` : "";
+			return `
+				<div class="se-card-time" title="${reason}">${__("PAUSED")} — ${reason}</div>
+				${employee}
+				${get_timer_html(card, false)}
+				${get_downtime_timer_html(card)}
+			`;
+		}
+		if (status === "Completed") {
+			return `
+				<div class="se-card-time">${__("Completed")}${planned_time ? ` • ${frappe.utils.escape_html(planned_time)}` : ""}</div>
+				${get_timer_html(card, false)}
+			`;
+		}
+		if (card.job_completion_type === "Partial Completion") {
+			const remaining = get_remaining_qty_label(card);
+			return `
+				<div class="se-card-time">${__("Partially Completed")}${remaining ? ` • ${frappe.utils.escape_html(remaining)}` : ""}</div>
+				${get_timer_html(card, false)}
+			`;
+		}
+		if (status === "Ready") {
+			const released = get_released_qty_label(card);
+			return `<div class="se-card-time">${__("Ready")}${released ? ` • ${frappe.utils.escape_html(released)}` : ""}</div>`;
 		}
 		if (planned_time) {
 			return `<div class="se-card-time">${__("Planned")} ${frappe.utils.escape_html(planned_time)}</div>`;
@@ -446,6 +524,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		const workstations = response.message || [];
+		if (!workstations.length) {
+			frappe.throw(__("No compatible Workstation found for Operation {0}.", [card.operation]));
+		}
 		const default_start = get_time_from_datetime(card.planned_start) || "09:00";
 		const default_duration = card.duration_hours || 1;
 		const dialog = new frappe.ui.Dialog({
@@ -552,16 +633,56 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			args: { plan_entry: card.id },
 		});
 		const context = response.message || {};
+		const compatible_workstations = context.compatible_workstations || [];
+		let starting = false;
 		const dialog = new frappe.ui.Dialog({
 			title: __("Start Production"),
 			fields: [
-				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Data",
+					fieldname: "production_definition",
+					label: __("Production Definition"),
+					read_only: 1,
+					default: context.production_definition || card.production,
+				},
+				{
+					fieldtype: "Data",
+					fieldname: "finished_item",
+					label: __("Finished Item"),
+					read_only: 1,
+					default: context.finished_item || card.item_name || card.finished_item,
+				},
+				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
+				{
+					fieldtype: "Link",
 					fieldname: "workstation",
 					label: __("Workstation"),
-					read_only: 1,
+					options: "Workstation",
+					reqd: 1,
+					read_only: !context.can_edit_workstation,
 					default: context.workstation || card.workstation,
+					get_query: () => ({
+						filters: {
+							name: ["in", compatible_workstations],
+							disabled: 0,
+						},
+					}),
+				},
+				{
+					fieldtype: "Float",
+					fieldname: "planned_meter",
+					label: __("Planned Meter"),
+					precision: 6,
+					read_only: 1,
+					default: context.planned_qty_meter,
+				},
+				{
+					fieldtype: "Float",
+					fieldname: "planned_kg",
+					label: __("Planned Kg"),
+					precision: 6,
+					read_only: 1,
+					default: context.planned_qty_kg,
 				},
 				{
 					fieldtype: "Link",
@@ -583,71 +704,199 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					fieldname: "shift",
 					label: __("Shift"),
 					options: "Shift Type",
+					read_only: 1,
 					default: context.shift,
 				},
 				{
-					fieldtype: "Data",
-					fieldname: "planned_quantity",
-					label: __("Planned Quantity"),
+					fieldtype: "Datetime",
+					fieldname: "planned_start",
+					label: __("Planned Start"),
 					read_only: 1,
-					default: [format_qty(context.planned_qty_meter, "m"), format_qty(context.planned_qty_kg, "Kg")]
-						.filter(Boolean)
-						.join(" • "),
+					default: context.planned_start,
 				},
 			],
-			primary_action_label: __("Start"),
+			primary_action_label: __("Start Production"),
 			primary_action: async (values) => {
-				const start_response = await frappe.call({
-					method: `${this.method}.start_production_job`,
-					args: {
-						plan_entry: card.id,
-						operator_employee: values.operator_employee,
-						shift: values.shift,
-					},
-				});
-				dialog.hide();
-				if (start_response.message?.production_job) {
-					frappe.set_route("Form", "SmartEdge Production Job", start_response.message.production_job);
+				if (starting) {
+					return;
+				}
+				starting = true;
+				const $primary = dialog.get_primary_btn();
+				$primary.prop("disabled", true);
+				try {
+					const start_response = await frappe.call({
+						method: `${this.method}.start_production_job`,
+						args: {
+							plan_entry: card.id,
+							operator_employee: values.operator_employee,
+							workstation: values.workstation,
+							shift: values.shift,
+						},
+					});
+					dialog.hide();
+					await this.refresh();
+					if (start_response.message?.production_job) {
+						frappe.set_route("Form", "SmartEdge Production Job", start_response.message.production_job);
+					}
+				} finally {
+					starting = false;
+					$primary.prop("disabled", false);
 				}
 			},
 		});
 		dialog.show();
+		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
+			dialog.set_secondary_action_label(__("Cancel"));
+			dialog.set_secondary_action(() => dialog.hide());
+		}
 	}
 
 	async pause_production_job(card) {
+		let pausing = false;
+		const dialog = new frappe.ui.Dialog({
+			title: __("Pause Production"),
+			fields: [
+				{ fieldtype: "Data", fieldname: "production_job", label: __("Production Job"), read_only: 1, default: card.production_job },
+				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
+				{ fieldtype: "Data", fieldname: "operator_name", label: __("Employee"), read_only: 1, default: card.operator_name || "" },
+				{
+					fieldtype: "Link",
+					fieldname: "downtime_reason",
+					label: __("Downtime Reason"),
+					options: "SmartEdge Downtime Reason",
+					reqd: 1,
+					get_query: () => ({ filters: { disabled: 0 } }),
+				},
+				{ fieldtype: "Small Text", fieldname: "downtime_remarks", label: __("Remarks") },
+			],
+			primary_action_label: __("Confirm Pause"),
+			primary_action: async (values) => {
+				if (pausing) {
+					return;
+				}
+				pausing = true;
+				const $primary = dialog.get_primary_btn();
+				$primary.prop("disabled", true);
+				try {
+					await frappe.call({
+						method: `${this.method}.pause_production_job`,
+						args: {
+							plan_entry: card.id,
+							downtime_reason: values.downtime_reason,
+							downtime_remarks: values.downtime_remarks,
+						},
+					});
+					dialog.hide();
+					await this.refresh();
+				} finally {
+					pausing = false;
+					$primary.prop("disabled", false);
+				}
+			},
+		});
+		dialog.show();
+		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
+			dialog.set_secondary_action_label(__("Cancel"));
+			dialog.set_secondary_action(() => dialog.hide());
+		}
+	}
+
+	async resume_production_job(card) {
 		await frappe.call({
-			method: `${this.method}.pause_production_job`,
+			method: `${this.method}.resume_production_job`,
 			args: { plan_entry: card.id },
 		});
 		await this.refresh();
 	}
 
 	async open_complete_dialog(card) {
+		const response = await frappe.call({
+			method: `${this.method}.get_complete_job_context`,
+			args: { plan_entry: card.id },
+		});
+		const context = response.message || {};
+		const meter_label = __("Actual Completed Qty") + " (m)";
+		const kg_required = flt(context.planned_qty_kg) > 0;
+		let completing = false;
 		const dialog = new frappe.ui.Dialog({
-			title: __("Complete Production"),
+			title: __("Complete Process"),
 			fields: [
-				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
-				{ fieldtype: "Data", fieldname: "workstation", label: __("Workstation"), read_only: 1, default: card.workstation },
-				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: __("Actual Meter"), default: card.qty || 0 },
-				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: __("Actual Kg"), default: card.planned_weight_kg || 0 },
-				{ fieldtype: "Float", fieldname: "good_qty", label: __("Good Qty"), default: card.qty || 0 },
+				{ fieldtype: "Section Break", label: __("Production Information") },
+				{ fieldtype: "Data", fieldname: "production_job", label: __("Production Job"), read_only: 1, default: context.production_job || card.production_job },
+				{
+					fieldtype: "Data",
+					fieldname: "finished_item",
+					label: __("Finished Item"),
+					read_only: 1,
+					default: context.finished_item || card.item_name || card.finished_item,
+				},
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: context.operation || card.operation },
+				{ fieldtype: "Data", fieldname: "workstation", label: __("Workstation"), read_only: 1, default: context.workstation || card.workstation },
+				{ fieldtype: "Data", fieldname: "operator_name", label: __("Employee"), read_only: 1, default: context.operator_name || card.operator_name || "" },
+				{ fieldtype: "Section Break" },
+				{ fieldtype: "Float", fieldname: "planned_qty_meter", label: __("Planned Qty Meter"), precision: 6, read_only: 1, default: context.planned_qty_meter || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "planned_qty_kg", label: __("Planned Kg"), precision: 6, read_only: 1, default: context.planned_qty_kg || card.planned_weight_kg || 0 },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Data", fieldname: "actual_running_time", label: __("Actual Running Time"), read_only: 1, default: format_duration_seconds(context.productive_elapsed_seconds || card.job_productive_elapsed_seconds || 0) },
+				{ fieldtype: "Data", fieldname: "total_downtime", label: __("Total Downtime"), read_only: 1, default: format_duration_seconds(context.total_downtime_seconds || 0) },
+				{ fieldtype: "Section Break", label: __("Completion Details") },
+				{
+					fieldtype: "Select",
+					fieldname: "completion_type",
+					label: __("Completion Type"),
+					options: "Full Completion\nPartial Completion",
+					reqd: 1,
+					default: "Full Completion",
+				},
+				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: context.actual_qty_kg || card.planned_weight_kg || 0 },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Float", fieldname: "good_qty", label: __("Good Qty"), precision: 6, default: context.good_qty || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Qty"), precision: 6, default: context.rejected_qty || 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Qty"), precision: 6, default: context.rework_qty || 0 },
+				{ fieldtype: "Section Break" },
+				{ fieldtype: "Float", fieldname: "usable_scrap", label: __("Usable Scrap"), precision: 6, default: context.usable_scrap || 0 },
+				{ fieldtype: "Float", fieldname: "unusable_scrap", label: __("Unusable Scrap"), precision: 6, default: context.unusable_scrap || 0 },
+				{ fieldtype: "Small Text", fieldname: "remarks", label: __("Remarks"), default: context.remarks || "" },
 			],
-			primary_action_label: __("Complete"),
+			primary_action_label: __("Confirm Completion"),
 			primary_action: async (values) => {
-				await frappe.call({
-					method: `${this.method}.complete_production_job`,
-					args: {
-						plan_entry: card.id,
-						actual_qty_meter: values.actual_qty_meter,
-						actual_qty_kg: values.actual_qty_kg,
-						good_qty: values.good_qty,
-					},
-				});
-				dialog.hide();
-				await this.refresh();
+				if (completing) {
+					return;
+				}
+				completing = true;
+				const $primary = dialog.get_primary_btn();
+				$primary.prop("disabled", true);
+				try {
+					await frappe.call({
+						method: `${this.method}.complete_production_job`,
+						args: {
+							plan_entry: card.id,
+							completion_type: values.completion_type,
+							actual_qty_meter: values.actual_qty_meter,
+							actual_qty_kg: values.actual_qty_kg,
+							good_qty: values.good_qty,
+							rejected_qty: values.rejected_qty,
+							rework_qty: values.rework_qty,
+							usable_scrap: values.usable_scrap,
+							unusable_scrap: values.unusable_scrap,
+							remarks: values.remarks,
+						},
+					});
+					dialog.hide();
+					await this.refresh();
+				} finally {
+					completing = false;
+					$primary.prop("disabled", false);
+				}
 			},
 		});
 		dialog.show();
+		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
+			dialog.set_secondary_action_label(__("Cancel"));
+			dialog.set_secondary_action(() => dialog.hide());
+		}
 	}
 
 	async start_production_job(card) {
@@ -717,10 +966,18 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	start_timers() {
 		const tick = () => {
-			this.$body.find(".se-running-timer[data-start]").each((_, element) => {
-				const start = $(element).attr("data-start");
-				if (!start) return;
-				$(element).text(format_elapsed(start));
+			this.$body.find(".se-running-timer[data-elapsed]").each((_, element) => {
+				const $element = $(element);
+				let seconds = cint($element.attr("data-elapsed"));
+				if ($element.attr("data-running") === "1") {
+					seconds += Math.floor((Date.now() - cint($element.attr("data-rendered-at"))) / 1000);
+				}
+				$element.text(`${__("Elapsed Time")}: ${format_duration_seconds(seconds)}`);
+			});
+			this.$body.find(".se-downtime-timer[data-elapsed]").each((_, element) => {
+				const $element = $(element);
+				const seconds = cint($element.attr("data-elapsed")) + Math.floor((Date.now() - cint($element.attr("data-rendered-at"))) / 1000);
+				$element.text(`${__("Downtime")}: ${format_duration_seconds(seconds)}`);
 			});
 		};
 		tick();
@@ -758,6 +1015,64 @@ function get_planned_time_label(card) {
 	return start || "";
 }
 
+function get_card_status(card) {
+	if (card.job_status === "Draft") {
+		return card.status;
+	}
+	if (card.job_status === "Completed" && card.job_completion_type === "Partial Completion") {
+		return card.status;
+	}
+	return card.job_status || card.status;
+}
+
+function get_status_label(status) {
+	if (status === "In Progress") {
+		return __("Running");
+	}
+	if (status === "On Hold") {
+		return __("Paused");
+	}
+	return __(status || "Pending");
+}
+
+function get_remaining_qty_label(card) {
+	const parts = [];
+	if (flt(card.job_remaining_qty_meter)) {
+		parts.push(`${se_format_number(card.job_remaining_qty_meter, 2)} m ${__("remaining")}`);
+	}
+	if (flt(card.job_remaining_qty_kg)) {
+		parts.push(`${se_format_number(card.job_remaining_qty_kg, 3)} Kg ${__("remaining")}`);
+	}
+	return parts.join(" • ");
+}
+
+function get_released_qty_label(card) {
+	const parts = [];
+	if (flt(card.released_qty_meter)) {
+		parts.push(`${se_format_number(card.released_qty_meter, 2)} m ${__("eligible")}`);
+	}
+	if (flt(card.released_qty_kg)) {
+		parts.push(`${se_format_number(card.released_qty_kg, 3)} Kg ${__("eligible")}`);
+	}
+	return parts.join(" • ");
+}
+
+function get_timer_html(card, running) {
+	const seconds = cint(card.job_productive_elapsed_seconds);
+	if (!running && !seconds) {
+		return "";
+	}
+	return `<div class="se-running-timer" data-elapsed="${seconds}" data-rendered-at="${Date.now()}" data-running="${running ? 1 : 0}">${__("Elapsed Time")}: ${format_duration_seconds(seconds)}</div>`;
+}
+
+function get_downtime_timer_html(card) {
+	const seconds = cint(card.downtime_elapsed_seconds);
+	if (!card.downtime_start && !seconds) {
+		return "";
+	}
+	return `<div class="se-downtime-timer" data-elapsed="${seconds}" data-rendered-at="${Date.now()}">${__("Downtime")}: ${format_duration_seconds(seconds)}</div>`;
+}
+
 function compute_planned_end(start, duration_hours) {
 	if (!start || !duration_hours) return "";
 	const parts = String(start).split(":").map((part) => cint(part));
@@ -767,10 +1082,8 @@ function compute_planned_end(start, duration_hours) {
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function format_elapsed(start) {
-	const start_time = new Date(String(start).replace(" ", "T"));
-	if (Number.isNaN(start_time.getTime())) return "00:00:00";
-	const seconds = Math.max(Math.floor((Date.now() - start_time.getTime()) / 1000), 0);
+function format_duration_seconds(seconds) {
+	seconds = Math.max(cint(seconds), 0);
 	const hours = Math.floor(seconds / 3600);
 	const minutes = Math.floor((seconds % 3600) / 60);
 	const remaining = seconds % 60;

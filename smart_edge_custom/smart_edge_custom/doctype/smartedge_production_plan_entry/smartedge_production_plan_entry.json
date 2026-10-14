@@ -24,14 +24,18 @@
   "production_quantity",
   "quantity_col_2",
   "planned_meter",
+  "released_qty_meter",
   "quantity_col_3",
   "planned_kg",
+  "released_qty_kg",
   "references_section",
   "operation_row",
   "production_job",
   "references_col_2",
   "created_from",
+  "released_from_plan_entry",
   "references_col_3",
+  "released_from_production_job",
   "remarks"
  ],
  "fields": [
@@ -123,9 +127,23 @@
    "read_only": 1
   },
   {
+   "fieldname": "released_qty_meter",
+   "fieldtype": "Float",
+   "label": "Released Qty Meter",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
    "fieldname": "planned_kg",
    "fieldtype": "Float",
    "label": "Planned Kg",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_qty_kg",
+   "fieldtype": "Float",
+   "label": "Released Qty Kg",
    "precision": "6",
    "read_only": 1
   },
@@ -136,7 +154,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Pending\nPlanned\nIn Progress\nCompleted\nOn Hold\nCancelled"
+   "options": "Pending\nReady\nPlanned\nIn Progress\nCompleted\nOn Hold\nCancelled"
   },
   {
    "default": "Normal",
@@ -207,6 +225,20 @@
    "fieldname": "created_from",
    "fieldtype": "Data",
    "label": "Created From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_from_plan_entry",
+   "fieldtype": "Link",
+   "label": "Released From Plan Entry",
+   "options": "SmartEdge Production Plan Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_from_production_job",
+   "fieldtype": "Link",
+   "label": "Released From Production Job",
+   "options": "SmartEdge Production Job",
    "read_only": 1
   }
  ],

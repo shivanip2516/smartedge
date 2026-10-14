@@ -8,28 +8,30 @@
   "job_section",
   "naming_series",
   "final_eb_bom_generator",
+  "plan_entry",
   "company",
   "job_col_2",
-  "status",
-  "workstation",
-  "plan_entry",
-  "job_col_3",
   "operation",
-  "shift",
-  "timing_section",
+  "workstation",
+  "status",
+  "job_col_3",
   "planned_start",
-  "actual_start",
-  "timing_col_2",
   "planned_end",
-  "actual_end",
-  "timing_col_3",
   "planned_duration_hours",
+  "timing_section",
+  "actual_start",
+  "actual_end",
+  "timing_col_2",
   "actual_duration_hours",
+  "timing_col_3",
+  "productive_elapsed_seconds",
+  "current_timer_start",
   "execution_section",
   "operator_employee",
-  "supervisor_employee",
-  "execution_col_2",
   "operator_name",
+  "shift",
+  "execution_col_2",
+  "supervisor_employee",
   "supervisor_name",
   "execution_col_3",
   "operator_designation",
@@ -42,11 +44,18 @@
   "actual_qty_meter",
   "actual_qty_kg",
   "quantity_col_3",
+  "completion_type",
+  "remaining_qty_meter",
+  "remaining_qty_kg",
+  "released_qty_meter",
+  "released_qty_kg",
+  "released_to_plan_entry",
   "good_qty",
   "quality_section",
   "rejected_qty",
   "quality_col_2",
   "rework_qty",
+  "quality_col_3",
   "scrap_section",
   "usable_scrap",
   "scrap_col_2",
@@ -55,6 +64,13 @@
   "downtime_minutes",
   "downtime_col_2",
   "downtime_reason",
+  "downtime_table_section",
+  "downtime_events",
+  "references_section",
+  "released_to_plan_entry",
+  "manufacturing_stock_entry",
+  "stock_posted_qty",
+  "references_col_2",
   "operator"
  ],
  "fields": [
@@ -118,12 +134,14 @@
   {
    "fieldname": "actual_start",
    "fieldtype": "Datetime",
-   "label": "Actual Start"
+   "label": "Actual Start",
+   "read_only": 1
   },
   {
    "fieldname": "actual_end",
    "fieldtype": "Datetime",
-   "label": "Actual End"
+   "label": "Actual End",
+   "read_only": 1
   },
   {
    "fieldname": "operator",
@@ -166,6 +184,48 @@
    "precision": "6"
   },
   {
+   "fieldname": "completion_type",
+   "fieldtype": "Select",
+   "label": "Completion Type",
+   "options": "\nFull Completion\nPartial Completion",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remaining_qty_meter",
+   "fieldtype": "Float",
+   "label": "Remaining Qty Meter",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remaining_qty_kg",
+   "fieldtype": "Float",
+   "label": "Remaining Qty Kg",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_qty_meter",
+   "fieldtype": "Float",
+   "label": "Released Qty Meter",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_qty_kg",
+   "fieldtype": "Float",
+   "label": "Released Qty Kg",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_to_plan_entry",
+   "fieldtype": "Link",
+   "label": "Released To Plan Entry",
+   "options": "SmartEdge Production Plan Entry",
+   "read_only": 1
+  },
+  {
    "fieldname": "good_qty",
    "fieldtype": "Float",
    "label": "Good Qty",
@@ -199,12 +259,20 @@
    "fieldname": "downtime_minutes",
    "fieldtype": "Float",
    "label": "Downtime Minutes",
-   "precision": "2"
+   "precision": "2",
+   "read_only": 1
   },
   {
    "fieldname": "downtime_reason",
    "fieldtype": "Small Text",
-   "label": "Downtime Reason"
+   "label": "Downtime Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "downtime_events",
+   "fieldtype": "Table",
+   "label": "Downtime Events",
+   "options": "SmartEdge Production Downtime"
   },
   {
    "default": "Draft",
@@ -219,7 +287,7 @@
   {
    "fieldname": "job_section",
    "fieldtype": "Section Break",
-   "label": "Job"
+   "label": "Job & Planning"
   },
   {
    "fieldname": "timing_section",
@@ -229,7 +297,7 @@
   {
    "fieldname": "execution_section",
    "fieldtype": "Section Break",
-   "label": "Execution"
+   "label": "Employee / Shift"
   },
   {
    "fieldname": "quantity_section",
@@ -288,12 +356,43 @@
    "fieldtype": "Column Break"
   },
   {
+   "fieldname": "quality_col_3",
+   "fieldtype": "Column Break"
+  },
+  {
    "fieldname": "scrap_col_2",
    "fieldtype": "Column Break"
   },
   {
    "fieldname": "downtime_col_2",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "downtime_table_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "references_section",
+   "fieldtype": "Section Break",
+   "label": "References"
+  },
+  {
+   "fieldname": "references_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturing_stock_entry",
+   "fieldtype": "Link",
+   "label": "Manufacturing Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_posted_qty",
+   "fieldtype": "Float",
+   "label": "Stock Posted Qty",
+   "precision": "6",
+   "read_only": 1
   },
   {
    "fieldname": "company",
@@ -355,6 +454,20 @@
    "fieldtype": "Float",
    "label": "Actual Duration (Hours)",
    "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "productive_elapsed_seconds",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Productive Elapsed Seconds",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_timer_start",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Current Timer Start",
    "read_only": 1
   },
   {

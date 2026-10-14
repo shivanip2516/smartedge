@@ -45,7 +45,7 @@ function add_job_actions(frm) {
 		frm.add_custom_button(__("Start Job"), () => call_job_action(frm, "start_job"), __("Actions"));
 	}
 	if (frm.doc.status === "In Progress") {
-		frm.add_custom_button(__("Pause"), () => call_job_action(frm, "pause_job"), __("Actions"));
+		frm.add_custom_button(__("Pause"), () => open_pause_dialog(frm), __("Actions"));
 		frm.add_custom_button(__("Complete Job"), () => call_job_action(frm, "complete_job"), __("Actions"));
 	}
 	if (frm.doc.status === "Paused") {
@@ -57,6 +57,36 @@ function add_job_actions(frm) {
 async function call_job_action(frm, method) {
 	await frm.call(method);
 	await frm.reload_doc();
+}
+
+function open_pause_dialog(frm) {
+	const dialog = new frappe.ui.Dialog({
+		title: __("Pause Production"),
+		fields: [
+			{ fieldtype: "Data", fieldname: "production_job", label: __("Production Job"), read_only: 1, default: frm.doc.name },
+			{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: frm.doc.operation },
+			{ fieldtype: "Data", fieldname: "operator_name", label: __("Employee"), read_only: 1, default: frm.doc.operator_name || "" },
+			{
+				fieldtype: "Link",
+				fieldname: "downtime_reason",
+				label: __("Downtime Reason"),
+				options: "SmartEdge Downtime Reason",
+				reqd: 1,
+				get_query: () => ({ filters: { disabled: 0 } }),
+			},
+			{ fieldtype: "Small Text", fieldname: "downtime_remarks", label: __("Remarks") },
+		],
+		primary_action_label: __("Confirm Pause"),
+		primary_action: async (values) => {
+			await frm.call("pause_job", {
+				downtime_reason: values.downtime_reason,
+				downtime_remarks: values.downtime_remarks,
+			});
+			dialog.hide();
+			await frm.reload_doc();
+		},
+	});
+	dialog.show();
 }
 
 function set_operator_hint(frm) {
