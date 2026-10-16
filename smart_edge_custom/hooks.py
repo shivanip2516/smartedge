@@ -204,9 +204,11 @@ doc_events = {
 # ------------------------------
 #
 # Specify custom mixins to extend the standard doctype controller.
-# extend_doctype_class = {
-# 	"Task": "smart_edge_custom.custom.task.CustomTaskMixin"
-# }
+extend_doctype_class = {
+	"Job Card": ["smart_edge_custom.manufacturing.workstation_capacity.SmartEdgeJobCardCapacityMixin"],
+	"Work Order": ["smart_edge_custom.manufacturing.workstation_capacity.SmartEdgeWorkOrderCapacityMixin"],
+	"Workstation": ["smart_edge_custom.manufacturing.workstation_capacity.SmartEdgeWorkstationCapacityMixin"],
+}
 
 # Overriding Methods
 # ------------------------------

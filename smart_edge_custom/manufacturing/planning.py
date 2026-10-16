@@ -5,6 +5,12 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, get_time, getdate, now_datetime, nowdate
 
+from smart_edge_custom.manufacturing.workstation_capacity import (
+	get_capacity,
+	get_reserved_work_order_count,
+	lock_workstation,
+)
+
 PLANNING_STATUSES = ("Pending", "Ready", "Planned", "In Progress", "Completed", "On Hold", "Cancelled")
 
 CATEGORY_COLORS = {
@@ -738,12 +744,33 @@ def get_sequence_predecessors(entry):
 
 
 def validate_capacity(workstation, plan_entry, start_dt, end_dt, override=False):
+	lock_workstation(workstation)
 	capacity_hours = get_workstation_capacity_hours(workstation, getdate(start_dt))
 	planned = get_workstation_planned_minutes(workstation, getdate(start_dt), plan_entry)
 	new_minutes = (end_dt - start_dt).total_seconds() / 60
 	overlaps = get_overlapping_entries(workstation, start_dt, end_dt, plan_entry)
 	if overlaps and not override:
-		frappe.throw(_("{0} already has a planned entry in this slot: {1}.").format(workstation, ", ".join(overlaps)))
+		occupied = get_reserved_work_order_count(workstation) + len(overlaps)
+		maximum = get_capacity(workstation)
+		if occupied >= maximum:
+			frappe.throw(
+				_("""
+				<p><b>Workstation Job Capacity Exceeded</b></p>
+				<p>
+					Workstation: {0}<br>
+					Maximum Job Capacity: {1}<br>
+					Occupied Capacity: {2}<br>
+					Available Capacity: {3}
+				</p>
+				<p>Cannot plan or start another production job because this Workstation has reached its maximum Job Capacity.</p>
+				""").format(
+					frappe.bold(workstation),
+					maximum,
+					occupied,
+					max(maximum - occupied, 0),
+				),
+				title=_("Workstation Job Capacity Exceeded"),
+			)
 	if capacity_hours and planned + new_minutes > capacity_hours * 60 and not override:
 		over_by = (planned + new_minutes - capacity_hours * 60) / 60
 		frappe.throw(_("Capacity exceeded by {0} hours.").format(flt(over_by, 2)))
@@ -1545,8 +1572,10 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	workstation = workstation or entry.workstation
 	validate_selected_workstation(entry, workstation)
 	validate_start_eligible(entry)
-	if workstation != entry.workstation and entry.planned_start_datetime and entry.planned_end_datetime:
+	if entry.planned_start_datetime and entry.planned_end_datetime:
 		validate_capacity(workstation, entry.name, entry.planned_start_datetime, entry.planned_end_datetime)
+	else:
+		validate_workstation_job_capacity(workstation, plan_entry=entry.name)
 	lock_plan_entry(plan_entry)
 	entry.reload()
 	validate_start_eligible(entry)
