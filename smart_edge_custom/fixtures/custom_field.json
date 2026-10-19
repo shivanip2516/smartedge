@@ -274,9 +274,45 @@
         "fieldname": "custom_process_2",
         "fieldtype": "Select",
         "label": "Process",
-        "insert_after": "uom",
+        "insert_after": "custom_batch",
         "options": "\nExtrusion\nExtrusion Online Printing\nOffline Printing",
         "reqd": 0,
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "BOM-custom_batch",
+        "dt": "BOM",
+        "fieldname": "custom_batch",
+        "fieldtype": "Int",
+        "label": "Batch",
+        "insert_after": "uom",
+        "default": "1",
+        "read_only": 1,
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Work Order-custom_no_of_batches",
+        "dt": "Work Order",
+        "fieldname": "custom_no_of_batches",
+        "fieldtype": "Int",
+        "label": "No. of Batches",
+        "insert_after": "company",
+        "default": "1",
+        "non_negative": 1,
+        "module": "smart_edge_custom"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Work Order-custom_weight_per_batch",
+        "dt": "Work Order",
+        "fieldname": "custom_weight_per_batch",
+        "fieldtype": "Float",
+        "label": "Weight per Batch",
+        "insert_after": "custom_no_of_batches",
+        "read_only": 1,
+        "non_negative": 1,
         "module": "smart_edge_custom"
     },
     {

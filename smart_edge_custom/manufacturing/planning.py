@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, get_time, getdate, now_datetime, nowdate
 
+from smart_edge_custom.manufacturing.fifo_batch_selection import get_kg_to_stock_factor
 from smart_edge_custom.manufacturing.workstation_capacity import (
 	get_capacity,
 	get_reserved_work_order_count,
@@ -1013,8 +1014,9 @@ def create_final_manufacturing_stock_entry(doc):
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
 
 	components = get_final_stock_components(doc, finished_qty, source_warehouse)
+	component_batch_nos = get_final_component_batch_nos(doc, components)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
-	validate_batch_control([*components, finished_row])
+	validate_batch_control([finished_row])
 
 	stock_entry = frappe.new_doc("Stock Entry")
 	stock_entry.purpose = "Manufacture"
@@ -1029,6 +1031,8 @@ def create_final_manufacturing_stock_entry(doc):
 		stock_entry.append("items", component)
 	stock_entry.append("items", finished_row)
 	stock_entry.insert()
+	set_final_component_batch_bundles(stock_entry, component_batch_nos)
+	stock_entry.save()
 	stock_entry.submit()
 	link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry.name, finished_qty)
 	return stock_entry.name
@@ -1218,8 +1222,9 @@ def validate_final_completion_stock_entry_setup(job, completion_type):
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
 	components = get_final_stock_components(doc, finished_qty, source_warehouse)
+	get_final_component_batch_nos(doc, components)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
-	validate_batch_control([*components, finished_row])
+	validate_batch_control([finished_row])
 
 
 def get_final_finished_jobs(production):
@@ -1276,6 +1281,121 @@ def get_final_stock_components(doc, finished_qty, source_warehouse):
 			}
 		)
 	return components
+
+
+def get_final_component_batch_nos(doc, components):
+	batch_nos_by_row = []
+	for index, (label, table_field, batch_count_field, total_field) in enumerate(
+		(
+			(_("Compound"), "compound_batch_allocations", "compound_consumption_batches", "compound_total_required"),
+			(
+				_("Base Colour / Shade"),
+				"shade_batch_allocations",
+				"shade_consumption_batches",
+				"shade_total_required",
+			),
+		)
+	):
+		component = components[index]
+		item = validate_stock_item(component["item_code"])
+		if not item.has_batch_no:
+			batch_nos_by_row.append({})
+			continue
+
+		allocations = list(doc.get(table_field) or [])
+		expected_count = cint(doc.get(batch_count_field))
+		if expected_count <= 0 or len(allocations) != expected_count:
+			frappe.throw(
+				_("{0} FIFO batch allocation is missing or stale. Refresh the batch allocation before posting stock.").format(
+					label
+				)
+			)
+
+		batch_nos = [row.batch_no for row in allocations if row.batch_no]
+		if len(batch_nos) != expected_count or len(set(batch_nos)) != expected_count:
+			frappe.throw(_("{0} FIFO allocation must contain unique inventory Batches.").format(label))
+
+		planned_qty = flt(doc.get(total_field))
+		selected_qty = sum(flt(row.selected_qty) for row in allocations)
+		if abs(planned_qty - selected_qty) > 0.000001:
+			frappe.throw(
+				_("{0} FIFO allocation quantity does not match the planned consumption quantity.").format(label)
+			)
+
+		batch_nos_by_row.append(
+			get_revalidated_consumption_batches(
+				component,
+				allocations,
+				label,
+				item.stock_uom,
+			)
+		)
+
+	return batch_nos_by_row
+
+
+def get_revalidated_consumption_batches(component, allocations, label, stock_uom):
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	item_code = component["item_code"]
+	warehouse = component["s_warehouse"]
+	conversion_factor = get_kg_to_stock_factor(item_code, stock_uom)
+	available_rows = get_batch_qty(item_code=item_code, warehouse=warehouse) or []
+	available_by_batch = {row.batch_no: flt(row.qty) for row in available_rows}
+
+	for allocation in allocations:
+		if allocation.item_code != item_code or allocation.warehouse != warehouse:
+			frappe.throw(_("{0} FIFO allocation Item or Warehouse has changed. Refresh the allocation.").format(label))
+		selected_stock_qty = flt(allocation.selected_qty) * conversion_factor
+		if available_by_batch.get(allocation.batch_no, 0) + 0.000001 < selected_stock_qty:
+			frappe.throw(
+				_("Selected Batch {0} no longer has sufficient stock for {1}. Refresh the FIFO allocation.").format(
+					frappe.bold(allocation.batch_no), label
+				)
+			)
+
+	remaining_kg = flt(component["qty"])
+	batches = {}
+	for allocation in allocations:
+		if remaining_kg <= 0.000001:
+			break
+		consume_kg = min(flt(allocation.selected_qty), remaining_kg)
+		batches[allocation.batch_no] = consume_kg * conversion_factor
+		remaining_kg -= consume_kg
+
+	if remaining_kg > 0.000001:
+		frappe.throw(
+			_("{0} FIFO allocation is insufficient for the actual consumption quantity. Refresh the allocation.").format(
+				label
+			)
+		)
+	return batches
+
+
+def set_final_component_batch_bundles(stock_entry, batch_nos_by_row):
+	from erpnext.stock.serial_batch_bundle import SerialBatchCreation
+
+	for index, batch_nos in enumerate(batch_nos_by_row):
+		if not batch_nos:
+			continue
+		row = stock_entry.items[index]
+		bundle = SerialBatchCreation(
+			{
+				"item_code": row.item_code,
+				"warehouse": row.s_warehouse,
+				"posting_date": stock_entry.posting_date,
+				"posting_time": stock_entry.posting_time,
+				"voucher_type": stock_entry.doctype,
+				"voucher_no": stock_entry.name,
+				"voucher_detail_no": row.name,
+				"qty": flt(row.transfer_qty) * -1,
+				"type_of_transaction": "Outward",
+				"company": stock_entry.company,
+				"do_not_submit": True,
+			}
+		).make_serial_and_batch_bundle(batch_nos=batch_nos)
+		row.serial_and_batch_bundle = bundle.name
+		row.use_serial_batch_fields = 0
 
 
 def get_final_component_consumption_per_meter(doc, component):

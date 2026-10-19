@@ -15,6 +15,7 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		show_status(frm);
 		render_configurator_summary(frm);
 		frm.add_custom_button(__("Refresh Route"), () => refresh_preview(frm, true));
+		frm.add_custom_button(__("Refresh Batch Allocation"), () => refresh_preview(frm, true, true));
 		frm.add_custom_button(__("Send to Planning"), () => send_to_planning(frm), __("Actions"));
 	},
 
@@ -132,19 +133,26 @@ async function fetch_finished_item_details(frm) {
 	}
 }
 
-async function refresh_preview(frm, show_alert = false) {
+async function refresh_preview(frm, show_alert = false, refresh_batch_allocations = false) {
 	if (!frm.doc.finished_item) {
 		return;
 	}
 
+	const request_id = (frm.__preview_request_id || 0) + 1;
+	frm.__preview_request_id = request_id;
 	const response = await frappe.call({
 		method: "smart_edge_custom.manufacturing.final_bom_generator.preview_generator",
 		args: {
-			doc: frm.doc,
+			doc: refresh_batch_allocations
+				? { ...frm.doc, _refresh_batch_allocations: 1 }
+				: frm.doc,
 		},
 		freeze: show_alert,
 		freeze_message: __("Calculating BOM preview..."),
 	});
+	if (request_id !== frm.__preview_request_id) {
+		return;
+	}
 
 	apply_preview(frm, response.message || {});
 	show_status(frm);
@@ -199,6 +207,8 @@ function apply_preview(frm, preview) {
 	}, 0);
 
 	set_child_rows(frm, "material_preview", preview.materials || []);
+	set_child_rows(frm, "compound_batch_allocations", preview.compound_batch_allocations || []);
+	set_child_rows(frm, "shade_batch_allocations", preview.shade_batch_allocations || []);
 	set_child_rows(frm, "additional_costs", preview.additional_costs || []);
 	set_child_rows(frm, "operation_preview", preview.operations || []);
 	render_configurator_summary(frm, preview.route_summary || {});

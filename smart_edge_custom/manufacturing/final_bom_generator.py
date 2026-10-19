@@ -5,8 +5,19 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_allocations
+
 MATERIAL_TOLERANCE = 0.00001
 PER_MM_PER_METER = "Per mm per meter"
+LOCKED_BATCH_ALLOCATION_STATUSES = {
+	"Partially Planned",
+	"Planned",
+	"In Production",
+	"Completed",
+	"On Hold",
+	"Cancelled",
+}
+IMMUTABLE_BATCH_ALLOCATION_STATUSES = {"Completed", "Cancelled"}
 
 
 class InsufficientMaterialQuantityError(frappe.ValidationError):
@@ -283,6 +294,64 @@ def calculate_component_requirements(doc):
 	for fieldname, value in legacy_consumption.items():
 		set_doc_value(doc, fieldname, value)
 	return components
+
+
+def calculate_batch_allocations(doc, materials):
+	allocations = {}
+	for component_type, table_field, batch_field, master_doctype, master_name, label in (
+		(
+			"Compound",
+			"compound_batch_allocations",
+			"compound_consumption_batches",
+			"Compound",
+			doc.get("compound"),
+			"Compound",
+		),
+		(
+			"Base Colour / Shade",
+			"shade_batch_allocations",
+			"shade_consumption_batches",
+			"Base Colour",
+			doc.get("base_colour"),
+			"Shade",
+		),
+	):
+		existing = [allocation_row_as_dict(row) for row in doc.get(table_field) or []]
+		force_refresh = bool(doc.get("_refresh_batch_allocations"))
+		if force_refresh and doc.get("status") in IMMUTABLE_BATCH_ALLOCATION_STATUSES:
+			frappe.throw(_("Batch allocations cannot be refreshed for a {0} production record.").format(doc.get("status")))
+		if doc.get("status") in LOCKED_BATCH_ALLOCATION_STATUSES and not force_refresh:
+			allocations[table_field] = existing
+			continue
+
+		material = next((row for row in materials if row.get("component_type") == component_type), {})
+		batch_count = validate_batch_count(doc.get(batch_field), label)
+		if not material or not batch_count:
+			allocations[table_field] = []
+			continue
+
+		batch_weight = get_prepared_component_batch_weight(master_doctype, master_name, label)
+		allocations[table_field] = get_fifo_batch_allocations(
+			material.get("item_code"),
+			doc.get("source_warehouse"),
+			batch_count,
+			batch_weight,
+			label,
+		)
+
+	return allocations
+
+
+def allocation_row_as_dict(row):
+	return {
+		"item_code": row.get("item_code"),
+		"batch_no": row.get("batch_no"),
+		"warehouse": row.get("warehouse"),
+		"receipt_datetime": row.get("receipt_datetime"),
+		"available_qty": flt(row.get("available_qty")),
+		"selected_qty": flt(row.get("selected_qty")),
+		"uom": row.get("uom") or "Kg",
+	}
 
 
 def uses_batch_consumption(doc):
@@ -658,6 +727,7 @@ def calculate_bom_preview(source):
 	apply_process_defaults(doc)
 
 	materials = calculate_component_requirements(doc)
+	batch_allocations = calculate_batch_allocations(doc, materials)
 	component_weight = get_component_weight_kg(materials)
 	weight = calculate_weight(
 		doc.get("thickness_mm"),
@@ -739,6 +809,7 @@ def calculate_bom_preview(source):
 		else "Material Weight Mismatch",
 		"material_weight_difference_kg_per_meter": difference,
 		"materials": materials,
+		**batch_allocations,
 		"additional_costs": additional_costs,
 		"operations": operations,
 		"compound_cost": compound_required.get("amount", 0),
@@ -872,6 +943,13 @@ def apply_preview_to_doc(doc, preview):
 	doc.set("operation_preview", [])
 	for row in preview.get("operations") or []:
 		doc.append("operation_preview", row)
+
+	for table_field in ("compound_batch_allocations", "shade_batch_allocations"):
+		if not doc.meta.has_field(table_field):
+			continue
+		doc.set(table_field, [])
+		for row in preview.get(table_field) or []:
+			doc.append(table_field, row)
 
 
 def validate_ready_for_planning(doc):

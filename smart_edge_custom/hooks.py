@@ -58,6 +58,7 @@ doctype_js = {
 	"BOM": "public/js/bom.js",
 	"Compound": "public/js/compound.js",
 	"Item": "public/js/item.js",
+	"Work Order": "public/js/work_order.js",
 }
 doctype_list_js = {
 	"Base Colour": "public/js/base_colour_list.js",
@@ -169,8 +170,17 @@ doc_events = {
 	"Base Colour": {
 		"validate": "smart_edge_custom.base_colour.validate_base_colour",
 	},
+	"BOM": {
+		"validate": "smart_edge_custom.manufacturing.batch_manufacturing.validate_bom",
+	},
 	"Item": {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
+	},
+	"Stock Entry": {
+		"before_submit": "smart_edge_custom.manufacturing.batch_manufacturing.allocate_finished_batches",
+	},
+	"Work Order": {
+		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.set_work_order_batch_quantity",
 	},
 }
 

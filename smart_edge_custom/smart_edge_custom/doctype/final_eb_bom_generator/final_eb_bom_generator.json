@@ -32,10 +32,12 @@
   "prepared_components_section",
   "compound",
   "compound_consumption_batches",
+  "compound_batch_allocations",
   "source_warehouse",
   "components_col_2",
   "base_colour",
   "shade_consumption_batches",
+  "shade_batch_allocations",
   "material_weight_difference_kg_per_meter",
   "components_col_3",
   "compound_item",
@@ -289,6 +291,13 @@
    "non_negative": 1
   },
   {
+   "fieldname": "compound_batch_allocations",
+   "fieldtype": "Table",
+   "label": "Selected Compound Batches (FIFO)",
+   "options": "EB BOM Batch Allocation",
+   "read_only": 1
+  },
+  {
    "fieldname": "compound_total_required",
    "fieldtype": "Float",
    "hidden": 1,
@@ -338,6 +347,13 @@
    "fieldtype": "Int",
    "label": "Shade Consumption in Batches",
    "non_negative": 1
+  },
+  {
+   "fieldname": "shade_batch_allocations",
+   "fieldtype": "Table",
+   "label": "Selected Shade Batches (FIFO)",
+   "options": "EB BOM Batch Allocation",
+   "read_only": 1
   },
   {
    "fieldname": "shade_total_required",

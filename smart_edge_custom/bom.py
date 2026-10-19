@@ -4,6 +4,8 @@ from frappe.query_builder import Field
 from frappe.query_builder.functions import IfNull
 from frappe.utils import parse_json, today
 
+from smart_edge_custom.manufacturing.batch_manufacturing import get_item_batch_details
+
 
 COMPOUND_ITEM_GROUP = "Compounds"
 BASE_COLOUR_ITEM_GROUP = "Base Colour"
@@ -90,15 +92,20 @@ def get_process_items(doctype, txt, searchfield, start, page_len, filters):
 @frappe.whitelist()
 def get_compound_recipe(item_code):
 	if not item_code:
-		return {"is_compound": False, "rows": []}
+		return {"is_compound": False, "rows": [], **get_item_batch_details(item_code)}
 
 	item_group = frappe.db.get_value("Item", item_code, "item_group")
 	if item_group != COMPOUND_ITEM_GROUP:
-		return {"is_compound": False, "rows": []}
+		return {"is_compound": False, "rows": [], **get_item_batch_details(item_code)}
 
 	compound = frappe.db.get_value("Compound", {"compound_name": item_code}, "name")
 	if not compound:
-		return {"is_compound": True, "recipe_found": False, "rows": []}
+		return {
+			"is_compound": True,
+			"recipe_found": False,
+			"rows": [],
+			**get_item_batch_details(item_code),
+		}
 
 	rows = []
 	for row in frappe.get_all(
@@ -118,21 +125,32 @@ def get_compound_recipe(item_code):
 			}
 		)
 
-	return {"is_compound": True, "recipe_found": True, "compound": compound, "rows": rows}
+	return {
+		"is_compound": True,
+		"recipe_found": True,
+		"compound": compound,
+		"rows": rows,
+		**get_item_batch_details(item_code),
+	}
 
 
 @frappe.whitelist()
 def get_base_colour_recipe(item_code):
 	if not item_code:
-		return {"is_base_colour": False, "rows": []}
+		return {"is_base_colour": False, "rows": [], **get_item_batch_details(item_code)}
 
 	item_group = frappe.db.get_value("Item", item_code, "item_group")
 	if item_group != BASE_COLOUR_ITEM_GROUP:
-		return {"is_base_colour": False, "rows": []}
+		return {"is_base_colour": False, "rows": [], **get_item_batch_details(item_code)}
 
 	base_colour = frappe.db.get_value("Base Colour", {"colour_name": item_code}, "name")
 	if not base_colour:
-		return {"is_base_colour": True, "recipe_found": False, "rows": []}
+		return {
+			"is_base_colour": True,
+			"recipe_found": False,
+			"rows": [],
+			**get_item_batch_details(item_code),
+		}
 
 	rows = []
 	for row in frappe.get_all(
@@ -152,4 +170,15 @@ def get_base_colour_recipe(item_code):
 			}
 		)
 
-	return {"is_base_colour": True, "recipe_found": True, "base_colour": base_colour, "rows": rows}
+	return {
+		"is_base_colour": True,
+		"recipe_found": True,
+		"base_colour": base_colour,
+		"rows": rows,
+		**get_item_batch_details(item_code),
+	}
+
+
+@frappe.whitelist()
+def get_bom_batch_details(item_code):
+	return get_item_batch_details(item_code)

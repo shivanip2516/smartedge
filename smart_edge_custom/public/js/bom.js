@@ -2,6 +2,9 @@ frappe.ui.form.on("BOM", {
 	setup(frm) {
 		set_item_code_query(frm);
 	},
+	refresh(frm) {
+		refresh_batch_field(frm);
+	},
 
 	item(frm) {
 		load_compound_recipe(frm);
@@ -57,6 +60,7 @@ async function load_compound_recipe(frm) {
 		},
 	});
 	const recipe = response.message || {};
+	await apply_batch_recipe_details(frm, recipe);
 
 	if (!recipe.is_compound) {
 		await load_base_colour_recipe(frm);
@@ -104,6 +108,7 @@ async function load_base_colour_recipe(frm) {
 		},
 	});
 	const recipe = response.message || {};
+	await apply_batch_recipe_details(frm, recipe);
 
 	if (!recipe.is_base_colour) {
 		return;
@@ -140,6 +145,37 @@ async function load_base_colour_recipe(frm) {
 		message: __("Base Colour recipe loaded into BOM Items."),
 		indicator: "green",
 	});
+}
+
+async function refresh_batch_field(frm) {
+	if (!frm.doc.item) {
+		set_batch_field_properties(frm, false);
+		return;
+	}
+
+	const response = await frappe.call({
+		method: "smart_edge_custom.bom.get_bom_batch_details",
+		args: { item_code: frm.doc.item },
+	});
+	set_batch_field_properties(frm, Boolean(response.message?.is_batch_manufacturing_item));
+}
+
+async function apply_batch_recipe_details(frm, details) {
+	const batch_controlled = Boolean(details.is_batch_manufacturing_item);
+	set_batch_field_properties(frm, batch_controlled);
+
+	if (batch_controlled) {
+		await frm.set_value("custom_batch", 1);
+	}
+
+	if (details.is_batch_manufacturing_item && flt(details.output_qty) > 0) {
+		await frm.set_value("quantity", flt(details.output_qty));
+	}
+}
+
+function set_batch_field_properties(frm, enabled) {
+	frm.toggle_display("custom_batch", enabled);
+	frm.toggle_reqd("custom_batch", enabled);
 }
 
 async function add_recipe_rows(frm, items) {
