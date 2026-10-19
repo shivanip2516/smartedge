@@ -108,7 +108,55 @@ def get_work_order_batch_details(item_code, bom_no):
 
 
 def calculate_manufacturing_quantity(number_of_batches, weight_per_batch):
-	return cint(number_of_batches) * flt(weight_per_batch)
+	batches = validate_number_of_batches(number_of_batches)
+	weight_per_batch = flt(weight_per_batch)
+	if weight_per_batch <= 0:
+		frappe.throw(_("Weight per Batch must be greater than zero."))
+	return batches * weight_per_batch
+
+
+def validate_number_of_batches(number_of_batches, label="No. of Batches"):
+	value = Decimal(str(number_of_batches or 0))
+	if value < 1 or value != value.to_integral_value():
+		frappe.throw(_("{0} must be a positive whole number.").format(label))
+	return int(value)
+
+
+@frappe.whitelist()
+def make_batch_work_order(
+	bom_no,
+	item,
+	number_of_batches,
+	company=None,
+	project=None,
+	use_multi_level_bom=None,
+):
+	details = get_work_order_batch_details(item, bom_no)
+	if not details["applicable"]:
+		frappe.throw(
+			_("Batch-wise Work Order creation is not applicable to Item {0} and BOM {1}.").format(
+				item, bom_no
+			)
+		)
+
+	batches = validate_number_of_batches(number_of_batches)
+	weight_per_batch = flt(details["weight_per_batch"])
+	if weight_per_batch <= 0:
+		frappe.throw(_("Weight per Batch must be greater than zero."))
+
+	from erpnext.manufacturing.doctype.work_order.work_order import make_work_order
+
+	work_order = make_work_order(
+		bom_no=bom_no,
+		item=item,
+		qty=calculate_manufacturing_quantity(batches, weight_per_batch),
+		company=company,
+		project=project,
+		use_multi_level_bom=use_multi_level_bom,
+	)
+	work_order.custom_no_of_batches = batches
+	work_order.custom_weight_per_batch = weight_per_batch
+	return work_order
 
 
 def _is_legacy_draft(doc):
@@ -125,25 +173,45 @@ def _is_legacy_draft(doc):
 
 
 def set_work_order_batch_quantity(doc, method=None):
-	details = get_work_order_batch_details(doc.production_item, doc.bom_no)
-	if not details["applicable"] or _is_legacy_draft(doc):
+	if cint(doc.docstatus) != 0:
 		return
 
+	item = get_item_batch_details(doc.production_item)
+	if not item["is_batch_manufacturing_item"] or _is_legacy_draft(doc):
+		return
+
+	details = get_work_order_batch_details(doc.production_item, doc.bom_no)
+	if not details["applicable"]:
+		frappe.throw(
+			_("BOM {0} must be an active, submitted one-batch BOM for Item {1}.").format(
+				doc.bom_no or "", doc.production_item
+			)
+		)
+
 	weight = flt(details["weight_per_batch"])
-	batches = cint(doc.get("custom_no_of_batches"))
+	if weight <= 0:
+		frappe.throw(_("Weight per Batch must be greater than zero."))
+	batches = doc.get("custom_no_of_batches")
 
 	# Work Orders created by an integration may provide only the standard planned
 	# quantity. Preserve that supported path when it is an exact number of batches.
-	if doc.is_new() and flt(doc.qty) > weight and batches in (0, 1):
-		inferred = get_complete_batch_count(doc.qty, weight, "Work Order quantity")
-		batches = inferred
+	if doc.is_new() and flt(doc.qty) > weight and flt(batches) in (0, 1):
+		batches = get_complete_batch_count(doc.qty, weight, "Work Order quantity")
 
-	if batches < 1:
-		frappe.throw(_("No. of Batches must be at least 1."))
+	batches = validate_number_of_batches(batches)
+	expected_qty = calculate_manufacturing_quantity(batches, weight)
+	precision = doc.precision("qty")
+	provided_qty = flt(doc.qty, precision)
+	if provided_qty not in (0, 1) and provided_qty != flt(expected_qty, precision):
+		frappe.throw(
+			_("Quantity to Manufacture must be {0}, calculated from {1} batches × {2} per batch.").format(
+				frappe.bold(flt(expected_qty, precision)), batches, flt(weight, precision)
+			)
+		)
 
 	doc.custom_no_of_batches = batches
 	doc.custom_weight_per_batch = weight
-	doc.qty = calculate_manufacturing_quantity(batches, weight)
+	doc.qty = expected_qty
 
 
 def get_complete_batch_count(quantity, weight_per_batch, label="Produced quantity"):
@@ -275,3 +343,25 @@ def allocate_finished_batches(doc, method=None):
 			_validate_existing_bundle(row, batch_count, weight_per_batch)
 		else:
 			_make_finished_bundle(doc, row, batch_count, weight_per_batch)
+
+
+def validate_batch_stock_entry_quantity(doc, method=None):
+	if doc.purpose not in {"Material Transfer for Manufacture", "Manufacture"} or not doc.work_order:
+		return
+
+	work_order = frappe.db.get_value(
+		"Work Order",
+		doc.work_order,
+		["production_item", "custom_weight_per_batch", "docstatus"],
+		as_dict=True,
+	)
+	if not work_order or work_order.docstatus != 1 or flt(work_order.custom_weight_per_batch) <= 0:
+		return
+	if not get_item_batch_details(work_order.production_item)["is_batch_manufacturing_item"]:
+		return
+
+	get_complete_batch_count(
+		doc.fg_completed_qty,
+		work_order.custom_weight_per_batch,
+		_("Quantity for {0}").format(doc.purpose),
+	)

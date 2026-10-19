@@ -190,3 +190,101 @@ async function add_recipe_rows(frm, items) {
 
 	frm.refresh_field("items");
 }
+
+frappe.provide("smart_edge_custom.batch_manufacturing");
+
+const bom_make_work_order_handlers = frappe.ui.form.get_event_handler_list("BOM", "make_work_order");
+if (
+	bom_make_work_order_handlers.length &&
+	!smart_edge_custom.batch_manufacturing.standard_bom_make_work_order
+) {
+	smart_edge_custom.batch_manufacturing.standard_bom_make_work_order =
+		bom_make_work_order_handlers[0];
+	bom_make_work_order_handlers[0] = make_batch_aware_work_order;
+}
+
+async function make_batch_aware_work_order(frm) {
+	const details = await frappe.xcall(
+		"smart_edge_custom.manufacturing.batch_manufacturing.get_work_order_batch_details",
+		{
+			item_code: frm.doc.item,
+			bom_no: frm.doc.name,
+		}
+	);
+
+	if (!details?.applicable) {
+		return smart_edge_custom.batch_manufacturing.standard_bom_make_work_order(frm);
+	}
+
+	const weight_per_batch = flt(details.weight_per_batch);
+	const stock_uom = details.stock_uom || __("Kg");
+	let dialog;
+	const update_total = () => {
+		if (!dialog) return;
+		const batches = cint(dialog.get_value("number_of_batches"));
+		dialog.set_value("total_manufacturing_quantity", flt(batches * weight_per_batch));
+	};
+
+	dialog = new frappe.ui.Dialog({
+		title: __("Create Work Order"),
+		fields: [
+			{
+				fieldname: "number_of_batches",
+				fieldtype: "Int",
+				label: __("No. of Batches"),
+				default: 1,
+				reqd: 1,
+				non_negative: 1,
+				onchange: update_total,
+			},
+			{
+				fieldname: "weight_per_batch",
+				fieldtype: "Float",
+				label: __("Weight per Batch ({0})", [stock_uom]),
+				default: weight_per_batch,
+				read_only: 1,
+			},
+			{
+				fieldname: "total_manufacturing_quantity",
+				fieldtype: "Float",
+				label: __("Total Manufacturing Quantity ({0})", [stock_uom]),
+				default: weight_per_batch,
+				read_only: 1,
+			},
+			{
+				fieldname: "use_multi_level_bom",
+				fieldtype: "Check",
+				label: __("Use Multi-Level BOM"),
+				default: frm.doc?.__onload?.use_multi_level_bom,
+				hidden: frm.doc.track_semi_finished_goods ? 1 : 0,
+			},
+		],
+		primary_action_label: __("Create"),
+		primary_action: async (values) => {
+			if (cint(values.number_of_batches) < 1) {
+				frappe.msgprint(__("No. of Batches must be at least 1."));
+				return;
+			}
+			dialog.disable_primary_action();
+			try {
+				const work_order = await frappe.xcall(
+					"smart_edge_custom.manufacturing.batch_manufacturing.make_batch_work_order",
+					{
+						bom_no: frm.doc.name,
+						item: frm.doc.item,
+						number_of_batches: values.number_of_batches,
+						company: frm.doc.company,
+						project: frm.doc.project,
+						use_multi_level_bom: values.use_multi_level_bom,
+					}
+				);
+				dialog.hide();
+				const doc = frappe.model.sync(work_order)[0];
+				frappe.set_route("Form", doc.doctype, doc.name);
+			} finally {
+				dialog.enable_primary_action();
+			}
+		},
+	});
+	dialog.show();
+}

@@ -177,6 +177,7 @@ doc_events = {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
 	},
 	"Stock Entry": {
+		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.validate_batch_stock_entry_quantity",
 		"before_submit": "smart_edge_custom.manufacturing.batch_manufacturing.allocate_finished_batches",
 	},
 	"Work Order": {
