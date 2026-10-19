@@ -602,6 +602,7 @@ def schedule_operation(
 	start_dt = combine_date_time(planned_date, planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
 	end_dt = start_dt + timedelta(hours=duration_hours)
+	validate_future_schedule(start_dt, end_dt)
 
 	validate_sequence(entry, start_dt, bool(int(override_sequence or 0)))
 	capacity_warning = validate_capacity(
@@ -664,6 +665,23 @@ def combine_date_time(date_value, time_value):
 	if isinstance(time_value, str) and len(time_value.split(":")) == 2:
 		time_value = f"{time_value}:00"
 	return get_datetime(datetime.combine(date_value, get_time(time_value or time(9, 0))))
+
+
+def validate_future_schedule(start_dt, end_dt):
+	"""Reject new or rescheduled slots that are not strictly in the future."""
+	now = now_datetime().replace(second=0, microsecond=0)
+	if start_dt <= now:
+		frappe.throw(
+			_("Production planning cannot be scheduled for a past date or time."),
+			title=_("Invalid Production Planning Schedule"),
+		)
+	if end_dt <= start_dt:
+		frappe.throw(
+			_("Invalid Production Planning Schedule")
+			+ "<br>"
+			+ _("End time must be later than the start time."),
+			title=_("Invalid Production Planning Schedule"),
+		)
 
 
 def get_entry_default_duration(entry):
@@ -1632,6 +1650,7 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	pending_quantity = get_remaining_or_planned_quantity(entry)
 	job.planned_qty_meter = pending_quantity.get("meter")
 	job.planned_qty_kg = pending_quantity.get("kg")
+	apply_released_quantity_to_job(job, entry)
 	job.operator_employee = operator_employee
 	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import get_current_shift
 
@@ -1647,6 +1666,29 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	entry.save()
 	update_generator_planning_status(entry.final_eb_bom_generator)
 	return {"production_job": job.name, "existing": 0, "requires_operator": 0}
+
+
+def apply_released_quantity_to_job(job, entry):
+	"""Seed a new operation job from the completed predecessor's released output."""
+	source_job_name = entry.get("released_from_production_job")
+	if not source_job_name:
+		return
+
+	source_job = frappe.db.get_value(
+		"SmartEdge Production Job",
+		source_job_name,
+		["actual_qty_meter", "actual_qty_kg", "good_qty", "released_qty_meter", "released_qty_kg"],
+		as_dict=True,
+	)
+	if not source_job:
+		return
+
+	# The plan entry is the release gate; never seed values from an unreleased job.
+	if not flt(entry.get("released_qty_meter")) and not flt(entry.get("released_qty_kg")):
+		return
+	job.actual_qty_meter = source_job.actual_qty_meter if flt(entry.get("released_qty_meter")) else 0
+	job.actual_qty_kg = source_job.actual_qty_kg if flt(entry.get("released_qty_kg")) else 0
+	job.good_qty = source_job.good_qty if flt(entry.get("released_qty_kg")) else 0
 
 
 def validate_start_eligible(entry):

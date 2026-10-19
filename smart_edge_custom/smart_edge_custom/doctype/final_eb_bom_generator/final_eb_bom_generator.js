@@ -357,7 +357,13 @@ function get_indicator(status) {
 async function send_to_planning(frm) {
 	await refresh_preview(frm, true);
 	await frm.save();
-	const response = await frm.call("send_to_planning");
+	const response = await frm.call({
+		method: "send_to_planning",
+		doc: frm.doc,
+		error_handlers: {
+			InsufficientMaterialQuantityError: show_insufficient_material_dialog,
+		},
+	});
 
 	if (response.message?.entries) {
 		await frm.reload_doc();
@@ -366,5 +372,79 @@ async function send_to_planning(frm) {
 			indicator: "green",
 		});
 		frappe.set_route("smartedge-production-planning");
+	}
+}
+
+function show_insufficient_material_dialog(error) {
+	const payload = get_insufficient_material_payload(error);
+	if (!payload?.shortages?.length) {
+		return;
+	}
+
+	const escape = frappe.utils.escape_html;
+	const shortages = payload.shortages;
+	const rows = shortages
+		.map((row) => {
+			const uom = escape(row.uom || "");
+			return `<tr>
+				<td><strong>${escape(row.item_name || row.item_code || "")}</strong></td>
+				<td>${escape(row.warehouse || "")}</td>
+				<td class="text-right">${format_number(row.required, 3)} ${uom}</td>
+				<td class="text-right">${format_number(row.available, 3)} ${uom}</td>
+				<td class="text-right text-danger"><strong>${format_number(row.shortage, 3)} ${uom}</strong></td>
+			</tr>`;
+		})
+		.join("");
+
+	frappe.dom.set_style(`
+		.smartedge-shortage-dialog .table { margin-bottom: 0; }
+		.smartedge-shortage-dialog th, .smartedge-shortage-dialog td { padding: 10px 12px; vertical-align: middle; }
+		.smartedge-shortage-dialog th { background: var(--subtle-fg); white-space: nowrap; }
+		.smartedge-shortage-dialog .table-responsive { border: 1px solid var(--border-color); border-radius: var(--border-radius); }
+		@media (max-width: 576px) { .smartedge-shortage-dialog th, .smartedge-shortage-dialog td { padding: 8px; font-size: 12px; } }
+	`);
+
+	const dialog = new frappe.ui.Dialog({
+		title: __("Insufficient Material Quantity"),
+		size: "large",
+		fields: [{
+			fieldtype: "HTML",
+			fieldname: "shortage_details",
+			options: `<div class="smartedge-shortage-dialog">
+				<div class="flex align-items-start mb-3">
+					<span class="fa fa-exclamation-triangle text-warning mr-2" aria-hidden="true"></span>
+					<div>
+						<div class="text-muted">${__("Cannot Send to Planning because the required material quantity is not available.")}</div>
+						<div class="font-weight-bold mt-2">${__("{0} material(s) have insufficient stock.", [shortages.length])}</div>
+					</div>
+				</div>
+				<div class="table-responsive">
+					<table class="table table-bordered">
+						<thead><tr><th>${__("Material")}</th><th>${__("Warehouse")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available")}</th><th class="text-right">${__("Shortage")}</th></tr></thead>
+						<tbody>${rows}</tbody>
+					</table>
+				</div>
+				<p class="text-muted mt-3 mb-0">${__("Please replenish the required materials before sending this document to planning.")}</p>
+			</div>`,
+		}],
+		primary_action_label: __("Close"),
+		primary_action() { dialog.hide(); },
+	});
+	dialog.show();
+}
+
+function get_insufficient_material_payload(error) {
+	try {
+		const messages = JSON.parse(error?._server_messages || "[]");
+		for (const value of messages) {
+			const envelope = typeof value === "string" ? JSON.parse(value) : value;
+			const payload = typeof envelope?.message === "string" ? JSON.parse(envelope.message) : envelope;
+			if (payload?.type === "insufficient_material_quantity") {
+				return payload;
+			}
+		}
+		return null;
+	} catch (e) {
+		return null;
 	}
 }

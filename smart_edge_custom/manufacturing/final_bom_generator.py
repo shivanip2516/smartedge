@@ -1,3 +1,4 @@
+import json
 import re
 
 import frappe
@@ -6,6 +7,10 @@ from frappe.utils import flt
 
 MATERIAL_TOLERANCE = 0.00001
 PER_MM_PER_METER = "Per mm per meter"
+
+
+class InsufficientMaterialQuantityError(frappe.ValidationError):
+	pass
 
 def get_finished_item_configuration(finished_item):
 	if not finished_item:
@@ -185,12 +190,25 @@ def resolve_stock_item(doc, explicit_fields, name_field, label):
 
 
 def get_stock_balance(item_code, warehouse=None):
-	if not item_code or not warehouse:
-		return 0
+	if not item_code:
+		frappe.throw(_("A stock Item is required to check material availability."))
+	if not warehouse:
+		frappe.throw(_("Source Warehouse is required to check material availability."))
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(_("Stock Item {0} does not exist.").format(frappe.bold(item_code)))
+	if not frappe.db.exists("Warehouse", warehouse):
+		frappe.throw(_("Source Warehouse {0} does not exist.").format(frappe.bold(warehouse)))
 
 	from erpnext.stock.utils import get_stock_balance as erpnext_get_stock_balance
 
-	return flt(erpnext_get_stock_balance(item_code, warehouse))
+	available = flt(erpnext_get_stock_balance(item_code, warehouse))
+	frappe.logger("smart_edge_custom").info(
+		"Material stock lookup: item=%s warehouse=%s available_stock_uom=%s method=erpnext.stock.utils.get_stock_balance",
+		item_code,
+		warehouse,
+		available,
+	)
+	return available
 
 
 def get_valuation_rate(item_code, company=None, warehouse=None):
@@ -302,7 +320,62 @@ def get_stock_balance_in_kg(item_code, stock_uom, warehouse=None):
 	)
 	if flt(conversion_factor) <= 0:
 		return stock_balance
-	return stock_balance / flt(conversion_factor)
+	return stock_balance * flt(conversion_factor)
+
+
+def validate_material_availability(materials, warehouse):
+	"""Recheck current stock and report every insufficient required material."""
+	required_by_item = {}
+	for row in materials or []:
+		item_code = row.get("item_code")
+		if not item_code:
+			continue
+		required_by_item.setdefault(
+			item_code,
+			{
+				"item_name": row.get("item_name") or item_code,
+				"uom": row.get("uom") or "Kg",
+				"required": 0,
+			},
+		)
+		required_by_item[item_code]["required"] += flt(row.get("total_quantity"))
+
+	shortages = []
+	for item_code, material in required_by_item.items():
+		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom"], as_dict=True) or {}
+		available = get_stock_balance_in_kg(item_code, item.get("stock_uom"), warehouse)
+		required = material["required"]
+		frappe.logger("smart_edge_custom").info(
+			"Material availability: material=%s item=%s source_warehouse=%s actual_warehouse=%s required_kg=%s available_kg=%s stock_uom=%s method=erpnext.stock.utils.get_stock_balance",
+			material["item_name"],
+			item_code,
+			warehouse,
+			warehouse,
+			required,
+			available,
+			item.get("stock_uom"),
+		)
+		if required > available:
+			shortages.append(
+				{
+					"item_code": item_code,
+					"item_name": item.get("item_name") or material["item_name"],
+					"warehouse": warehouse,
+					"uom": material["uom"],
+					"required": required,
+					"available": available,
+					"shortage": required - available,
+				}
+			)
+
+	if not shortages:
+		return
+
+	frappe.throw(
+		json.dumps({"type": "insufficient_material_quantity", "shortages": shortages}),
+		title=_("Insufficient Material Quantity"),
+		exc=InsufficientMaterialQuantityError,
+	)
 
 
 def validate_batch_count(value, label):
@@ -852,6 +925,8 @@ def validate_ready_for_planning(doc):
 
 	if not doc.get("additional_costs"):
 		frappe.throw(_("No SmartEdge Cost Heads are configured for the selected route."))
+
+	validate_material_availability(preview.get("materials"), doc.get("source_warehouse"))
 
 	return preview
 

@@ -561,6 +561,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			],
 			primary_action_label: __("Schedule"),
 			primary_action: async (values) => {
+				if (!validate_schedule_in_browser(values.planned_date, values.planned_start)) return;
 				await frappe.call({
 						method: `${this.method}.schedule_operation`,
 						args: {
@@ -579,6 +580,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		set_schedule_date_limits(dialog, "planned_date", "planned_start");
 		const update_end = () => {
 			const values = dialog.get_values(true) || {};
 			dialog.set_value("planned_end", compute_planned_end(values.planned_start, values.duration_hours));
@@ -612,6 +614,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			],
 			primary_action_label: __("Create Plan"),
 			primary_action: async (values) => {
+				if (!validate_schedule_in_browser(values.start_date, values.start_time)) return;
 				await frappe.call({
 					method: `${this.method}.plan_full_production`,
 					args: {
@@ -625,6 +628,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		set_schedule_date_limits(dialog, "start_date", "start_time");
 	}
 
 	async open_start_dialog(card) {
@@ -1080,6 +1084,44 @@ function compute_planned_end(start, duration_hours) {
 	date.setHours(parts[0] || 0, parts[1] || 0, 0, 0);
 	date.setMinutes(date.getMinutes() + flt(duration_hours) * 60);
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function set_schedule_date_limits(dialog, date_field, time_field) {
+	const today = frappe.datetime.get_today();
+	const date_input = dialog.fields_dict[date_field]?.$input;
+	date_input?.attr("min", today);
+	const update_time_min = () => {
+		const selected_date = dialog.get_value(date_field);
+		const time_input = dialog.fields_dict[time_field]?.$input;
+		if (!time_input) return;
+		if (selected_date === today) {
+			const system_now = frappe.datetime.system_datetime();
+			time_input.attr("min", system_now.slice(11, 16));
+		} else {
+			time_input.removeAttr("min");
+		}
+	};
+	dialog.fields_dict[date_field]?.$input?.on("change", update_time_min);
+	update_time_min();
+}
+
+function validate_schedule_in_browser(date_value, time_value) {
+	if (!date_value || !time_value) return;
+	const parts = String(time_value).split(":").map((part) => cint(part));
+	const selected = `${date_value} ${String(parts[0] || 0).padStart(2, "0")}:${String(parts[1] || 0).padStart(2, "0")}:00`;
+	const system_now = frappe.datetime.system_datetime().slice(0, 16);
+	if (selected.slice(0, 16) < system_now) {
+		frappe.msgprint({
+			title: __("Invalid Production Planning Schedule"),
+			message: `<div class="text-center">
+				<div class="fa fa-exclamation-triangle text-warning" style="font-size: 24px; margin-bottom: 12px;" aria-hidden="true"></div>
+				<div>${__("Production planning cannot be scheduled for a past date or time.")}</div>
+			</div>`,
+			indicator: "orange",
+		});
+		return false;
+	}
+	return true;
 }
 
 function format_duration_seconds(seconds) {
