@@ -1,0 +1,15 @@
+{
+ "app": "smart_edge_custom",
+ "doctype": "Desktop Icon",
+ "hidden": 0,
+ "icon": "manufacturing",
+ "icon_type": "Link",
+ "idx": 1,
+ "label": "SmartEdge Manufacturing",
+ "link_to": "SmartEdge Manufacturing",
+ "link_type": "Workspace Sidebar",
+ "name": "SmartEdge Manufacturing",
+ "parent_icon": "SmartEdge Custom",
+ "roles": [],
+ "standard": 1
+}
