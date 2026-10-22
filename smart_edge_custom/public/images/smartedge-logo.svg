@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>SmartEdge Custom</title>
+  <rect width="128" height="128" rx="24" fill="#2490ef"/>
+  <path d="M31 39h66v14H47v9h38c8 0 12 5 12 12v3c0 10-6 16-17 16H31V79h49v-4H43c-8 0-12-5-12-13v-7c0-10 6-16 16-16Z" fill="#fff"/>
+  <path d="M31 92h66v-8H31z" fill="#d8efff"/>
+</svg>

@@ -1,9 +1,21 @@
 app_name = "smart_edge_custom"
-app_title = "smart_edge_custom"
 app_publisher = "Smart Edge"
 app_description = "Custom ERPNext and HRMS customizations"
 app_email = "info@smartedge.com"
 app_license = "mit"
+app_title = "SmartEdge Custom"
+app_logo_url = "/assets/smart_edge_custom/images/smartedge-logo.svg"
+app_home = "/app/smartedge-manufacturing"
+
+add_to_apps_screen = [
+	{
+		"name": app_name,
+		"logo": app_logo_url,
+		"title": app_title,
+		"route": app_home,
+		"sequence_id": 50,
+	}
+]
 
 fixtures = [
 	{"dt": "Custom Field", "filters": [["module", "=", "smart_edge_custom"]]},
