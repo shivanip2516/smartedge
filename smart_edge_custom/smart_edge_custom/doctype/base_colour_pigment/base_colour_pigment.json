@@ -34,8 +34,8 @@
    "fieldname": "quantity_kg",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Quantity in Kg",
-   "precision": "3",
+   "label": "Quantity",
+   "precision": "6",
    "reqd": 1
   }
  ],

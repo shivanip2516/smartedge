@@ -11,12 +11,13 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		frm.preview_debounced = frappe.utils.debounce(() => refresh_preview(frm), 450);
 	},
 
-	refresh(frm) {
+	async refresh(frm) {
 		show_status(frm);
 		render_configurator_summary(frm);
 		frm.add_custom_button(__("Refresh Route"), () => refresh_preview(frm, true));
 		frm.add_custom_button(__("Refresh Batch Allocation"), () => refresh_preview(frm, true, true));
 		frm.add_custom_button(__("Send to Planning"), () => send_to_planning(frm), __("Actions"));
+		await refresh_material_planning(frm);
 	},
 
 	async finished_item(frm) {
@@ -163,6 +164,9 @@ async function refresh_preview(frm, show_alert = false, refresh_batch_allocation
 			indicator: get_indicator(frm.doc.status),
 		});
 	}
+	if (!frm.is_new() && !frm.is_dirty()) {
+		await refresh_material_planning(frm);
+	}
 }
 
 function apply_preview(frm, preview) {
@@ -224,12 +228,19 @@ function set_child_rows(frm, table_field, rows) {
 }
 
 function show_status(frm) {
-	if (!frm.doc.status) {
+	const readiness = frm.doc.material_readiness_status;
+	const display_status = readiness
+		? __("Material Readiness: {0}", [readiness])
+		: frm.doc.status;
+	if (!display_status) {
 		return;
 	}
 
 	frm.dashboard.clear_headline();
-	frm.dashboard.set_headline_alert(frappe.utils.escape_html(frm.doc.status), get_indicator(frm.doc.status));
+	frm.dashboard.set_headline_alert(
+		frappe.utils.escape_html(display_status),
+		readiness === "Ready to Plan" ? "green" : get_indicator(frm.doc.status)
+	);
 }
 
 function render_configurator_summary(frm, route_summary = {}) {
@@ -270,6 +281,16 @@ function render_configurator_summary(frm, route_summary = {}) {
 				[__("Shade Batches"), format_number(frm.doc.shade_consumption_batches, 0)],
 				[__("Shade Required"), format_number(frm.doc.shade_total_required, 3)],
 				[__("Shade Available"), format_number(frm.doc.shade_available_qty, 3)],
+			],
+		},
+		{
+			title: __("Material Readiness"),
+			items: [
+				[__("Overall Status"), frm.doc.material_readiness_status],
+				[__("Compound Status"), frm.doc.compound_production_status],
+				[__("Compound Planned / Completed"), `${cint(frm.doc.compound_planned_batches)} / ${cint(frm.doc.compound_completed_batches)}`],
+				[__("Base Colour Status"), frm.doc.base_colour_production_status],
+				[__("Base Colour Planned / Completed"), `${cint(frm.doc.base_colour_planned_batches)} / ${cint(frm.doc.base_colour_completed_batches)}`],
 			],
 		},
 		{
@@ -371,7 +392,7 @@ async function send_to_planning(frm) {
 		method: "send_to_planning",
 		doc: frm.doc,
 		error_handlers: {
-			InsufficientMaterialQuantityError: show_insufficient_material_dialog,
+			InsufficientMaterialQuantityError: (error) => show_insufficient_material_dialog(error, frm),
 		},
 	});
 
@@ -385,7 +406,7 @@ async function send_to_planning(frm) {
 	}
 }
 
-function show_insufficient_material_dialog(error) {
+function show_insufficient_material_dialog(error, frm) {
 	const payload = get_insufficient_material_payload(error);
 	if (!payload?.shortages?.length) {
 		return;
@@ -437,10 +458,304 @@ function show_insufficient_material_dialog(error) {
 				<p class="text-muted mt-3 mb-0">${__("Please replenish the required materials before sending this document to planning.")}</p>
 			</div>`,
 		}],
-		primary_action_label: __("Close"),
-		primary_action() { dialog.hide(); },
+		primary_action_label: __("Plan Required Materials"),
+		primary_action() {
+			dialog.hide();
+			open_material_planning_dialog(frm);
+		},
 	});
 	dialog.show();
+	if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
+		dialog.set_secondary_action_label(__("Close"));
+		dialog.set_secondary_action(() => dialog.hide());
+	}
+}
+
+async function refresh_material_planning(frm) {
+	frm.remove_custom_button(__("Plan Required Materials"));
+	if (frm.is_new() || !frm.doc.name) return;
+	const response = await frappe.call({
+		method: "smart_edge_custom.manufacturing.material_production.get_material_planning_context",
+		args: { production: frm.doc.name },
+	});
+	const context = response.message || {};
+	frm.__material_planning_context = context;
+	apply_material_status(frm, context);
+	add_material_navigation(frm, context);
+	if (context.has_shortage) {
+		frm.add_custom_button(__("Plan Required Materials"), () => open_material_planning_dialog(frm));
+	}
+}
+
+function apply_material_status(frm, context) {
+	frm.doc.material_readiness_status = context.overall_status;
+	for (const row of context.requirements || []) {
+		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+		frm.doc[`${prefix}_production_status`] = row.status;
+		frm.doc[`${prefix}_production_plan`] = row.production_plan;
+		frm.doc[`${prefix}_work_order`] = row.work_order;
+		frm.doc[`${prefix}_planned_batches`] = row.already_planned_batches;
+		frm.doc[`${prefix}_completed_batches`] = row.completed_batches;
+	}
+	frm.refresh_fields([
+		"material_readiness_status",
+		"compound_production_status",
+		"compound_production_plan",
+		"compound_work_order",
+		"compound_planned_batches",
+		"compound_completed_batches",
+		"base_colour_production_status",
+		"base_colour_production_plan",
+		"base_colour_work_order",
+		"base_colour_planned_batches",
+		"base_colour_completed_batches",
+	]);
+	show_status(frm);
+	render_configurator_summary(frm);
+}
+
+function add_material_navigation(frm, context) {
+	for (const label of [
+		__("Open Compound Work Order"),
+		__("Open Base Colour Work Order"),
+		__("Planning Entries"),
+		__("Planning Board"),
+		__("Reconcile Planning"),
+	]) {
+		frm.remove_custom_button(label, __("Material Production"));
+	}
+	const requirements = context.requirements || [];
+	for (const row of requirements) {
+		if (!row.work_order) continue;
+		frm.add_custom_button(
+			__("Open {0} Work Order", [row.material_type]),
+			() => frappe.set_route("Form", "Work Order", row.work_order),
+			__("Material Production")
+		);
+	}
+	frm.add_custom_button(
+		__("Planning Entries"),
+		() => frappe.set_route("List", "SmartEdge Production Plan Entry", {
+			final_eb_bom_generator: frm.doc.name,
+			plan_type: "Required Material",
+		}),
+		__("Material Production")
+	);
+	frm.add_custom_button(
+		__("Planning Board"),
+		() => {
+			window.location.href = `/app/smartedge-production-planning?search=${encodeURIComponent(frm.doc.name)}`;
+		},
+		__("Material Production")
+	);
+	frm.add_custom_button(
+		__("Reconcile Planning"),
+		async () => {
+			await frappe.call({
+				method: "smart_edge_custom.manufacturing.material_production.reconcile_required_material_plans",
+				args: { production: frm.doc.name },
+				freeze: true,
+				freeze_message: __("Checking linked material Work Orders..."),
+			});
+			await frm.reload_doc();
+		},
+		__("Material Production")
+	);
+}
+
+async function open_material_planning_dialog(frm) {
+	if (frm.is_dirty()) await frm.save();
+	const response = await frappe.call({
+		method: "smart_edge_custom.manufacturing.material_production.get_material_planning_context",
+		args: { production: frm.doc.name },
+		freeze: true,
+		freeze_message: __("Checking eligible material batches..."),
+	});
+	const context = response.message || {};
+	const shortages = (context.requirements || []).filter((row) => row.batches_to_plan > 0);
+	if (!shortages.length) {
+		frappe.show_alert({ message: __("All required material batches are available or already planned."), indicator: "green" });
+		await refresh_material_planning(frm);
+		return;
+	}
+
+	const fields = [];
+	const material_states = {};
+	for (const row of shortages) {
+		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+		material_states[prefix] = {
+			row,
+			operation_valid: Boolean(row.operation && (row.operation_options || []).includes(row.operation)),
+			workstations: row.compatible_workstations || [],
+			restricted: Boolean(row.workstation_filter_applied),
+			stock_checked: false,
+			stock_available: false,
+		};
+		fields.push(
+			{ fieldtype: "Section Break", label: __("{0} Production", [row.material_type]) },
+			{ fieldtype: "Data", fieldname: `${prefix}_material_type`, label: __("Material Type"), read_only: 1, default: row.material_type },
+			{ fieldtype: "Link", fieldname: `${prefix}_item`, label: __("Item"), options: "Item", read_only: 1, default: row.item_code },
+			{ fieldtype: "Int", fieldname: `${prefix}_required`, label: __("Required Batches"), read_only: 1, default: row.required_batches },
+			{ fieldtype: "Int", fieldname: `${prefix}_available`, label: __("Available Eligible Batches"), read_only: 1, default: row.available_batches },
+			{ fieldtype: "Column Break" },
+			{ fieldtype: "Int", fieldname: `${prefix}_already_planned`, label: __("Already Planned Batches"), read_only: 1, default: row.already_planned_batches },
+			{ fieldtype: "Int", fieldname: `${prefix}_batches`, label: __("Batches to Plan"), read_only: 1, default: row.batches_to_plan },
+			{ fieldtype: "Float", fieldname: `${prefix}_weight`, label: __("Weight per Batch ({0})", [row.stock_uom]), precision: 6, read_only: 1, default: row.weight_per_batch },
+			{ fieldtype: "Float", fieldname: `${prefix}_total`, label: __("Total Manufacturing Quantity ({0})", [row.stock_uom]), precision: 6, read_only: 1, default: row.total_manufacturing_quantity },
+			{ fieldtype: "Section Break" },
+			{ fieldtype: "Link", fieldname: `${prefix}_bom`, label: __("BOM"), options: "BOM", read_only: 1, default: row.bom_no },
+			{
+				fieldtype: "Link", fieldname: `${prefix}_operation`, label: __("Operation"), options: "Operation", reqd: 1,
+				default: row.operation,
+				get_query: () => ({ filters: { name: ["in", row.operation_options || []] } }),
+			},
+			{
+				fieldtype: "Link", fieldname: `${prefix}_workstation`, label: __("Workstation"), options: "Workstation", reqd: 1,
+				default: row.default_workstation,
+				get_query: () => {
+					const state = material_states[prefix];
+					const filters = { disabled: 0 };
+					if (state.restricted) filters.name = ["in", state.workstations];
+					return { filters };
+				},
+			},
+			{ fieldtype: "Column Break" },
+			{ fieldtype: "Link", fieldname: `${prefix}_employee`, label: __("Employee"), options: "Employee", reqd: 1, get_query: () => ({ filters: { status: "Active", company: frm.doc.company } }) },
+			{ fieldtype: "Link", fieldname: `${prefix}_shift`, label: __("Shift"), options: "Shift Type" },
+			{ fieldtype: "Datetime", fieldname: `${prefix}_planned_start`, label: __("Planned Start"), reqd: 1, default: frappe.datetime.now_datetime() },
+			{ fieldtype: "Section Break", label: __("Warehouses") },
+			{ fieldtype: "Link", fieldname: `${prefix}_source`, label: __("Source Warehouse"), options: "Warehouse", reqd: 1, default: row.source_warehouse, get_query: warehouse_query(frm) },
+			{ fieldtype: "Link", fieldname: `${prefix}_wip`, label: __("Work-in-Progress Warehouse"), options: "Warehouse", reqd: 1, default: row.wip_warehouse, get_query: warehouse_query(frm) },
+			{ fieldtype: "Link", fieldname: `${prefix}_target`, label: __("Target Warehouse"), options: "Warehouse", reqd: 1, default: row.target_warehouse, get_query: warehouse_query(frm) },
+			{ fieldtype: "Section Break", label: __("BOM Raw Material Availability") },
+			{ fieldtype: "HTML", fieldname: `${prefix}_raw_stock_status`, options: `<div class="text-muted">${__("Checking raw-material stock...")}</div>` }
+		);
+	}
+
+	const dialog = new frappe.ui.Dialog({
+		title: __("Plan Required Material Production"),
+		size: "extra-large",
+		fields,
+		primary_action_label: __("Create Production Plans"),
+		primary_action: async (values) => {
+			const plans = shortages.map((row) => {
+				const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+				return {
+					material_type: row.material_type,
+					operation: values[`${prefix}_operation`],
+					workstation: values[`${prefix}_workstation`], employee: values[`${prefix}_employee`], shift: values[`${prefix}_shift`],
+					planned_start: values[`${prefix}_planned_start`], source_warehouse: values[`${prefix}_source`],
+					wip_warehouse: values[`${prefix}_wip`], target_warehouse: values[`${prefix}_target`],
+				};
+			});
+			dialog.disable_primary_action();
+			try {
+				await frappe.call({
+					method: "smart_edge_custom.manufacturing.material_production.create_required_material_plans",
+					args: { production: frm.doc.name, plans },
+					freeze: true,
+					freeze_message: __("Creating Work Orders and production plans..."),
+				});
+				dialog.hide();
+				await frm.reload_doc();
+				frappe.show_alert({ message: __("Required material production was planned."), indicator: "green" });
+			} finally {
+				update_primary_state();
+			}
+		},
+	});
+	dialog.show();
+	dialog.disable_primary_action();
+
+	const render_stock_status = (prefix, stock) => {
+		const state = material_states[prefix];
+		const wrapper = dialog.fields_dict[`${prefix}_raw_stock_status`].$wrapper;
+		if (stock.message) {
+			wrapper.html(`<div class="text-danger">${frappe.utils.escape_html(stock.message)}</div>`);
+			return;
+		}
+		const rows = (stock.materials || []).map((item) => `
+			<tr class="${flt(item.shortage_qty) > 0 ? "text-danger" : ""}">
+				<td>${frappe.utils.escape_html(item.item_name || item.item_code)}</td>
+				<td class="text-right">${flt(item.required_qty, 6)} ${frappe.utils.escape_html(item.uom || "")}</td>
+				<td class="text-right">${flt(item.available_qty, 6)} ${frappe.utils.escape_html(item.uom || "")}</td>
+			</tr>`).join("");
+		wrapper.html(rows
+			? `<div class="table-responsive"><table class="table table-bordered table-sm"><thead><tr><th>${__("Raw Material")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available after reservations")}</th></tr></thead><tbody>${rows}</tbody></table></div>
+				<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("Required BOM raw materials are available.") : __("Insufficient BOM raw materials. Production planning is disabled.")}</div>`
+			: `<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("No transferable raw materials are required by this BOM.") : __("Raw-material availability could not be confirmed.")}</div>`);
+		state.stock_available = Boolean(stock.available);
+	};
+
+	const update_primary_state = () => {
+		const values = dialog.get_values(true) || {};
+		const ready = shortages.every((row) => {
+			const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+			const state = material_states[prefix];
+			const workstation = values[`${prefix}_workstation`];
+			return state.operation_valid && state.stock_checked && state.stock_available &&
+				Boolean(values[`${prefix}_operation`] && workstation && values[`${prefix}_employee`] &&
+					values[`${prefix}_planned_start`] && values[`${prefix}_source`] &&
+					values[`${prefix}_wip`] && values[`${prefix}_target`]) &&
+				state.workstations.includes(workstation);
+		});
+		if (ready) dialog.enable_primary_action();
+		else dialog.disable_primary_action();
+	};
+
+	const refresh_raw_stock = async (prefix) => {
+		const state = material_states[prefix];
+		state.stock_checked = false;
+		state.stock_available = false;
+		update_primary_state();
+		dialog.fields_dict[`${prefix}_raw_stock_status`].$wrapper.html(`<div class="text-muted">${__("Checking raw-material stock...")}</div>`);
+		const response = await frappe.call({
+			method: "smart_edge_custom.manufacturing.material_production.get_material_raw_stock",
+			args: {
+				production: frm.doc.name,
+				material_type: state.row.material_type,
+				source_warehouse: dialog.get_value(`${prefix}_source`),
+			},
+		});
+		state.stock_checked = true;
+		render_stock_status(prefix, response.message || {});
+		update_primary_state();
+	};
+
+	const refresh_workstations = async (prefix) => {
+		const state = material_states[prefix];
+		const operation = dialog.get_value(`${prefix}_operation`);
+		state.operation_valid = false;
+		state.workstations = [];
+		dialog.set_value(`${prefix}_workstation`, "");
+		update_primary_state();
+		if (!operation) return;
+		const response = await frappe.call({
+			method: "smart_edge_custom.manufacturing.material_production.get_material_operation_context",
+			args: { bom_no: state.row.bom_no, operation },
+		});
+		const operation_context = response.message || {};
+		state.operation_valid = operation_context.operation === operation;
+		state.workstations = operation_context.workstations || [];
+		state.restricted = Boolean(operation_context.restricted);
+		dialog.set_value(`${prefix}_workstation`, operation_context.default_workstation || "");
+		dialog.fields_dict[`${prefix}_workstation`].refresh();
+		update_primary_state();
+	};
+
+	for (const row of shortages) {
+		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+		dialog.fields_dict[`${prefix}_operation`].df.onchange = () => refresh_workstations(prefix);
+		dialog.fields_dict[`${prefix}_source`].df.onchange = () => refresh_raw_stock(prefix);
+		for (const fieldname of ["workstation", "employee", "planned_start", "wip", "target"]) {
+			dialog.fields_dict[`${prefix}_${fieldname}`].df.onchange = update_primary_state;
+		}
+		refresh_raw_stock(prefix);
+	}
+}
+
+function warehouse_query(frm) {
+	return () => ({ filters: { company: frm.doc.company, is_group: 0, disabled: 0 } });
 }
 
 function get_insufficient_material_payload(error) {

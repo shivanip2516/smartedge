@@ -1,8 +1,11 @@
 import re
+from decimal import Decimal
 
 import frappe
 from frappe import _
 from frappe.utils import flt
+
+from erpnext.stock.doctype.item.item import get_uom_conv_factor
 
 BASE_COLOUR_DOCTYPE = "Base Colour"
 COLOUR_NAME_FIELD = "colour_name"
@@ -61,7 +64,8 @@ def validate_base_colour_item(item_code):
 
 
 def validate_pigment_rows(doc):
-	total = 0
+	base_item = get_base_colour_item_details(doc.get(COLOUR_NAME_FIELD))
+	total = Decimal("0")
 	for row in doc.get("pigments") or []:
 		if not row.pigment_item:
 			frappe.throw(_("Pigment Item is required in every pigment row."))
@@ -69,12 +73,49 @@ def validate_pigment_rows(doc):
 		item = frappe.db.get_value("Item", row.pigment_item, ["item_group", "stock_uom"], as_dict=True)
 		if not item or item.item_group != PIGMENT_ITEM_GROUP:
 			frappe.throw(_('Selected Pigment Item must belong to Item Group "Pigments".'))
+		if row.uom and row.uom != item.stock_uom:
+			frappe.throw(
+				_(
+					"Saved UOM {0} for Pigment Item {1} does not match its Stock UOM {2}. "
+					"Review the legacy quantity before changing its UOM."
+				).format(frappe.bold(row.uom), frappe.bold(row.pigment_item), frappe.bold(item.stock_uom))
+			)
 
 		row.uom = item.stock_uom
 		row.quantity_kg = validate_quantity(row.quantity_kg)
-		total += row.quantity_kg
+		total += Decimal(str(row.quantity_kg)) * Decimal(
+			str(get_conversion_factor(row.uom, base_item.stock_uom))
+		)
 
-	doc.total_kg = total
+	doc.total_kg = float(total)
+
+
+def get_base_colour_item_details(item_code):
+	if not item_code:
+		frappe.throw(_("Base Colour Item is required."))
+
+	item = frappe.db.get_value("Item", item_code, ["item_group", "stock_uom"], as_dict=True)
+	if not item:
+		frappe.throw(_("Base Colour Item {0} does not exist.").format(frappe.bold(item_code)))
+	if item.item_group != BASE_COLOUR_ITEM_GROUP:
+		frappe.throw(_('Selected Base Colour Item must belong to Item Group "Base Colour".'))
+	if not item.stock_uom:
+		frappe.throw(_("Base Colour Item {0} must have a Stock UOM.").format(frappe.bold(item_code)))
+	return item
+
+
+def get_conversion_factor(from_uom, to_uom):
+	if not from_uom or not to_uom:
+		frappe.throw(_("Both source and target UOM are required for Base Colour conversion."))
+
+	factor = get_uom_conv_factor(from_uom, to_uom)
+	if flt(factor) <= 0:
+		frappe.throw(
+			_("No UOM conversion is configured from {0} to {1}.").format(
+				frappe.bold(from_uom), frappe.bold(to_uom)
+			)
+		)
+	return factor
 
 
 def validate_quantity(quantity):
@@ -93,6 +134,36 @@ def parse_pigment_rows(rows):
 		rows = frappe.parse_json(rows or "[]")
 
 	return rows or []
+
+
+def calculate_recipe_total(item_code, rows, strict=True):
+	base_item = get_base_colour_item_details(item_code)
+	total = Decimal("0")
+	for row in parse_pigment_rows(rows):
+		pigment_item = (row.get("pigment_item") or "").strip()
+		if not pigment_item or row.get("quantity_kg") in (None, ""):
+			continue
+		item = frappe.db.get_value(
+			"Item", pigment_item, ["item_group", "stock_uom"], as_dict=True
+		)
+		if not item or item.item_group != PIGMENT_ITEM_GROUP or not item.stock_uom:
+			continue
+		if strict:
+			quantity = Decimal(str(validate_quantity(row.get("quantity_kg"))))
+		else:
+			quantity = Decimal(str(flt(row.get("quantity_kg"))))
+			if quantity <= 0:
+				continue
+		total += quantity * Decimal(str(get_conversion_factor(item.stock_uom, base_item.stock_uom)))
+
+	return {"total": float(total), "stock_uom": base_item.stock_uom}
+
+
+@frappe.whitelist()
+def get_recipe_total(item_code, pigments=None):
+	if not frappe.has_permission(BASE_COLOUR_DOCTYPE, "read"):
+		frappe.throw(_("Not permitted to read Base Colour"), frappe.PermissionError)
+	return calculate_recipe_total(item_code, pigments, strict=False)
 
 
 def set_pigment_rows(doc, rows):
@@ -127,6 +198,7 @@ def get_base_colours(search=None, start=0, page_length=50):
 	)
 
 	for row in rows:
+		row.stock_uom = frappe.db.get_value("Item", row.get(COLOUR_NAME_FIELD), "stock_uom")
 		row.pigments = frappe.get_all(
 			"Base Colour Pigment",
 			filters={"parent": row.name, "parenttype": BASE_COLOUR_DOCTYPE},

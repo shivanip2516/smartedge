@@ -69,6 +69,7 @@
   "references_section",
   "released_to_plan_entry",
   "manufacturing_stock_entry",
+  "material_transfer_stock_entry",
   "stock_posted_qty",
   "references_col_2",
   "operator"
@@ -384,6 +385,13 @@
    "fieldname": "manufacturing_stock_entry",
    "fieldtype": "Link",
    "label": "Manufacturing Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_transfer_stock_entry",
+   "fieldtype": "Link",
+   "label": "Material Transfer Stock Entry",
    "options": "Stock Entry",
    "read_only": 1
   },

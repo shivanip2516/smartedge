@@ -191,9 +191,13 @@ doc_events = {
 	"Stock Entry": {
 		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.validate_batch_stock_entry_quantity",
 		"before_submit": "smart_edge_custom.manufacturing.batch_manufacturing.allocate_finished_batches",
+		"on_submit": "smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_stock_entry",
+		"on_cancel": "smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_stock_entry",
 	},
 	"Work Order": {
 		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.set_work_order_batch_quantity",
+		"on_update": "smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_work_order",
+		"on_cancel": "smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_work_order",
 	},
 }
 

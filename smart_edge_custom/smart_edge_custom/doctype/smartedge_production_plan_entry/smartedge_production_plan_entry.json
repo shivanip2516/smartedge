@@ -8,6 +8,11 @@
   "naming_series",
   "planning_section",
   "final_eb_bom_generator",
+  "plan_type",
+  "material_type",
+  "material_item",
+  "bom_no",
+  "work_order",
   "workstation",
   "planned_date",
   "priority",
@@ -27,12 +32,22 @@
   "released_qty_meter",
   "quantity_col_3",
   "planned_kg",
+  "planned_batches",
+  "weight_per_batch",
+  "quantity_uom",
   "released_qty_kg",
   "references_section",
   "operation_row",
   "production_job",
   "references_col_2",
   "created_from",
+  "source_warehouse",
+  "wip_warehouse",
+  "target_warehouse",
+  "planned_employee",
+  "planned_shift",
+  "material_transfer_stock_entry",
+  "manufacture_stock_entry",
   "released_from_plan_entry",
   "references_col_3",
   "released_from_production_job",
@@ -55,6 +70,42 @@
    "label": "Final EB BOM Generator",
    "options": "Final EB BOM Generator",
    "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "default": "Final EB",
+   "fieldname": "plan_type",
+   "fieldtype": "Select",
+   "label": "Plan Type",
+   "options": "Final EB\nRequired Material",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_type",
+   "fieldtype": "Select",
+   "label": "Material Type",
+   "options": "\nCompound\nBase Colour",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_item",
+   "fieldtype": "Link",
+   "label": "Production Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bom_no",
+   "fieldtype": "Link",
+   "label": "BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "Work Order",
+   "options": "Work Order",
    "read_only": 1
   },
   {
@@ -138,6 +189,26 @@
    "fieldtype": "Float",
    "label": "Planned Kg",
    "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_batches",
+   "fieldtype": "Int",
+   "label": "Planned Batches",
+   "read_only": 1
+  },
+  {
+   "fieldname": "weight_per_batch",
+   "fieldtype": "Float",
+   "label": "Weight per Batch",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quantity_uom",
+   "fieldtype": "Link",
+   "label": "Quantity UOM",
+   "options": "UOM",
    "read_only": 1
   },
   {
@@ -225,6 +296,55 @@
    "fieldname": "created_from",
    "fieldtype": "Data",
    "label": "Created From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "wip_warehouse",
+   "fieldtype": "Link",
+   "label": "Work-in-Progress Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_employee",
+   "fieldtype": "Link",
+   "label": "Planned Employee",
+   "options": "Employee",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planned_shift",
+   "fieldtype": "Link",
+   "label": "Planned Shift",
+   "options": "Shift Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_transfer_stock_entry",
+   "fieldtype": "Link",
+   "label": "Material Transfer Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacture_stock_entry",
+   "fieldtype": "Link",
+   "label": "Manufacture Stock Entry",
+   "options": "Stock Entry",
    "read_only": 1
   },
   {

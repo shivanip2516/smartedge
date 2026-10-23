@@ -44,6 +44,19 @@
   "base_colour_item",
   "material_weight_status",
   "allow_weight_mismatch",
+  "material_production_section",
+  "material_readiness_status",
+  "compound_production_status",
+  "compound_production_plan",
+  "compound_work_order",
+  "compound_planned_batches",
+  "compound_completed_batches",
+  "material_production_col_2",
+  "base_colour_production_status",
+  "base_colour_production_plan",
+  "base_colour_work_order",
+  "base_colour_planned_batches",
+  "base_colour_completed_batches",
   "legacy_consumption_section",
   "compound_consumption_per_meter",
   "compound_total_required",
@@ -353,6 +366,89 @@
    "fieldtype": "Table",
    "label": "Selected Shade Batches (FIFO)",
    "options": "EB BOM Batch Allocation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_production_section",
+   "fieldtype": "Section Break",
+   "label": "Required Material Production"
+  },
+  {
+   "default": "Waiting for Raw Material",
+   "fieldname": "material_readiness_status",
+   "fieldtype": "Select",
+   "label": "Overall Material Status",
+   "options": "Waiting for Raw Material\nReady to Plan",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_production_status",
+   "fieldtype": "Select",
+   "label": "Compound Production Status",
+   "options": "Shortage\nPlanned\nIn Progress\nPaused\nPartially Completed\nStock Available",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_production_plan",
+   "fieldtype": "Link",
+   "label": "Compound Production Plan",
+   "options": "SmartEdge Production Plan Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_work_order",
+   "fieldtype": "Link",
+   "label": "Compound Work Order",
+   "options": "Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_planned_batches",
+   "fieldtype": "Int",
+   "label": "Compound Planned Batches",
+   "read_only": 1
+  },
+  {
+   "fieldname": "compound_completed_batches",
+   "fieldtype": "Int",
+   "label": "Compound Completed Batches",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_production_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "base_colour_production_status",
+   "fieldtype": "Select",
+   "label": "Base Colour Production Status",
+   "options": "Shortage\nPlanned\nIn Progress\nPaused\nPartially Completed\nStock Available",
+   "read_only": 1
+  },
+  {
+   "fieldname": "base_colour_production_plan",
+   "fieldtype": "Link",
+   "label": "Base Colour Production Plan",
+   "options": "SmartEdge Production Plan Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "base_colour_work_order",
+   "fieldtype": "Link",
+   "label": "Base Colour Work Order",
+   "options": "Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "base_colour_planned_batches",
+   "fieldtype": "Int",
+   "label": "Base Colour Planned Batches",
+   "read_only": 1
+  },
+  {
+   "fieldname": "base_colour_completed_batches",
+   "fieldtype": "Int",
+   "label": "Base Colour Completed Batches",
    "read_only": 1
   },
   {

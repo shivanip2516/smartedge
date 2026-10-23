@@ -22,12 +22,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.state = {
 			week_start: this.get_week_start_from_route(),
 			board: null,
-			filters: {},
+			filters: { search: this.get_search_from_route() },
 		};
 
 		frappe.breadcrumbs.add(__("SmartEdge Manufacturing"));
 		this.make_body();
 		this.bind_global_events();
+		this.bind_realtime_events();
 	}
 
 	bind_global_events() {
@@ -38,6 +39,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					this.close_card_menus();
 				}
 			});
+	}
+
+	bind_realtime_events() {
+		frappe.realtime.on("smartedge_planning_updated", () => {
+			clearTimeout(this.realtime_refresh_timer);
+			this.realtime_refresh_timer = setTimeout(() => this.refresh(), 500);
+		});
 	}
 
 	make_body() {
@@ -103,6 +111,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			});
 			this.filters[fieldname] = control;
 		}
+		if (this.state.filters.search) {
+			this.filters.search.set_input(this.state.filters.search);
+		}
 	}
 
 	get_week_start_from_route() {
@@ -111,8 +122,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		return week || get_monday(frappe.datetime.get_today());
 	}
 
+	get_search_from_route() {
+		return new URLSearchParams(window.location.search).get("search") || "";
+	}
+
 	set_route_week() {
-		const route = `/app/smartedge-production-planning?week=${this.state.week_start}`;
+		const params = new URLSearchParams({ week: this.state.week_start });
+		if (this.state.filters.search) params.set("search", this.state.filters.search);
+		const route = `/app/smartedge-production-planning?${params.toString()}`;
 		window.history.replaceState(null, "", route);
 	}
 
@@ -140,6 +157,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.state.week_start = response.message.week_start;
 		this.populate_filter_options();
 		this.render();
+		this.schedule_date_refresh();
+	}
+
+	schedule_date_refresh() {
+		clearTimeout(this.date_refresh_timer);
+		const seconds = cint(this.state.board?.date_refresh_after_seconds || 0);
+		if (seconds > 0) {
+			this.date_refresh_timer = setTimeout(() => this.refresh(), seconds * 1000);
+		}
 	}
 
 	populate_filter_options() {
@@ -325,17 +351,26 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	make_card(card) {
 		const is_pending = !card.planned_date;
-		const qty = `${se_format_number(card.qty, 2)} m`;
-		const weight = card.planned_weight_kg ? `${se_format_number(card.planned_weight_kg, 3)} Kg` : "";
+		const is_material = card.plan_type === "Required Material";
+		const qty = is_material
+			? `${cint(card.planned_batches)} ${__("batches")}`
+			: `${se_format_number(card.qty, 2)} m`;
+		const weight = card.planned_weight_kg
+			? `${se_format_number(card.planned_weight_kg, 3)} ${is_material ? card.uom || "" : "Kg"}`
+			: "";
 		const released_qty = get_released_qty_label(card);
 		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
 		const effective_status = get_card_status(card);
 		const status_class = `status-${String(effective_status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
 		const status_label = get_status_label(effective_status);
-		const product_line = [card.size, card.item_name || card.finished_item].filter(Boolean).join(" • ");
+		const product_line = [is_material ? card.material_type : card.size, card.item_name || card.finished_item].filter(Boolean).join(" • ");
 		const qty_line = [qty, weight, released_qty].filter(Boolean).join(" • ");
 		const planned_time = get_planned_time_label(card);
 		const workstation_label = card.workstation || __("Not Assigned");
+		const material_trace = is_material
+			? `<div class="se-card-time">${__("WO")}: ${frappe.utils.escape_html(card.work_order || "-")} • ${__("BOM")}: ${frappe.utils.escape_html(card.bom_no || "-")}</div>
+				<div class="se-card-time">${__("Employee")}: ${frappe.utils.escape_html(card.operator_name || "-")} • ${__("Shift")}: ${frappe.utils.escape_html(card.shift || "-")}</div>`
+			: "";
 		const tooltip = [
 			card.production,
 			card.item_name || card.finished_item,
@@ -351,7 +386,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			<div class="se-card plan-card ${category_class} ${is_pending ? "pending-card" : ""}" draggable="true" title="${frappe.utils.escape_html(tooltip)}">
 				<div class="se-card-head">
 					<span class="se-card-operation-title">${frappe.utils.escape_html(card.operation || "")}</span>
-					<span class="se-sequence-badge">#${frappe.utils.escape_html(card.operation_sequence || "")}</span>
+					<span class="se-sequence-badge">${is_material ? __("MAT") : `#${frappe.utils.escape_html(card.operation_sequence || "")}`}</span>
 				</div>
 				<div class="se-card-status-row">
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(status_label)}</span>
@@ -362,6 +397,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					</div>
 					<div class="se-product-name" title="${frappe.utils.escape_html(product_line)}">${frappe.utils.escape_html(product_line)}</div>
 					<div class="se-card-qty">${frappe.utils.escape_html(qty_line)}</div>
+					${material_trace}
 					${this.get_status_line_html(card, planned_time, status_class)}
 				</div>
 				<div class="se-card-actions">
@@ -370,8 +406,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						<button class="btn btn-xs btn-default se-icon-btn se-more" data-toggle="dropdown" aria-label="${__("More actions")}" title="${__("More actions")}">⋯</button>
 						<ul class="dropdown-menu dropdown-menu-right">
 							<li><a class="dropdown-item se-view" href="#">${__("View Details")}</a></li>
+							${is_material ? `<li><a class="dropdown-item se-open-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
 							<li><a class="dropdown-item se-edit" href="#">${__("Edit")}</a></li>
-							<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>
+							${!is_material ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
 							${!is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
 							<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>
 						</ul>
@@ -399,7 +436,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			}
 		});
 		$card.find(".se-card-menu").on("click", (event) => event.stopPropagation());
-		$card.find(".se-view").on("click", () => this.open_production_drawer(card.production, card));
+		$card.find(".se-view").on("click", () =>
+			is_material
+				? frappe.set_route("Form", "SmartEdge Production Plan Entry", card.id)
+				: this.open_production_drawer(card.production, card)
+		);
+		$card.find(".se-open-work-order").on("click", () => frappe.set_route("Form", "Work Order", card.work_order));
 		$card.find(".se-edit, .se-plan").on("click", () => this.open_schedule_dialog(card, card.planned_date || this.state.week_start));
 		$card.find(".se-plan-all").on("click", () => this.plan_full_production(card));
 		$card.find(".se-unplan").on("click", () => this.unplan(card));
@@ -444,6 +486,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		if (status === "Completed") {
 			return `<span class="se-state-pill ${status_class}">✓</span>`;
 		}
+		if (status === "Cancelled") {
+			return `<span class="se-state-pill ${status_class}">×</span>`;
+		}
 		if (is_pending) {
 			return `<button class="btn btn-xs btn-primary se-plan">${__("Plan")}</button>`;
 		}
@@ -458,6 +503,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				<button class="btn btn-xs btn-default se-resume">${__("Resume")}</button>
 				<button class="btn btn-xs btn-primary se-complete">${__("Complete Process")}</button>
 			`;
+		}
+		if (card.start_allowed === false) {
+			const reason = frappe.utils.escape_html(card.start_block_reason || __("Schedule the operation before starting production."));
+			return `<button class="btn btn-xs btn-primary se-start" disabled title="${reason}" aria-label="${reason}">▶ ${__("Start")}</button>`;
 		}
 		return `<button class="btn btn-xs btn-primary se-start" title="${__("Start Production")}" aria-label="${__("Start Production")}">▶ ${__("Start")}</button>`;
 	}
@@ -489,11 +538,21 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				${get_timer_html(card, false)}
 			`;
 		}
-		if (card.job_completion_type === "Partial Completion") {
+		if (card.job_completion_type === "Partial Completion" || card.work_order_is_partial) {
 			const remaining = get_remaining_qty_label(card);
+			const start_block = card.start_allowed === false && card.start_block_reason
+				? `<div class="se-card-time">${frappe.utils.escape_html(card.start_block_reason)}</div>`
+				: "";
 			return `
 				<div class="se-card-time">${__("Partially Completed")}${remaining ? ` • ${frappe.utils.escape_html(remaining)}` : ""}</div>
+				${start_block}
 				${get_timer_html(card, false)}
+			`;
+		}
+		if (card.start_allowed === false && card.start_block_reason) {
+			return `
+				${planned_time ? `<div class="se-card-time">${__("Planned")} ${frappe.utils.escape_html(planned_time)}</div>` : ""}
+				<div class="se-card-time">${frappe.utils.escape_html(card.start_block_reason)}</div>
 			`;
 		}
 		if (status === "Ready") {
@@ -524,6 +583,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		const workstations = response.message || [];
+		if (card.plan_type === "Required Material" && card.workstation && !workstations.includes(card.workstation)) {
+			workstations.unshift(card.workstation);
+		}
 		if (!workstations.length) {
 			frappe.throw(__("No compatible Workstation found for Operation {0}.", [card.operation]));
 		}
@@ -652,10 +714,23 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{
 					fieldtype: "Data",
 					fieldname: "finished_item",
-					label: __("Finished Item"),
+					label: context.is_material_production ? __("Production Item") : __("Finished Item"),
 					read_only: 1,
 					default: context.finished_item || card.item_name || card.finished_item,
 				},
+				{ fieldtype: "Section Break", label: __("Material Production"), hidden: !context.is_material_production },
+				{ fieldtype: "Data", fieldname: "material_type", label: __("Material Type"), read_only: 1, hidden: !context.is_material_production, default: context.material_type },
+				{ fieldtype: "Link", fieldname: "work_order", label: __("Work Order"), options: "Work Order", read_only: 1, hidden: !context.is_material_production, default: context.work_order },
+				{ fieldtype: "Link", fieldname: "bom_no", label: __("BOM"), options: "BOM", read_only: 1, hidden: !context.is_material_production, default: context.bom_no },
+				{ fieldtype: "Column Break", hidden: !context.is_material_production },
+				{ fieldtype: "Int", fieldname: "planned_batches", label: __("No. of Batches"), read_only: 1, hidden: !context.is_material_production, default: context.planned_batches },
+				{ fieldtype: "Float", fieldname: "weight_per_batch", label: __("Weight per Batch ({0})", [context.quantity_uom || ""]), precision: 6, read_only: 1, hidden: !context.is_material_production, default: context.weight_per_batch },
+				{ fieldtype: "Float", fieldname: "total_planned_quantity", label: __("Total Planned Quantity ({0})", [context.quantity_uom || ""]), precision: 6, read_only: 1, hidden: !context.is_material_production, default: context.total_planned_quantity },
+				{ fieldtype: "Section Break", label: __("Warehouses"), hidden: !context.is_material_production },
+				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
+				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
+				{ fieldtype: "Link", fieldname: "target_warehouse", label: __("Target Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.target_warehouse },
+				{ fieldtype: "Section Break" },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Link",
@@ -675,7 +750,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{
 					fieldtype: "Float",
 					fieldname: "planned_meter",
-					label: __("Planned Meter"),
+					label: context.is_material_production ? __("Planned Batches") : __("Planned Meter"),
 					precision: 6,
 					read_only: 1,
 					default: context.planned_qty_meter,
@@ -683,7 +758,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{
 					fieldtype: "Float",
 					fieldname: "planned_kg",
-					label: __("Planned Kg"),
+					label: context.is_material_production ? __("Planned Quantity ({0})", [context.quantity_uom || ""]) : __("Planned Kg"),
 					precision: 6,
 					read_only: 1,
 					default: context.planned_qty_kg,
@@ -819,7 +894,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			args: { plan_entry: card.id },
 		});
 		const context = response.message || {};
-		const meter_label = __("Actual Completed Qty") + " (m)";
+		const is_material = Boolean(context.is_material_production);
+		const meter_label = is_material ? __("Completed Batches") : __("Actual Completed Qty") + " (m)";
 		const kg_required = flt(context.planned_qty_kg) > 0;
 		let completing = false;
 		const dialog = new frappe.ui.Dialog({
@@ -830,17 +906,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{
 					fieldtype: "Data",
 					fieldname: "finished_item",
-					label: __("Finished Item"),
+					label: is_material ? __("Production Item") : __("Finished Item"),
 					read_only: 1,
 					default: context.finished_item || card.item_name || card.finished_item,
 				},
+				{ fieldtype: "Data", fieldname: "material_type", label: __("Material Type"), read_only: 1, hidden: !is_material, default: context.material_type },
+				{ fieldtype: "Link", fieldname: "work_order", label: __("Work Order"), options: "Work Order", read_only: 1, hidden: !is_material, default: context.work_order },
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: context.operation || card.operation },
 				{ fieldtype: "Data", fieldname: "workstation", label: __("Workstation"), read_only: 1, default: context.workstation || card.workstation },
 				{ fieldtype: "Data", fieldname: "operator_name", label: __("Employee"), read_only: 1, default: context.operator_name || card.operator_name || "" },
 				{ fieldtype: "Section Break" },
-				{ fieldtype: "Float", fieldname: "planned_qty_meter", label: __("Planned Qty Meter"), precision: 6, read_only: 1, default: context.planned_qty_meter || card.qty || 0 },
-				{ fieldtype: "Float", fieldname: "planned_qty_kg", label: __("Planned Kg"), precision: 6, read_only: 1, default: context.planned_qty_kg || card.planned_weight_kg || 0 },
+				{ fieldtype: "Float", fieldname: "planned_qty_meter", label: is_material ? __("Planned Batches") : __("Planned Qty Meter"), precision: 6, read_only: 1, default: context.planned_qty_meter || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "planned_qty_kg", label: is_material ? __("Planned Quantity ({0})", [context.quantity_uom || ""]) : __("Planned Kg"), precision: 6, read_only: 1, default: context.planned_qty_kg || card.planned_weight_kg || 0 },
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Data", fieldname: "actual_running_time", label: __("Actual Running Time"), read_only: 1, default: format_duration_seconds(context.productive_elapsed_seconds || card.job_productive_elapsed_seconds || 0) },
 				{ fieldtype: "Data", fieldname: "total_downtime", label: __("Total Downtime"), read_only: 1, default: format_duration_seconds(context.total_downtime_seconds || 0) },
@@ -853,10 +931,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					reqd: 1,
 					default: "Full Completion",
 				},
-				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || card.qty || 0 },
-				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: context.actual_qty_kg || card.planned_weight_kg || 0 },
+				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || context.planned_qty_meter || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, read_only: is_material, default: context.actual_qty_kg || context.planned_qty_kg || card.planned_weight_kg || 0 },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "good_qty", label: __("Good Qty"), precision: 6, default: context.good_qty || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "good_qty", label: __("Good Qty"), precision: 6, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
 				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Qty"), precision: 6, default: context.rejected_qty || 0 },
 				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Qty"), precision: 6, default: context.rework_qty || 0 },
 				{ fieldtype: "Section Break" },
@@ -897,6 +975,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		if (is_material) {
+			const update_material_quantity = () => {
+				const batches = cint(dialog.get_value("actual_qty_meter"));
+				dialog.set_value("actual_qty_kg", flt(batches * flt(context.weight_per_batch), 6));
+			};
+			dialog.fields_dict.actual_qty_meter.df.onchange = update_material_quantity;
+			dialog.fields_dict.actual_qty_meter.$input?.on("change", update_material_quantity);
+			update_material_quantity();
+		}
 		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
 			dialog.set_secondary_action_label(__("Cancel"));
 			dialog.set_secondary_action(() => dialog.hide());
@@ -1020,7 +1107,19 @@ function get_planned_time_label(card) {
 }
 
 function get_card_status(card) {
+	if (
+		card.work_order_is_partial &&
+		card.job_status !== "In Progress" &&
+		card.job_status !== "Paused" &&
+		card.status !== "Completed" &&
+		card.status !== "Cancelled"
+	) {
+		return "Partially Completed";
+	}
 	if (card.job_status === "Draft") {
+		return card.status;
+	}
+	if (card.plan_type === "Required Material" && card.job_status === "Completed" && card.status !== "Completed") {
 		return card.status;
 	}
 	if (card.job_status === "Completed" && card.job_completion_type === "Partial Completion") {
@@ -1041,6 +1140,12 @@ function get_status_label(status) {
 
 function get_remaining_qty_label(card) {
 	const parts = [];
+	if (cint(card.work_order_remaining_batches)) {
+		parts.push(`${cint(card.work_order_remaining_batches)} ${__("batches remaining")}`);
+	}
+	if (flt(card.work_order_remaining_qty)) {
+		parts.push(`${se_format_number(card.work_order_remaining_qty, 3)} ${card.uom || ""} ${__("remaining")}`);
+	}
 	if (flt(card.job_remaining_qty_meter)) {
 		parts.push(`${se_format_number(card.job_remaining_qty_meter, 2)} m ${__("remaining")}`);
 	}

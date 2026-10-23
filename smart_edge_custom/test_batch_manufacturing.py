@@ -16,6 +16,9 @@ from smart_edge_custom.manufacturing.batch_manufacturing import (
 
 
 class TestBatchManufacturing(IntegrationTestCase):
+	def test_five_gram_based_batches_calculate_stock_uom_quantity(self):
+		self.assertEqual(calculate_manufacturing_quantity(5, 0.3), 1.5)
+
 	def test_four_batches_calculate_260_kg(self):
 		self.assertEqual(calculate_manufacturing_quantity(4, 65), 260)
 		for batches, weight in ((0, 65), (-1, 65), (1.5, 65), (1, 0)):

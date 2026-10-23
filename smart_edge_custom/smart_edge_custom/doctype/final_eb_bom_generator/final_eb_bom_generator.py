@@ -28,6 +28,11 @@ class FinalEBBOMGenerator(Document):
 			preview = calculate_bom_preview(self.as_dict())
 			apply_preview_to_doc(self, preview)
 
+	def on_update(self):
+		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+
+		refresh_material_readiness(self.name)
+
 	@frappe.whitelist()
 	def preview_bom(self):
 		preview = calculate_bom_preview(self.as_dict())

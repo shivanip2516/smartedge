@@ -42,8 +42,8 @@
    "fieldname": "total_kg",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Total (kg)",
-   "precision": "3",
+   "label": "Total",
+   "precision": "6",
    "read_only": 1
   },
   {

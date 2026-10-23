@@ -5,7 +5,11 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_allocations
+from smart_edge_custom.manufacturing.fifo_batch_selection import (
+	InsufficientBatchStockError,
+	get_fifo_batch_allocations,
+	get_kg_to_stock_factor,
+)
 
 MATERIAL_TOLERANCE = 0.00001
 PER_MM_PER_METER = "Per mm per meter"
@@ -331,13 +335,16 @@ def calculate_batch_allocations(doc, materials):
 			continue
 
 		batch_weight = get_prepared_component_batch_weight(master_doctype, master_name, label)
-		allocations[table_field] = get_fifo_batch_allocations(
-			material.get("item_code"),
-			doc.get("source_warehouse"),
-			batch_count,
-			batch_weight,
-			label,
-		)
+		try:
+			allocations[table_field] = get_fifo_batch_allocations(
+				material.get("item_code"),
+				doc.get("source_warehouse"),
+				batch_count,
+				batch_weight,
+				label,
+			)
+		except InsufficientBatchStockError:
+			allocations[table_field] = []
 
 	return allocations
 
@@ -388,8 +395,14 @@ def get_stock_balance_in_kg(item_code, stock_uom, warehouse=None):
 		"conversion_factor",
 	)
 	if flt(conversion_factor) <= 0:
-		return stock_balance
-	return stock_balance * flt(conversion_factor)
+		from erpnext.stock.doctype.item.item import get_uom_conv_factor
+
+		conversion_factor = get_uom_conv_factor("Kg", stock_uom)
+	if flt(conversion_factor) <= 0:
+		frappe.throw(
+			_("Item {0} requires a Kg-to-{1} UOM conversion.").format(item_code, stock_uom)
+		)
+	return stock_balance / flt(conversion_factor)
 
 
 def validate_material_availability(materials, warehouse):
@@ -460,7 +473,11 @@ def get_prepared_component_batch_weight(doctype, name, label):
 		return 0
 	batch_weight = frappe.db.get_value(doctype, name, "total_kg")
 	if flt(batch_weight) <= 0:
-		frappe.throw(_("{0} Weight per Batch (Kg) is required on {1} {2}.").format(label, doctype, name))
+		frappe.throw(_("{0} Weight per Batch is required on {1} {2}.").format(label, doctype, name))
+	if doctype == "Base Colour":
+		item_code = get_base_colour_stock_item(name)
+		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+		return flt(batch_weight) / get_kg_to_stock_factor(item_code, stock_uom)
 	return flt(batch_weight)
 
 

@@ -129,9 +129,11 @@ class SmartEdgeProductionJob(Document):
 		self.status = "Completed"
 		self.save()
 		self.sync_plan_entry("Completed" if completion_type == "Full Completion" else "On Hold")
-		from smart_edge_custom.manufacturing.planning import release_completed_quantity_to_next_operation
+		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+		if plan_type != "Required Material":
+			from smart_edge_custom.manufacturing.planning import release_completed_quantity_to_next_operation
 
-		release_completed_quantity_to_next_operation(self)
+			release_completed_quantity_to_next_operation(self)
 		if self.get("released_to_plan_entry"):
 			self.save()
 		return {"status": self.status}
@@ -234,9 +236,15 @@ class SmartEdgeProductionJob(Document):
 			updates["production_job"] = self.name
 		frappe.db.set_value("SmartEdge Production Plan Entry", self.plan_entry, updates, update_modified=True)
 		if self.final_eb_bom_generator:
-			from smart_edge_custom.manufacturing.planning import update_generator_planning_status
+			plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+			if plan_type == "Required Material":
+				from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 
-			update_generator_planning_status(self.final_eb_bom_generator)
+				refresh_material_readiness(self.final_eb_bom_generator)
+			else:
+				from smart_edge_custom.manufacturing.planning import update_generator_planning_status
+
+				update_generator_planning_status(self.final_eb_bom_generator)
 
 
 def get_duration_hours(start, end):

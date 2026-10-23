@@ -41,6 +41,9 @@ def get_weekly_planning_board(
 	frappe.has_permission("SmartEdge Production Plan Entry", "read", throw=True)
 	week_start = get_week_start(week_start)
 	week_end = week_start + timedelta(days=6)
+	from smart_edge_custom.manufacturing.work_order_sync import reconcile_board_work_orders
+
+	reconcile_board_work_orders(week_start, week_end)
 	entries = get_plan_entries(
 		week_start,
 		week_end,
@@ -75,6 +78,13 @@ def get_weekly_planning_board(
 	board["pending_count"] = len(board["pending"])
 	board["week_start"] = str(week_start)
 	board["week_end"] = str(week_end)
+	site_now = now_datetime()
+	board["site_today"] = str(getdate(site_now))
+	next_site_midnight = datetime.combine(getdate(site_now) + timedelta(days=1), time.min)
+	board["date_refresh_after_seconds"] = max(
+		int((next_site_midnight - site_now).total_seconds()) + 2,
+		1,
+	)
 	board["filters"] = {
 		"categories": list(CATEGORY_COLORS),
 		"workstations": frappe.get_all("Workstation", filters={"disabled": 0}, pluck="name", order_by="name"),
@@ -120,6 +130,21 @@ def get_plan_entries(week_start, week_end, **filters):
 		"status",
 		"priority",
 		"remarks",
+		"plan_type",
+		"material_type",
+		"material_item",
+		"bom_no",
+		"work_order",
+		"planned_batches",
+		"weight_per_batch",
+		"quantity_uom",
+		"source_warehouse",
+		"wip_warehouse",
+		"target_warehouse",
+		"planned_employee",
+		"planned_shift",
+		"material_transfer_stock_entry",
+		"manufacture_stock_entry",
 	]
 	entry_meta = frappe.get_meta("SmartEdge Production Plan Entry", cached=True)
 	for fieldname in (
@@ -148,7 +173,8 @@ def get_plan_entries(week_start, week_end, **filters):
 			continue
 		if row.planned_date and not (week_start <= getdate(row.planned_date) <= week_end):
 			continue
-		if filters.get("finished_product") and generator.finished_item != filters["finished_product"]:
+		card_item = row.get("material_item") if row.get("plan_type") == "Required Material" else generator.finished_item
+		if filters.get("finished_product") and card_item != filters["finished_product"]:
 			continue
 		if filters.get("size") and str(generator.custom_size or "") != str(filters["size"]):
 			continue
@@ -157,11 +183,58 @@ def get_plan_entries(week_start, week_end, **filters):
 		if filters.get("search") and not matches_search(row, generator, filters["search"]):
 			continue
 		for key, value in generator.items():
-			if key not in {"name", "status"}:
+			if key not in {"name", "status"} and not (
+				row.get("plan_type") == "Required Material" and key == "production_quantity"
+			):
 				row[key] = value
 		result.append(row)
 	attach_job_details(result)
+	attach_work_order_progress(result)
+	planned_employee_names = get_employee_name_map(row.get("planned_employee") for row in result)
+	for row in result:
+		row.planned_employee_name = planned_employee_names.get(row.get("planned_employee"))
 	return result
+
+
+def attach_work_order_progress(rows):
+	work_orders = list({row.get("work_order") for row in rows if row.get("work_order")})
+	if not work_orders:
+		return
+	work_order_rows = frappe.get_all(
+		"Work Order",
+		filters={"name": ["in", work_orders]},
+		fields=["name", "status", "docstatus", "qty", "produced_qty"],
+		limit_page_length=len(work_orders),
+	)
+	manufactured = defaultdict(float)
+	for stock_entry in frappe.get_all(
+		"Stock Entry",
+		filters={
+			"work_order": ["in", work_orders],
+			"purpose": "Manufacture",
+			"docstatus": 1,
+		},
+		fields=["work_order", "fg_completed_qty"],
+		limit_page_length=5000,
+	):
+		manufactured[stock_entry.work_order] += flt(stock_entry.fg_completed_qty)
+	by_name = {row.name: row for row in work_order_rows}
+	for row in rows:
+		work_order = by_name.get(row.get("work_order"))
+		if not work_order:
+			continue
+		verified_qty = min(flt(work_order.produced_qty), manufactured[work_order.name])
+		row.work_order_status = work_order.status
+		row.work_order_qty = flt(work_order.qty)
+		row.work_order_produced_qty = verified_qty
+		row.work_order_remaining_qty = max(flt(work_order.qty) - verified_qty, 0)
+		row.work_order_is_partial = bool(
+			verified_qty > 0 and verified_qty + 0.000001 < flt(work_order.qty)
+		)
+		weight = flt(row.get("weight_per_batch"))
+		if weight:
+			row.work_order_completed_batches = int((verified_qty + 0.000001) // weight)
+			row.work_order_remaining_batches = max(cint(row.get("planned_batches")) - row.work_order_completed_batches, 0)
 
 
 def attach_job_details(rows):
@@ -249,6 +322,12 @@ def get_productive_elapsed_seconds(job):
 
 def get_effective_entry_status(row):
 	if row.get("job_status") == "Draft":
+		return row.status
+	if (
+		row.get("plan_type") == "Required Material"
+		and row.get("job_status") == "Completed"
+		and row.status != "Completed"
+	):
 		return row.status
 	if row.get("job_status") == "Completed" and row.get("job_completion_type") == "Partial Completion":
 		return row.status
@@ -349,6 +428,8 @@ def matches_search(row, generator, search):
 			row.final_eb_bom_generator,
 			row.operation,
 			row.workstation,
+			row.get("material_type"),
+			row.get("material_item"),
 			generator.finished_item,
 			generator.finished_item_name,
 			generator.custom_base_colour,
@@ -379,7 +460,7 @@ def make_operation_card(row):
 	category = row.planning_category or "Other"
 	actual_workstation = row.get("job_workstation")
 	display_workstation = get_card_workstation(row)
-	return {
+	card = {
 		"id": row.name,
 		"production": row.final_eb_bom_generator,
 		"operation_row": row.operation_row,
@@ -415,9 +496,9 @@ def make_operation_card(row):
 		"customer_code": row.custom_customer_order_code,
 		"production_job": row.get("production_job"),
 		"job_status": row.get("job_status"),
-		"operator_employee": row.get("operator_employee"),
-		"operator_name": row.get("operator_name"),
-		"shift": row.get("shift"),
+		"operator_employee": row.get("operator_employee") or row.get("planned_employee"),
+		"operator_name": row.get("operator_name") or row.get("planned_employee_name"),
+		"shift": row.get("shift") or row.get("planned_shift"),
 		"job_actual_start": str(row.get("job_actual_start")) if row.get("job_actual_start") else None,
 		"job_actual_end": str(row.get("job_actual_end")) if row.get("job_actual_end") else None,
 		"job_productive_elapsed_seconds": cint(row.get("job_productive_elapsed_seconds") or 0),
@@ -437,6 +518,36 @@ def make_operation_card(row):
 		"downtime_employee": row.get("downtime_employee"),
 		"downtime_elapsed_seconds": cint(row.get("downtime_elapsed_seconds") or 0),
 	}
+	start_eligibility = get_scheduled_start_eligibility(row)
+	card["start_allowed"] = start_eligibility["allowed"]
+	card["start_block_reason"] = start_eligibility["message"]
+	if row.get("plan_type") == "Required Material":
+		card.update(
+			{
+				"plan_type": row.plan_type,
+				"material_type": row.material_type,
+				"finished_item": row.material_item,
+				"item_name": frappe.db.get_value("Item", row.material_item, "item_name") or row.material_item,
+				"qty": cint(row.planned_batches),
+				"uom": row.quantity_uom,
+				"planned_weight_kg": flt(row.production_quantity),
+				"bom_no": row.bom_no,
+				"work_order": row.work_order,
+				"planned_batches": cint(row.planned_batches),
+				"weight_per_batch": flt(row.weight_per_batch),
+				"source_warehouse": row.source_warehouse,
+				"wip_warehouse": row.wip_warehouse,
+				"target_warehouse": row.target_warehouse,
+				"work_order_status": row.get("work_order_status"),
+				"work_order_qty": flt(row.get("work_order_qty")),
+				"work_order_produced_qty": flt(row.get("work_order_produced_qty")),
+				"work_order_remaining_qty": flt(row.get("work_order_remaining_qty")),
+				"work_order_is_partial": bool(row.get("work_order_is_partial")),
+				"work_order_completed_batches": cint(row.get("work_order_completed_batches")),
+				"work_order_remaining_batches": cint(row.get("work_order_remaining_batches")),
+			}
+		)
+	return card
 
 
 def get_card_workstation(row):
@@ -516,7 +627,7 @@ def get_production_plan(production):
 
 
 @frappe.whitelist()
-def get_compatible_workstations(operation, operation_row=None):
+def get_compatible_workstations(operation, operation_row=None, include_default=1, include_routes=1):
 	frappe.has_permission("Workstation", "read", throw=True)
 	if not operation or not frappe.db.exists("Operation", operation):
 		return []
@@ -538,7 +649,7 @@ def get_compatible_workstations(operation, operation_row=None):
 		for row in rows:
 			add_unique(workstations, row.workstation)
 
-	if frappe.db.exists("DocType", "SmartEdge Route Operation"):
+	if cint(include_routes) and frappe.db.exists("DocType", "SmartEdge Route Operation"):
 		route_rows = frappe.get_all(
 			"SmartEdge Route Operation",
 			filters={"operation": operation},
@@ -561,7 +672,8 @@ def get_compatible_workstations(operation, operation_row=None):
 			if row.parent in enabled_routes:
 				add_unique(workstations, row.workstation)
 
-	add_unique(workstations, default_workstation)
+	if cint(include_default):
+		add_unique(workstations, default_workstation)
 	return filter_enabled_workstations(workstations)
 
 
@@ -598,7 +710,7 @@ def schedule_operation(
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
 	validate_plan_entry(entry)
-	validate_workstation_compatibility(entry.operation, entry.operation_row, workstation)
+	validate_selected_workstation(entry, workstation)
 
 	start_dt = combine_date_time(planned_date, planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
@@ -715,6 +827,8 @@ def validate_sequence(entry, start_dt, override=False):
 
 
 def get_sequence_predecessors(entry):
+	if entry.get("plan_type") == "Required Material":
+		return []
 	if entry.operation_row:
 		current = frappe.db.get_value(
 			"Final EB BOM Operation",
@@ -852,6 +966,9 @@ def get_overlapping_entries(workstation, start_dt, end_dt, exclude_entry=None):
 
 
 def update_generator_planning_status(production):
+	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+
+	refresh_material_readiness(production)
 	status = get_completed_parent_status(production)
 	if status:
 		set_generator_status(production, status)
@@ -861,7 +978,11 @@ def update_generator_planning_status(production):
 
 	rows = frappe.get_all(
 		"SmartEdge Production Plan Entry",
-		filters={"final_eb_bom_generator": production, "status": ["!=", "Cancelled"]},
+		filters={
+			"final_eb_bom_generator": production,
+			"plan_type": ["!=", "Required Material"],
+			"status": ["!=", "Cancelled"],
+		},
 		fields=["status"],
 	)
 	if not rows:
@@ -1532,11 +1653,11 @@ def get_start_job_context(plan_entry):
 	)
 
 	company = production.company if production else None
-	operator_employee = get_current_employee(company)
+	operator_employee = entry.get("planned_employee") or get_current_employee(company)
 	if operator_employee and not can_read_employee(operator_employee):
 		operator_employee = None
 	pending_quantity = get_remaining_or_planned_quantity(entry)
-	return {
+	context = {
 		"production_definition": entry.final_eb_bom_generator,
 		"finished_item": (production.finished_item_name or production.finished_item) if production else None,
 		"operation": entry.operation,
@@ -1545,12 +1666,33 @@ def get_start_job_context(plan_entry):
 		"company": company,
 		"operator_employee": operator_employee,
 		"operator_name": frappe.db.get_value("Employee", operator_employee, "employee_name") if operator_employee else None,
-		"shift": get_current_shift(operator_employee) if operator_employee else None,
+		"shift": entry.get("planned_shift") or (get_current_shift(operator_employee) if operator_employee else None),
 		"planned_qty_meter": pending_quantity.get("meter"),
 		"planned_qty_kg": pending_quantity.get("kg"),
 		"planned_start": entry.planned_start_datetime,
 		"can_edit_workstation": entry.has_permission("write"),
 	}
+	if entry.get("plan_type") == "Required Material":
+		if entry.workstation and entry.workstation not in context["compatible_workstations"]:
+			context["compatible_workstations"].insert(0, entry.workstation)
+		context.update(
+			{
+				"is_material_production": 1,
+				"production_item": entry.material_item,
+				"finished_item": frappe.db.get_value("Item", entry.material_item, "item_name") or entry.material_item,
+				"material_type": entry.material_type,
+				"work_order": entry.work_order,
+				"bom_no": entry.bom_no,
+				"planned_batches": cint(entry.planned_batches),
+				"weight_per_batch": flt(entry.weight_per_batch),
+				"total_planned_quantity": flt(entry.production_quantity),
+				"quantity_uom": entry.quantity_uom,
+				"source_warehouse": entry.source_warehouse,
+				"wip_warehouse": entry.wip_warehouse,
+				"target_warehouse": entry.target_warehouse,
+			}
+		)
+	return context
 
 
 @frappe.whitelist()
@@ -1570,7 +1712,7 @@ def get_complete_job_context(plan_entry):
 		["finished_item", "finished_item_name", "stock_uom"],
 		as_dict=True,
 	)
-	return {
+	context = {
 		"production_job": job.name,
 		"operation": job.operation,
 		"finished_item": (production.finished_item_name or production.finished_item) if production else None,
@@ -1592,6 +1734,23 @@ def get_complete_job_context(plan_entry):
 		"remarks": job.remarks,
 		"status": job.status,
 	}
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	if entry.get("plan_type") == "Required Material":
+		context.update(
+			{
+				"is_material_production": 1,
+				"material_type": entry.material_type,
+				"production_item": entry.material_item,
+				"finished_item": frappe.db.get_value("Item", entry.material_item, "item_name") or entry.material_item,
+				"work_order": entry.work_order,
+				"bom_no": entry.bom_no,
+				"planned_batches": flt(job.planned_qty_meter),
+				"weight_per_batch": flt(entry.weight_per_batch),
+				"quantity_uom": entry.quantity_uom,
+				"total_planned_quantity": flt(job.planned_qty_kg),
+			}
+		)
+	return context
 
 
 def get_remaining_or_planned_quantity(entry):
@@ -1623,6 +1782,8 @@ def get_latest_partial_remainder(plan_entry):
 
 
 def get_previous_mandatory_entry(entry):
+	if entry.get("plan_type") == "Required Material":
+		return None
 	rows = frappe.get_all(
 		"SmartEdge Production Plan Entry",
 		filters={
@@ -1641,6 +1802,8 @@ def get_previous_mandatory_entry(entry):
 
 
 def get_next_mandatory_entry(entry):
+	if entry.get("plan_type") == "Required Material":
+		return None
 	rows = frappe.get_all(
 		"SmartEdge Production Plan Entry",
 		filters={
@@ -1717,6 +1880,11 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	lock_plan_entry(plan_entry)
 	entry.reload()
 	validate_start_eligible(entry)
+	material_transfer = None
+	if entry.get("plan_type") == "Required Material":
+		from smart_edge_custom.manufacturing.material_production import ensure_material_transfer
+
+		material_transfer = ensure_material_transfer(entry)
 	job_rows = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"plan_entry": plan_entry, "status": ["not in", ["Cancelled"]]},
@@ -1749,6 +1917,8 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 			if job.meta.has_field("current_timer_start") and not job.current_timer_start:
 				job.current_timer_start = now_datetime()
 			job.status = "In Progress"
+			if job.meta.has_field("material_transfer_stock_entry"):
+				job.material_transfer_stock_entry = material_transfer
 			job.save()
 			job.sync_plan_entry("In Progress")
 			entry.reload()
@@ -1779,6 +1949,8 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	if job.meta.has_field("current_timer_start"):
 		job.current_timer_start = job.actual_start
 	job.status = "In Progress"
+	if job.meta.has_field("material_transfer_stock_entry"):
+		job.material_transfer_stock_entry = material_transfer
 	job.insert()
 	if frappe.get_meta("SmartEdge Production Plan Entry", cached=True).has_field("production_job"):
 		entry.production_job = job.name
@@ -1814,11 +1986,36 @@ def apply_released_quantity_to_job(job, entry):
 def validate_start_eligible(entry):
 	if entry.status in {"Completed", "Cancelled"}:
 		frappe.throw(_("Completed or cancelled operations cannot be started."))
+	validate_scheduled_start_date(entry)
 	validate_predecessor_release(entry)
 	if not entry.workstation:
 		frappe.throw(_("Schedule the operation on a Workstation before starting production."))
-	if not entry.planned_date or not entry.planned_start_datetime:
+	if not entry.planned_start_datetime:
 		frappe.throw(_("Schedule the operation before starting production."))
+
+
+def get_scheduled_start_eligibility(entry, current_date=None):
+	if not entry.get("planned_date"):
+		return {
+			"allowed": False,
+			"message": _("Schedule the operation before starting production."),
+		}
+	scheduled_date = getdate(entry.get("planned_date"))
+	site_date = getdate(current_date or nowdate())
+	if site_date < scheduled_date:
+		return {
+			"allowed": False,
+			"message": _("Production cannot be started before the scheduled date: {0}.").format(
+				scheduled_date.strftime("%d-%m-%Y")
+			),
+		}
+	return {"allowed": True, "message": None}
+
+
+def validate_scheduled_start_date(entry, current_date=None):
+	eligibility = get_scheduled_start_eligibility(entry, current_date=current_date)
+	if not eligibility["allowed"]:
+		frappe.throw(eligibility["message"])
 
 
 def validate_predecessor_release(entry):
@@ -1837,6 +2034,12 @@ def validate_predecessor_release(entry):
 def validate_selected_workstation(entry, workstation):
 	if not workstation:
 		frappe.throw(_("Workstation is required."))
+	if entry.get("plan_type") == "Required Material" and workstation == entry.workstation:
+		row = frappe.db.get_value("Workstation", workstation, ["disabled"], as_dict=True)
+		if not row or row.disabled:
+			frappe.throw(_("Select an enabled Workstation."))
+		frappe.get_doc("Workstation", workstation).check_permission("read")
+		return
 	validate_workstation_compatibility(entry.operation, entry.operation_row, workstation)
 
 
@@ -1881,6 +2084,30 @@ def complete_production_job(
 	job = get_open_job(plan_entry)
 	lock_production_job(job.name)
 	job.reload()
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	material_result = None
+	if entry.get("plan_type") == "Required Material":
+		from smart_edge_custom.manufacturing.material_production import complete_material_production
+
+		completed_batches = cint(actual_qty_meter)
+		planned_batches = cint(job.planned_qty_meter)
+		completion_type = completion_type or "Full Completion"
+		if completion_type == "Full Completion" and completed_batches != planned_batches:
+			frappe.throw(
+				_("Full Completion requires all {0} planned batches.").format(planned_batches)
+			)
+		if completion_type == "Partial Completion" and completed_batches >= planned_batches:
+			frappe.throw(_("Partial Completion must leave at least one batch remaining."))
+		previous_completion_flag = getattr(frappe.flags, "smartedge_board_completion", False)
+		frappe.flags.smartedge_board_completion = True
+		try:
+			material_result = complete_material_production(entry, completed_batches)
+		finally:
+			frappe.flags.smartedge_board_completion = previous_completion_flag
+		actual_qty_meter = completed_batches
+		actual_qty_kg = material_result["quantity"]
+		good_qty = material_result["quantity"]
+
 	for fieldname, value in {
 		"actual_qty_meter": actual_qty_meter,
 		"actual_qty_kg": actual_qty_kg,
@@ -1894,8 +2121,18 @@ def complete_production_job(
 		if value is not None:
 			job.set(fieldname, flt(value) if fieldname != "remarks" else value)
 	completion_type = completion_type or "Full Completion"
-	validate_final_completion_stock_entry_setup(job, completion_type)
+	if material_result:
+		job.manufacturing_stock_entry = material_result["stock_entry"]
+		job.stock_posted_qty = material_result["quantity"]
+	else:
+		validate_final_completion_stock_entry_setup(job, completion_type)
 	job.complete_job(completion_type)
+	if material_result:
+		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+		from smart_edge_custom.manufacturing.work_order_sync import sync_work_order_to_planning
+
+		sync_work_order_to_planning(entry.work_order, refresh_readiness=False)
+		refresh_material_readiness(entry.final_eb_bom_generator)
 	return {"production_job": job.name, "status": job.status}
 
 

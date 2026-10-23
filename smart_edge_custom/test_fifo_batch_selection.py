@@ -98,6 +98,28 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 		with self.assertRaisesRegex(frappe.ValidationError, "Requested: 3 batches. Available: 1"):
 			get_fifo_batch_allocations("Shade 1", "Stores - SE", 3, 50, "Shade")
 
+	@patch("smart_edge_custom.manufacturing.fifo_batch_selection.get_uom_conv_factor", return_value=1000)
+	@patch("smart_edge_custom.manufacturing.fifo_batch_selection.get_first_receipt_order")
+	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty")
+	@patch("smart_edge_custom.manufacturing.fifo_batch_selection.frappe.db.get_value")
+	def test_shade_fifo_compares_kg_requirement_with_gram_stock(
+		self, get_value, get_batch_qty, get_receipts, _get_global_factor
+	):
+		get_value.side_effect = [
+			frappe._dict({"has_batch_no": 1, "has_serial_no": 0, "stock_uom": "Gram"}),
+			None,
+		]
+		get_batch_qty.return_value = [frappe._dict({"batch_no": "SHD-G-001", "qty": 300})]
+		get_receipts.return_value = {
+			"SHD-G-001": receipt("2026-10-01 09:00:00", "SLE-G-1")
+		}
+
+		rows = get_fifo_batch_allocations("Shade Gram", "Stores - SE", 1, 0.3, "Shade")
+
+		self.assertEqual(rows[0]["batch_no"], "SHD-G-001")
+		self.assertEqual(rows[0]["available_qty"], 0.3)
+		self.assertEqual(rows[0]["selected_qty"], 0.3)
+
 	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_fifo_batch_allocations")
 	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_prepared_component_batch_weight")
 	def test_explicit_refresh_reallocates_a_planned_record(self, get_batch_weight, get_allocations):

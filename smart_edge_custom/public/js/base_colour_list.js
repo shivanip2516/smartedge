@@ -48,7 +48,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 					<div class="base-colour-row base-colour-heading">
 						<div>${__("BASE COLOUR NAME")}</div>
 						<div>${__("WEIGHTAGE")}</div>
-						<div>${__("TOTAL (KG)")}</div>
+						<div>${__("TOTAL")}</div>
 						<div>${__("ACTIONS")}</div>
 					</div>
 					<div class="base-colour-rows"></div>
@@ -95,7 +95,8 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 			const colour_name = frappe.utils.escape_html(row.colour_name || row.name);
 			const name = frappe.utils.escape_html(row.name);
 			const weightage = cint(row.weightage);
-			const total_kg = flt(row.total_kg || 0, 3).toFixed(3);
+			const total = format_number(row.total_kg, null, 6);
+			const total_with_uom = `${total} ${frappe.utils.escape_html(row.stock_uom || "")}`.trim();
 			const badge_class = this.get_badge_class(weightage);
 			const $row = $(`
 				<div class="base-colour-row" data-name="${name}">
@@ -104,7 +105,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 						<span>${colour_name}</span>
 					</div>
 					<div><span class="base-colour-weight ${badge_class}">${weightage || ""}</span></div>
-					<div>${total_kg}</div>
+					<div>${total_with_uom}</div>
 					<div class="base-colour-actions"></div>
 				</div>
 			`);
@@ -194,6 +195,7 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 							reqd: 1,
 							in_list_view: 1,
 							columns: 4,
+							onchange: () => this.update_dialog_total(dialog),
 							get_query: () => ({
 								filters: {
 									item_group: "Pigments",
@@ -214,12 +216,21 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 							fieldname: "quantity_kg",
 							fieldtype: "Float",
 							label: __("Quantity"),
-							precision: "3",
+							precision: "6",
+							onchange: () => this.update_dialog_total(dialog),
 							reqd: 1,
 							in_list_view: 1,
 							columns: 2,
 						},
 					],
+				},
+				{
+					fieldname: "total_kg",
+					fieldtype: "Float",
+					label: row?.stock_uom ? __("Total ({0})", [row.stock_uom]) : __("Total"),
+					precision: "6",
+					read_only: 1,
+					default: row ? row.total_kg : 0,
 				},
 			],
 			primary_action_label: is_edit ? __("Save") : __("Add"),
@@ -251,6 +262,23 @@ smart_edge_custom.BaseColourList = class BaseColourList {
 
 		dialog.show();
 		dialog.$wrapper.addClass("base-colour-dialog");
+		dialog.fields_dict.colour_name.df.onchange = () => this.update_dialog_total(dialog);
+		this.update_dialog_total(dialog);
+	}
+
+	async update_dialog_total(dialog) {
+		const item_code = dialog.get_value("colour_name");
+		if (!item_code) return;
+		const response = await frappe.call({
+			method: "smart_edge_custom.base_colour.get_recipe_total",
+			args: {
+				item_code,
+				pigments: dialog.get_value("pigments") || [],
+			},
+		});
+		const details = response.message || {};
+		dialog.set_df_property("total_kg", "label", __("Total ({0})", [details.stock_uom || ""]));
+		dialog.set_value("total_kg", flt(details.total));
 	}
 
 	validate(values) {

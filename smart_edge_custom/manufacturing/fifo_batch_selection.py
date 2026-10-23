@@ -2,11 +2,37 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from erpnext.stock.doctype.item.item import get_uom_conv_factor
+
+
+class InsufficientBatchStockError(frappe.ValidationError):
+	pass
+
 
 def get_fifo_batch_allocations(item_code, warehouse, requested_batches, batch_weight_kg, label):
 	requested_batches = int(requested_batches or 0)
 	if requested_batches <= 0:
 		return []
+	availability = get_fifo_batch_availability(item_code, warehouse, batch_weight_kg, label)
+	eligible = availability["eligible_batches"]
+	if len(eligible) < requested_batches:
+		throw_insufficient_batches(label, requested_batches, len(eligible))
+
+	return [
+		{
+			"item_code": item_code,
+			"batch_no": row["batch_no"],
+			"warehouse": warehouse,
+			"receipt_datetime": row["receipt_datetime"],
+			"available_qty": row["available_qty"],
+			"selected_qty": flt(batch_weight_kg),
+			"uom": "Kg",
+		}
+		for row in eligible[:requested_batches]
+	]
+
+
+def get_fifo_batch_availability(item_code, warehouse, batch_weight_kg, label):
 	if not item_code or not warehouse:
 		frappe.throw(_("{0} Item and Source Warehouse are required for FIFO batch selection.").format(label))
 
@@ -14,7 +40,7 @@ def get_fifo_batch_allocations(item_code, warehouse, requested_batches, batch_we
 		"Item", item_code, ["has_batch_no", "has_serial_no", "stock_uom"], as_dict=True
 	)
 	if not item or not item.has_batch_no:
-		return []
+		return {"eligible_batches": [], "available_batches": 0, "stock_uom": item.stock_uom if item else None}
 	if item.has_serial_no:
 		frappe.throw(_("FIFO batch selection does not support serial-numbered Item {0}.").format(item_code))
 
@@ -22,7 +48,7 @@ def get_fifo_batch_allocations(item_code, warehouse, requested_batches, batch_we
 
 	available_batches = get_batch_qty(item_code=item_code, warehouse=warehouse) or []
 	if not available_batches:
-		throw_insufficient_batches(label, requested_batches, 0)
+		return {"eligible_batches": [], "available_batches": 0, "stock_uom": item.stock_uom}
 
 	receipt_order = get_first_receipt_order(
 		item_code, warehouse, [row.batch_no for row in available_batches if row.batch_no]
@@ -53,21 +79,11 @@ def get_fifo_batch_allocations(item_code, warehouse, requested_batches, batch_we
 			row["batch_no"],
 		)
 	)
-	if len(eligible) < requested_batches:
-		throw_insufficient_batches(label, requested_batches, len(eligible))
-
-	return [
-		{
-			"item_code": item_code,
-			"batch_no": row["batch_no"],
-			"warehouse": warehouse,
-			"receipt_datetime": row["receipt_datetime"],
-			"available_qty": row["available_qty"],
-			"selected_qty": flt(batch_weight_kg),
-			"uom": "Kg",
-		}
-		for row in eligible[:requested_batches]
-	]
+	return {
+		"eligible_batches": eligible,
+		"available_batches": len(eligible),
+		"stock_uom": item.stock_uom,
+	}
 
 
 def get_first_receipt_order(item_code, warehouse, batch_nos):
@@ -114,6 +130,8 @@ def get_kg_to_stock_factor(item_code, stock_uom):
 		"UOM Conversion Detail", {"parent": item_code, "uom": "Kg"}, "conversion_factor"
 	)
 	if flt(conversion_factor) <= 0:
+		conversion_factor = get_uom_conv_factor("Kg", stock_uom)
+	if flt(conversion_factor) <= 0:
 		frappe.throw(
 			_("Item {0} requires a Kg-to-{1} UOM conversion for FIFO batch allocation.").format(
 				item_code, stock_uom
@@ -126,5 +144,6 @@ def throw_insufficient_batches(label, requested, available):
 	frappe.throw(
 		_("Insufficient {0} batch stock. Requested: {1} batches. Available: {2} eligible batches.").format(
 			label, requested, available
-		)
+		),
+		exc=InsufficientBatchStockError,
 	)
