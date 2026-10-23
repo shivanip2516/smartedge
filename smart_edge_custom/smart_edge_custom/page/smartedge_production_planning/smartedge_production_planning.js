@@ -55,7 +55,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.$header = $(`
 			<div class="se-planning-header">
 				<div class="se-title-block">
-					<div class="se-page-title">${__("Production Planning Board")}</div>
 					<div class="se-week-title"></div>
 					<div class="se-summary-pills"></div>
 				</div>

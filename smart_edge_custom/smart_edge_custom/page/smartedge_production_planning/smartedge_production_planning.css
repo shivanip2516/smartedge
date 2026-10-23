@@ -1,5 +1,5 @@
 .smartedge-planning {
-	padding: 10px 0 0;
+	padding: 4px 0 0;
 	color: var(--text-color);
 	min-width: 0;
 	overflow-x: hidden;
@@ -7,10 +7,10 @@
 
 .smartedge-planning .se-planning-header {
 	display: flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: space-between;
-	gap: 16px;
-	padding: 8px 0 10px;
+	gap: 12px;
+	padding: 2px 0 6px;
 	background: var(--bg-color);
 }
 
@@ -18,15 +18,8 @@
 	min-width: 260px;
 }
 
-.smartedge-planning .se-page-title {
-	font-size: 19px;
-	font-weight: 700;
-	line-height: 1.25;
-	letter-spacing: 0;
-}
-
 .smartedge-planning .se-week-title {
-	margin-top: 2px;
+	margin-top: 0;
 	font-size: 13px;
 	font-weight: 600;
 	color: var(--text-muted);
@@ -36,7 +29,7 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	margin-top: 8px;
+	margin-top: 4px;
 }
 
 .smartedge-planning .se-summary-pill {
@@ -74,10 +67,10 @@
 .smartedge-planning .se-filter-row {
 	display: grid;
 	grid-template-columns: repeat(7, minmax(130px, 1fr));
-	gap: 8px;
+	gap: 6px;
 	align-items: end;
-	padding: 8px 10px;
-	margin-bottom: 10px;
+	padding: 6px 8px;
+	margin-bottom: 6px;
 	border: 1px solid #e5e7eb;
 	border-radius: 8px;
 	background: #fff;
@@ -99,13 +92,13 @@
 .smartedge-planning .se-filter-row .control-input,
 .smartedge-planning .se-filter-row .form-control,
 .smartedge-planning .se-filter-row input {
-	min-height: 34px;
-	height: 34px;
-	font-size: 12px;
+	min-height: 30px;
+	height: 30px;
+	font-size: 11px;
 }
 
 .smartedge-planning .planning-board-container {
-	height: calc(100vh - 180px);
+	height: calc(100vh - 150px);
 	overflow-y: auto;
 	overflow-x: hidden;
 	padding-bottom: 12px;
