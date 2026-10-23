@@ -24,6 +24,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			board: null,
 			filters: { search: this.get_search_from_route() },
 		};
+		this.expanded_item_cards = new Set();
+		this.expanded_operation_rows = new Set();
 
 		frappe.breadcrumbs.add(__("SmartEdge Manufacturing"));
 		this.make_body();
@@ -104,7 +106,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					options: fieldname === "finished_product" ? "Item" : [],
 					onchange: () => {
 						this.state.filters[fieldname] = control.get_value();
-						this.refresh();
+							if (this.state.board) this.render();
 					},
 				},
 				render_input: true,
@@ -150,7 +152,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			method: `${this.method}.get_weekly_planning_board`,
 			args: {
 				week_start: this.state.week_start,
-				...this.state.filters,
 			},
 		});
 		this.state.board = response.message;
@@ -190,29 +191,341 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const board = this.state.board;
 		this.stop_timers();
 		this.$week.text(`${frappe.datetime.str_to_user(board.week_start)} - ${frappe.datetime.str_to_user(board.week_end)}`);
-		this.render_summary(board);
+		const item_groups = this.get_item_groups();
+		this.render_summary(board, item_groups);
 		this.$board.empty();
-		this.render_pending_column(board.pending || []);
+		this.render_item_column(
+			__("Pending for Planning"),
+			"",
+			"pending",
+			item_groups.filter((group) => group.column_key === "pending")
+		);
 		for (const day of Object.values(board.days || {})) {
-			this.render_day_column(day);
+			this.render_item_column(
+				day.short_label,
+				frappe.datetime.str_to_user(day.date),
+				day.date,
+				item_groups.filter((group) => group.column_key === day.date),
+				day.date === frappe.datetime.get_today()
+			);
 		}
 		this.start_timers();
 	}
 
-	render_summary(board) {
-		const cards = [...(board.pending || [])];
-		for (const day of Object.values(board.days || {})) {
-			cards.push(...(day.operations || []));
+	render_summary(board, item_groups = []) {
+		const unique_cards = new Map();
+		for (const group of item_groups) {
+			for (const card of group.matching_operations) unique_cards.set(card.id, card);
 		}
+		const cards = [...unique_cards.values()];
 		const planned = cards.filter((card) => get_card_status(card) === "Planned").length;
 		const running = cards.filter((card) => get_card_status(card) === "In Progress").length;
 		const completed = cards.filter((card) => get_card_status(card) === "Completed").length;
+		const pending = cards.filter((card) => get_card_status(card) === "Pending").length;
 		this.$summary.html(`
-			<span class="se-summary-pill">${__("Pending")} <strong>${(board.pending || []).length}</strong></span>
-			<span class="se-summary-pill">${__("Planned")} <strong>${planned}</strong></span>
-			<span class="se-summary-pill">${__("Running")} <strong>${running}</strong></span>
-			<span class="se-summary-pill">${__("Done")} <strong>${completed}</strong></span>
+			<span class="se-summary-pill">${__("Pending Ops")} <strong>${pending}</strong></span>
+			<span class="se-summary-pill">${__("Planned Ops")} <strong>${planned}</strong></span>
+			<span class="se-summary-pill">${__("Running Ops")} <strong>${running}</strong></span>
+			<span class="se-summary-pill">${__("Done Ops")} <strong>${completed}</strong></span>
 		`);
+	}
+
+	get_item_groups() {
+		const board = this.state.board || {};
+		const operations = board.all_operations || [
+			...(board.pending || []),
+			...Object.values(board.days || {}).flatMap((day) => day.operations || []),
+		];
+		const unique_operations = new Map();
+		for (const operation of operations) unique_operations.set(operation.id, operation);
+		const grouped = new Map();
+		for (const operation of unique_operations.values()) {
+			const key = get_execution_identity(operation);
+			if (!grouped.has(key)) grouped.set(key, []);
+			grouped.get(key).push(operation);
+		}
+
+		const groups = [];
+		for (const [key, group_operations] of grouped.entries()) {
+			group_operations.sort(compare_operation_sequence);
+			const completed_count = group_operations.filter((operation) => get_card_status(operation) === "Completed").length;
+			const partitions = this.partition_operations_by_column(group_operations);
+			for (const [column_key, column_operations] of partitions.entries()) {
+				const matching_operations = column_operations.filter((operation) => this.operation_matches_filters(operation));
+				if (!matching_operations.length) continue;
+				for (const operation of column_operations) {
+					operation._matches_filters = matching_operations.includes(operation);
+				}
+				const anchor =
+					column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) ||
+					column_operations.find((operation) => !["Completed", "Cancelled"].includes(get_card_status(operation))) ||
+					column_operations[column_operations.length - 1];
+				groups.push({
+					key,
+					card_key: `${key}@${column_key}`,
+					operations: group_operations,
+					column_operations,
+					matching_operations,
+					anchor,
+					column_key,
+					status: get_item_group_status(group_operations),
+					completed_count,
+					total_count: group_operations.length,
+					priority: get_group_priority(group_operations),
+				});
+			}
+		}
+		return groups.sort(compare_item_groups);
+	}
+
+	partition_operations_by_column(operations) {
+		const days = this.state.board?.days || {};
+		const partitions = new Map();
+		if (operations.some((operation) => get_card_status(operation) !== "Completed")) {
+			partitions.set("pending", [...operations]);
+		}
+		for (const operation of operations) {
+			const column_key = operation.planned_date && days[operation.planned_date] ? operation.planned_date : null;
+			if (!column_key) continue;
+			if (!partitions.has(column_key)) partitions.set(column_key, []);
+			partitions.get(column_key).push(operation);
+		}
+		return partitions;
+	}
+
+	operation_matches_filters(card) {
+		const filters = this.state.filters || {};
+		if (filters.category && card.category !== filters.category) return false;
+		if (filters.workstation && card.workstation !== filters.workstation) return false;
+		if (filters.operation && card.operation !== filters.operation) return false;
+		if (filters.priority && card.priority !== filters.priority) return false;
+		if (filters.finished_product && card.finished_item !== filters.finished_product) return false;
+		if (filters.status) {
+			const status = get_card_status(card);
+			if (status !== filters.status && !(filters.status === "On Hold" && status === "Paused")) return false;
+		}
+		if (filters.search) {
+			const text = [
+				card.production,
+				card.work_order,
+				card.finished_item,
+				card.item_name,
+				card.material_type,
+				card.operation,
+				card.workstation,
+				card.customer_code,
+			].filter(Boolean).join(" ").toLowerCase();
+			if (!text.includes(String(filters.search).toLowerCase())) return false;
+		}
+		return true;
+	}
+
+	render_item_column(title, date, date_key, groups, is_today = false) {
+		const operation_count = groups.reduce((total, group) => total + group.matching_operations.length, 0);
+		const count = `${groups.length} ${__("Items")} • ${operation_count} ${__("Ops")}`;
+		const $column = this.make_column(title, date, count, date_key);
+		if (date_key === "pending") $column.addClass("pending-column");
+		if (is_today) $column.addClass("today");
+		const $body = $column.find(".se-column-body");
+		if (!groups.length) {
+			$body.append(this.make_empty_state(date_key === "pending" ? __("No pending items") : __("No production items")));
+		}
+		for (const group of groups) $body.append(this.make_item_card(group));
+		this.$board.append($column);
+	}
+
+	make_item_card(group) {
+		const card = group.anchor;
+		const is_material = card.plan_type === "Required Material";
+		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
+		const status_class = get_status_class(group.status);
+		const item_name = card.item_name || card.finished_item || __("Production Item");
+		const item_code = card.finished_item && card.finished_item !== item_name ? card.finished_item : "";
+		const reference = is_material ? card.work_order : card.production;
+		const reference_label = is_material ? __("Work Order") : __("Production");
+		const quantity = get_parent_quantity_label(card);
+		const categories = [...new Set(group.operations.map((operation) => operation.category).filter(Boolean))].join(", ");
+		const active_operation = group.column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) || card;
+		const workstation = active_operation.workstation || __("Not Assigned");
+		const expanded = this.expanded_item_cards.has(group.card_key) || this.should_auto_expand_group();
+		const $card = $(
+			`<div class="se-item-card ${category_class}" data-execution-key="${frappe.utils.escape_html(group.key)}">
+				<div class="se-item-card-head">
+					<div class="se-item-identity">
+						<div class="se-item-name" title="${frappe.utils.escape_html(item_name)}">${frappe.utils.escape_html(item_name)}</div>
+						${item_code ? `<div class="se-item-code">${frappe.utils.escape_html(item_code)}</div>` : ""}
+					</div>
+					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(group.status))}</span>
+				</div>
+				<div class="se-item-reference"><span>${reference_label}:</span> ${frappe.utils.escape_html(reference || "-")}</div>
+				<div class="se-item-quantity">${frappe.utils.escape_html(quantity)}</div>
+				<div class="se-item-meta-grid">
+					<div><span>${__("Progress")}</span><strong>${group.completed_count}/${group.total_count} ${__("Completed")}</strong></div>
+					<div><span>${__("Priority")}</span><strong>${frappe.utils.escape_html(group.priority)}</strong></div>
+					<div><span>${__("Category")}</span><strong>${frappe.utils.escape_html(categories || __("Other"))}</strong></div>
+					<div><span>${__("Workstation")}</span><strong>${frappe.utils.escape_html(workstation)}</strong></div>
+					<div><span>${__("Planned Date")}</span><strong>${card.planned_date ? frappe.datetime.str_to_user(card.planned_date) : __("Not Scheduled")}</strong></div>
+				</div>
+				<div class="se-item-card-actions">
+					<button class="btn btn-xs btn-default se-toggle-operations" type="button" aria-expanded="${expanded ? "true" : "false"}">
+						<span class="se-expand-icon">${expanded ? "▾" : "▸"}</span>
+						${expanded ? __("Hide Operations") : __("View Operations")}
+						<span class="se-operation-count">${group.column_operations.length}</span>
+					</button>
+					<div class="dropdown se-card-menu se-item-menu">
+						<button class="btn btn-xs btn-default se-icon-btn se-more" aria-label="${__("More actions")}" title="${__("More actions")}">⋯</button>
+						<ul class="dropdown-menu dropdown-menu-right">
+							<li><a class="dropdown-item se-parent-view" href="#">${is_material ? __("Open Planning Entry") : __("View Production Details")}</a></li>
+							${is_material ? `<li><a class="dropdown-item se-parent-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
+							${!is_material ? `<li><a class="dropdown-item se-parent-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
+							<li><a class="dropdown-item se-parent-production" href="#">${__("Open Production")}</a></li>
+						</ul>
+					</div>
+				</div>
+				<div class="se-item-operations" ${expanded ? "" : "hidden"}></div>
+			</div>`
+		);
+		const $operations = $card.find(".se-item-operations");
+		for (const operation of group.column_operations) $operations.append(this.make_operation_row(operation));
+		$card.find(".se-toggle-operations").on("click", (event) => {
+			event.preventDefault();
+			const will_expand = $operations.prop("hidden");
+			$operations.prop("hidden", !will_expand);
+			$card.toggleClass("is-expanded", will_expand);
+			const $button = $(event.currentTarget);
+			$button.attr("aria-expanded", will_expand ? "true" : "false");
+			$button.html(`
+				<span class="se-expand-icon">${will_expand ? "▾" : "▸"}</span>
+				${will_expand ? __("Hide Operations") : __("View Operations")}
+				<span class="se-operation-count">${group.column_operations.length}</span>
+			`);
+			if (will_expand) this.expanded_item_cards.add(group.card_key);
+			else this.expanded_item_cards.delete(group.card_key);
+		});
+		this.bind_parent_card_actions($card, group);
+		return $card;
+	}
+
+	should_auto_expand_group() {
+		const filters = this.state.filters || {};
+		return Boolean(filters.category || filters.operation || filters.workstation || filters.status);
+	}
+
+	bind_parent_card_actions($card, group) {
+		const card = group.anchor;
+		const is_material = card.plan_type === "Required Material";
+		$card.find(".dropdown-item").on("click", (event) => {
+			event.preventDefault();
+			this.close_card_menus();
+		});
+		this.bind_more_menu($card.find(".se-item-menu"));
+		$card.find(".se-parent-view").on("click", () =>
+			is_material
+				? frappe.set_route("Form", "SmartEdge Production Plan Entry", card.id)
+				: this.open_production_drawer(card.production, card)
+		);
+		$card.find(".se-parent-work-order").on("click", () => frappe.set_route("Form", "Work Order", card.work_order));
+		$card.find(".se-parent-plan-all").on("click", () => this.plan_full_production(card));
+		$card.find(".se-parent-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
+	}
+
+	make_operation_row(card) {
+		const status = get_card_status(card);
+		const status_class = get_status_class(status);
+		const is_pending = !card.planned_date;
+		const operation_key = String(card.id);
+		const expanded = this.expanded_operation_rows.has(operation_key);
+		const workstation = card.workstation || __("Not Assigned");
+		const employee = card.operator_name || __("Not Assigned");
+		const quantity = get_operation_quantity_label(card);
+		const planned_time = get_planned_time_label(card);
+		const match_class = card._matches_filters && has_active_filters(this.state.filters) ? "is-filter-match" : "";
+		const $row = $(
+			`<div class="se-operation-row ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
+				<div class="se-operation-strip">
+					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(card.operation || "")}</div>
+					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
+					<button class="btn btn-xs btn-default se-toggle-operation-details" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? __("Collapse operation") : __("Expand operation")}">${expanded ? "−" : "+"}</button>
+				</div>
+				<div class="se-operation-details-panel" ${expanded ? "" : "hidden"}>
+					<div class="se-operation-details">
+						<div><span>${__("Workstation")}</span><strong>${frappe.utils.escape_html(workstation)}</strong></div>
+						<div><span>${__("Employee")}</span><strong>${frappe.utils.escape_html(employee)}</strong></div>
+						${card.planned_date ? `<div><span>${__("Planned")}</span><strong>${frappe.datetime.str_to_user(card.planned_date)}${planned_time ? ` • ${frappe.utils.escape_html(planned_time)}` : ""}</strong></div>` : ""}
+						${quantity ? `<div><span>${__("Quantity")}</span><strong>${frappe.utils.escape_html(quantity)}</strong></div>` : ""}
+						${card.work_order ? `<div><span>${__("Work Order")}</span><strong>${frappe.utils.escape_html(card.work_order)}</strong></div>` : ""}
+						${card.bom_no ? `<div><span>${__("BOM")}</span><strong>${frappe.utils.escape_html(card.bom_no)}</strong></div>` : ""}
+						${card.shift ? `<div><span>${__("Shift")}</span><strong>${frappe.utils.escape_html(card.shift)}</strong></div>` : ""}
+					</div>
+					<div class="se-operation-state">${this.get_status_line_html(card, planned_time, status_class)}</div>
+					<div class="se-operation-actions">
+						${this.get_primary_action_html(card, is_pending, status_class)}
+						<div class="dropdown se-card-menu se-operation-menu">
+							<button class="btn btn-xs btn-default se-icon-btn se-more" aria-label="${__("More actions")}" title="${__("More actions")}">⋯</button>
+							<ul class="dropdown-menu dropdown-menu-right">
+								<li><a class="dropdown-item se-view" href="#">${__("View Details")}</a></li>
+								${card.plan_type === "Required Material" ? `<li><a class="dropdown-item se-open-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
+								<li><a class="dropdown-item se-edit" href="#">${__("Edit Schedule")}</a></li>
+								${card.plan_type !== "Required Material" ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
+								${!is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
+								<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>
+							</ul>
+						</div>
+					</div>
+				</div>
+			</div>`
+		);
+		const $handle = $row.find(".se-operation-title");
+		$handle.on("dragstart", (event) => {
+			$row.addClass("dragging");
+			event.originalEvent.dataTransfer.setData("application/json", JSON.stringify(card));
+		});
+		$handle.on("dragend", () => $row.removeClass("dragging"));
+		$row.find(".se-toggle-operation-details").on("click", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const $panel = $row.find(".se-operation-details-panel");
+			const will_expand = $panel.prop("hidden");
+			$panel.prop("hidden", !will_expand);
+			$row.toggleClass("is-expanded", will_expand);
+			const $button = $(event.currentTarget);
+			$button.text(will_expand ? "−" : "+");
+			$button.attr("aria-expanded", will_expand ? "true" : "false");
+			$button.attr("aria-label", will_expand ? __("Collapse operation") : __("Expand operation"));
+			if (will_expand) this.expanded_operation_rows.add(operation_key);
+			else this.expanded_operation_rows.delete(operation_key);
+		});
+		$row.find(".dropdown-item").on("click", (event) => {
+			event.preventDefault();
+			this.close_card_menus();
+		});
+		this.bind_more_menu($row.find(".se-operation-menu"));
+		$row.find(".se-view").on("click", () =>
+			card.plan_type === "Required Material"
+				? frappe.set_route("Form", "SmartEdge Production Plan Entry", card.id)
+				: this.open_production_drawer(card.production, card)
+		);
+		$row.find(".se-open-work-order").on("click", () => frappe.set_route("Form", "Work Order", card.work_order));
+		$row.find(".se-edit, .se-plan").on("click", () => this.open_schedule_dialog(card, card.planned_date || this.state.week_start));
+		$row.find(".se-plan-all").on("click", () => this.plan_full_production(card));
+		$row.find(".se-unplan").on("click", () => this.unplan(card));
+		$row.find(".se-open-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
+		$row.find(".se-start").on("click", () => this.open_start_dialog(card));
+		$row.find(".se-pause").on("click", () => this.pause_production_job(card));
+		$row.find(".se-resume").on("click", () => this.resume_production_job(card));
+		$row.find(".se-complete").on("click", () => this.open_complete_dialog(card));
+		return $row;
+	}
+
+	bind_more_menu($menu) {
+		$menu.find(".se-more").on("click", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.close_card_menus($menu);
+			$menu.toggleClass("show");
+			if ($menu.hasClass("show")) this.position_card_menu($menu);
+		});
+		$menu.on("click", (event) => event.stopPropagation());
 	}
 
 	render_pending_column(cards) {
@@ -730,7 +1043,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
 				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
 				{ fieldtype: "Link", fieldname: "target_warehouse", label: __("Target Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.target_warehouse },
-				{ fieldtype: "Section Break" },
+				{ fieldtype: "Section Break", label: __("Operation and Operator") },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Link",
@@ -747,22 +1060,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						},
 					}),
 				},
-				{
-					fieldtype: "Float",
-					fieldname: "planned_meter",
-					label: context.is_material_production ? __("Planned Batches") : __("Planned Meter"),
-					precision: 6,
-					read_only: 1,
-					default: context.planned_qty_meter,
-				},
-				{
-					fieldtype: "Float",
-					fieldname: "planned_kg",
-					label: context.is_material_production ? __("Planned Quantity ({0})", [context.quantity_uom || ""]) : __("Planned Kg"),
-					precision: 6,
-					read_only: 1,
-					default: context.planned_qty_kg,
-				},
+				{ fieldtype: "Column Break" },
 				{
 					fieldtype: "Link",
 					fieldname: "operator_employee",
@@ -786,6 +1084,24 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					read_only: 1,
 					default: context.shift,
 				},
+				{ fieldtype: "Section Break", label: __("Planned Quantity and Time") },
+				{
+					fieldtype: "Float",
+					fieldname: "planned_meter",
+					label: context.is_material_production ? __("Planned Batches") : __("Planned Meter"),
+					precision: 6,
+					read_only: 1,
+					default: context.planned_qty_meter,
+				},
+				{
+					fieldtype: "Float",
+					fieldname: "planned_kg",
+					label: context.is_material_production ? __("Planned Quantity ({0})", [context.quantity_uom || ""]) : __("Planned Kg"),
+					precision: 6,
+					read_only: 1,
+					default: context.planned_qty_kg,
+				},
+				{ fieldtype: "Column Break" },
 				{
 					fieldtype: "Datetime",
 					fieldname: "planned_start",
@@ -1075,6 +1391,96 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.timer_interval = setInterval(tick, 1000);
 	}
 };
+
+function get_execution_identity(card) {
+	if (card.execution_key) return card.execution_key;
+	if (card.plan_type === "Required Material") {
+		return `material:${card.work_order || card.id}`;
+	}
+	return `production:${card.production}`;
+}
+
+function compare_operation_sequence(left, right) {
+	const left_sequence = cint(left.operation_sequence || 0);
+	const right_sequence = cint(right.operation_sequence || 0);
+	if (left_sequence !== right_sequence) return left_sequence - right_sequence;
+	return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function get_item_group_status(operations) {
+	const statuses = operations.map((operation) => get_card_status(operation));
+	if (statuses.length && statuses.every((status) => status === "Completed")) return "Completed";
+	if (statuses.some((status) => status === "In Progress")) return "In Progress";
+	if (statuses.some((status) => status === "Paused" || status === "On Hold")) return "Paused";
+	if (statuses.some((status) => status === "Partially Completed")) return "In Progress";
+	if (statuses.some((status) => status === "Completed")) return "In Progress";
+	if (statuses.some((status) => status === "Planned" || status === "Ready")) return "Planned";
+	if (statuses.length && statuses.every((status) => status === "Cancelled")) return "Cancelled";
+	return "Pending";
+}
+
+function get_group_priority(operations) {
+	const ranks = { Urgent: 4, High: 3, Normal: 2, Low: 1 };
+	return operations.reduce(
+		(current, operation) => (ranks[operation.priority] || 0) > (ranks[current] || 0) ? operation.priority : current,
+		"Low"
+	);
+}
+
+function compare_item_groups(left, right) {
+	const ranks = { Urgent: 4, High: 3, Normal: 2, Low: 1 };
+	const priority_difference = (ranks[right.priority] || 0) - (ranks[left.priority] || 0);
+	if (priority_difference) return priority_difference;
+	const left_start = left.anchor.planned_start || "";
+	const right_start = right.anchor.planned_start || "";
+	return left_start.localeCompare(right_start) || left.key.localeCompare(right.key);
+}
+
+function get_status_class(status) {
+	return `status-${String(status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
+}
+
+function get_parent_quantity_label(card) {
+	const parts = [];
+	if (card.plan_type === "Required Material") {
+		parts.push(`${cint(card.planned_batches)} ${__("Batches")}`);
+		if (flt(card.planned_weight_kg)) {
+			parts.push(`${se_format_number(card.planned_weight_kg, 3)} ${card.uom || ""}`.trim());
+		}
+	} else {
+		if (flt(card.qty)) parts.push(`${se_format_number(card.qty, 2)} m`);
+		if (flt(card.planned_weight_kg)) parts.push(`${se_format_number(card.planned_weight_kg, 3)} Kg`);
+	}
+	return parts.join(" • ") || __("Quantity not available");
+}
+
+function get_operation_quantity_label(card) {
+	const parts = [];
+	if (card.plan_type === "Required Material") {
+		const actual_batches = flt(card.job_actual_qty_meter) || cint(card.work_order_completed_batches);
+		const actual_quantity = flt(card.job_actual_qty_kg) || flt(card.work_order_produced_qty);
+		if (actual_batches || actual_quantity) {
+			if (actual_batches) parts.push(`${se_format_number(actual_batches, 2)} ${__("batches completed")}`);
+			if (actual_quantity) parts.push(`${se_format_number(actual_quantity, 3)} ${card.uom || ""}`.trim());
+		} else {
+			parts.push(get_parent_quantity_label(card));
+		}
+	} else {
+		if (flt(card.job_actual_qty_meter)) parts.push(`${se_format_number(card.job_actual_qty_meter, 2)} m ${__("actual")}`);
+		if (flt(card.job_actual_qty_kg)) parts.push(`${se_format_number(card.job_actual_qty_kg, 3)} Kg ${__("actual")}`);
+		if (!parts.length) {
+			if (flt(card.qty)) parts.push(`${se_format_number(card.qty, 2)} m ${__("planned")}`);
+			if (flt(card.planned_weight_kg)) parts.push(`${se_format_number(card.planned_weight_kg, 3)} Kg ${__("planned")}`);
+		}
+	}
+	const released = get_released_qty_label(card);
+	if (released) parts.push(released);
+	return parts.join(" • ");
+}
+
+function has_active_filters(filters = {}) {
+	return Object.values(filters).some(Boolean);
+}
 
 function get_monday(date_value) {
 	const date = new Date(`${date_value}T00:00:00`);

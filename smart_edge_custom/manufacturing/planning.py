@@ -47,6 +47,7 @@ def get_weekly_planning_board(
 	entries = get_plan_entries(
 		week_start,
 		week_end,
+		include_related_operations=True,
 		category=category,
 		workstation=workstation,
 		operation=operation,
@@ -58,9 +59,11 @@ def get_weekly_planning_board(
 		search=search,
 	)
 	board = make_empty_board(week_start)
+	board["all_operations"] = []
 
 	for row in entries:
 		card = make_operation_card(row)
+		board["all_operations"].append(card)
 		if row.planned_date:
 			date_key = str(row.planned_date)
 			if date_key in board["days"]:
@@ -100,7 +103,7 @@ def get_week_start(value=None):
 	return date_value - timedelta(days=date_value.weekday())
 
 
-def get_plan_entries(week_start, week_end, **filters):
+def get_plan_entries(week_start, week_end, include_related_operations=False, **filters):
 	entry_filters = {"status": ["!=", "Cancelled"]}
 	if filters.get("category"):
 		entry_filters["planning_category"] = filters["category"]
@@ -115,6 +118,7 @@ def get_plan_entries(week_start, week_end, **filters):
 
 	fields = [
 		"name",
+		"creation",
 		"final_eb_bom_generator",
 		"operation_row",
 		"operation",
@@ -164,6 +168,13 @@ def get_plan_entries(week_start, week_end, **filters):
 	)
 	if not rows:
 		return []
+	assign_planning_execution_keys(rows)
+	visible_execution_keys = {
+		get_planning_execution_key(row)
+		for row in rows
+		if (not row.planned_date and row.status != "Completed")
+		or (row.planned_date and week_start <= getdate(row.planned_date) <= week_end)
+	}
 
 	generators = get_generator_map([row.final_eb_bom_generator for row in rows])
 	result = []
@@ -171,7 +182,10 @@ def get_plan_entries(week_start, week_end, **filters):
 		generator = generators.get(row.final_eb_bom_generator)
 		if not generator:
 			continue
-		if row.planned_date and not (week_start <= getdate(row.planned_date) <= week_end):
+		if include_related_operations:
+			if get_planning_execution_key(row) not in visible_execution_keys:
+				continue
+		elif row.planned_date and not (week_start <= getdate(row.planned_date) <= week_end):
 			continue
 		card_item = row.get("material_item") if row.get("plan_type") == "Required Material" else generator.finished_item
 		if filters.get("finished_product") and card_item != filters["finished_product"]:
@@ -194,6 +208,33 @@ def get_plan_entries(week_start, week_end, **filters):
 	for row in result:
 		row.planned_employee_name = planned_employee_names.get(row.get("planned_employee"))
 	return result
+
+
+def get_planning_execution_key(row):
+	if row.get("plan_type") == "Required Material":
+		return ("Required Material", row.get("work_order") or row.name)
+	return ("Final EB", row.get("execution_key") or row.get("final_eb_bom_generator"))
+
+
+def assign_planning_execution_keys(rows):
+	by_production = defaultdict(list)
+	for row in rows:
+		if row.get("plan_type") == "Required Material":
+			row.execution_key = f"material:{row.get('work_order') or row.name}"
+		else:
+			by_production[row.final_eb_bom_generator].append(row)
+	for production, production_rows in by_production.items():
+		current_key = None
+		last_sequence = None
+		for row in sorted(
+			production_rows,
+			key=lambda item: (get_datetime(item.creation), cint(item.sequence), item.name),
+		):
+			sequence = cint(row.sequence)
+			if current_key is None or (last_sequence is not None and sequence <= last_sequence):
+				current_key = f"production:{production}:{row.name}"
+			row.execution_key = current_key
+			last_sequence = sequence
 
 
 def attach_work_order_progress(rows):
@@ -462,6 +503,7 @@ def make_operation_card(row):
 	display_workstation = get_card_workstation(row)
 	card = {
 		"id": row.name,
+		"execution_key": row.get("execution_key"),
 		"production": row.final_eb_bom_generator,
 		"operation_row": row.operation_row,
 		"operation": row.operation,
