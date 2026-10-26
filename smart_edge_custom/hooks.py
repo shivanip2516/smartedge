@@ -70,6 +70,7 @@ doctype_js = {
 	"BOM": "public/js/bom.js",
 	"Compound": "public/js/compound.js",
 	"Item": "public/js/item.js",
+	"Sales Order": "public/js/sales_order.js",
 	"Work Order": "public/js/work_order.js",
 }
 doctype_list_js = {

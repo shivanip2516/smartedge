@@ -9,6 +9,10 @@
   "finished_product_section",
   "naming_series",
   "company",
+  "sales_order",
+  "sales_order_item",
+  "customer",
+  "required_delivery_date",
   "finished_item",
   "finished_item_name",
   "custom_size",
@@ -142,6 +146,33 @@
    "label": "Company",
    "options": "Company",
    "reqd": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order_item",
+   "fieldtype": "Data",
+   "label": "Sales Order Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "required_delivery_date",
+   "fieldtype": "Date",
+   "label": "Required Delivery Date",
+   "read_only": 1
   },
   {
    "fieldname": "finished_item",

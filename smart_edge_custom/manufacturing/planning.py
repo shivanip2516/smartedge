@@ -454,6 +454,10 @@ def get_generator_map(names):
 		"slitting_requirement",
 		"selected_route",
 		"status",
+		"sales_order",
+		"sales_order_item",
+		"customer",
+		"required_delivery_date",
 	]
 	return {
 		row.name: row
@@ -475,6 +479,8 @@ def matches_search(row, generator, search):
 			generator.finished_item_name,
 			generator.custom_base_colour,
 			generator.custom_customer_order_code,
+			generator.get("sales_order"),
+			generator.get("customer"),
 		)
 	).lower()
 	return str(search).lower() in text
@@ -536,6 +542,10 @@ def make_operation_card(row):
 		"base_colour": row.base_colour,
 		"priority": row.priority or "Normal",
 		"customer_code": row.custom_customer_order_code,
+		"sales_order": row.get("sales_order"),
+		"sales_order_item": row.get("sales_order_item"),
+		"customer": row.get("customer"),
+		"required_delivery_date": str(row.get("required_delivery_date")) if row.get("required_delivery_date") else None,
 		"production_job": row.get("production_job"),
 		"job_status": row.get("job_status"),
 		"operator_employee": row.get("operator_employee") or row.get("planned_employee"),
@@ -1830,6 +1840,7 @@ def get_previous_mandatory_entry(entry):
 		"SmartEdge Production Plan Entry",
 		filters={
 			"final_eb_bom_generator": entry.final_eb_bom_generator,
+			"plan_type": entry.get("plan_type") or "Final EB",
 			"sequence": ["<", entry.sequence],
 			"status": ["!=", "Cancelled"],
 		},

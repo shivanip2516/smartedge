@@ -191,7 +191,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.stop_timers();
 		this.$week.text(`${frappe.datetime.str_to_user(board.week_start)} - ${frappe.datetime.str_to_user(board.week_end)}`);
 		const item_groups = this.get_item_groups();
-		this.render_summary(board, item_groups);
+		this.render_summary(board);
 		this.$board.empty();
 		this.render_item_column(
 			__("Pending for Planning"),
@@ -211,10 +211,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.start_timers();
 	}
 
-	render_summary(board, item_groups = []) {
+	render_summary(board) {
 		const unique_cards = new Map();
-		for (const group of item_groups) {
-			for (const card of group.matching_operations) unique_cards.set(card.id, card);
+		for (const card of board.all_operations || []) {
+			if (this.operation_matches_filters(card)) unique_cards.set(card.id, card);
 		}
 		const cards = [...unique_cards.values()];
 		const planned = cards.filter((card) => get_card_status(card) === "Planned").length;
@@ -248,48 +248,28 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		for (const [key, group_operations] of grouped.entries()) {
 			group_operations.sort(compare_operation_sequence);
 			const completed_count = group_operations.filter((operation) => get_card_status(operation) === "Completed").length;
-			const partitions = this.partition_operations_by_column(group_operations);
-			for (const [column_key, column_operations] of partitions.entries()) {
-				const matching_operations = column_operations.filter((operation) => this.operation_matches_filters(operation));
-				if (!matching_operations.length) continue;
-				for (const operation of column_operations) {
-					operation._matches_filters = matching_operations.includes(operation);
-				}
-				const anchor =
-					column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) ||
-					column_operations.find((operation) => !["Completed", "Cancelled"].includes(get_card_status(operation))) ||
-					column_operations[column_operations.length - 1];
-				groups.push({
-					key,
-					card_key: `${key}@${column_key}`,
-					operations: group_operations,
-					column_operations,
-					matching_operations,
-					anchor,
-					column_key,
-					status: get_item_group_status(group_operations),
-					completed_count,
-					total_count: group_operations.length,
-					priority: get_group_priority(group_operations),
-				});
+			const matching_operations = group_operations.filter((operation) => this.operation_matches_filters(operation));
+			if (!matching_operations.length) continue;
+			for (const operation of group_operations) {
+				operation._matches_filters = matching_operations.includes(operation);
 			}
+			const placement = resolve_item_group_placement(group_operations);
+			if (!placement) continue;
+			groups.push({
+				key,
+				card_key: key,
+				operations: group_operations,
+				column_operations: group_operations,
+				matching_operations,
+				anchor: placement.anchor,
+				column_key: placement.column_key,
+				status: get_item_group_status(group_operations),
+				completed_count,
+				total_count: group_operations.length,
+				priority: get_group_priority(group_operations),
+			});
 		}
 		return groups.sort(compare_item_groups);
-	}
-
-	partition_operations_by_column(operations) {
-		const days = this.state.board?.days || {};
-		const partitions = new Map();
-		if (operations.some((operation) => get_card_status(operation) !== "Completed")) {
-			partitions.set("pending", [...operations]);
-		}
-		for (const operation of operations) {
-			const column_key = operation.planned_date && days[operation.planned_date] ? operation.planned_date : null;
-			if (!column_key) continue;
-			if (!partitions.has(column_key)) partitions.set(column_key, []);
-			partitions.get(column_key).push(operation);
-		}
-		return partitions;
 	}
 
 	operation_matches_filters(card) {
@@ -342,6 +322,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const item_code = card.finished_item && card.finished_item !== item_name ? card.finished_item : "";
 		const reference = is_material ? card.work_order : card.production;
 		const reference_label = is_material ? __("Work Order") : __("Production");
+		const sales_order_reference = !is_material && card.sales_order
+			? `<div class="se-item-reference"><span>${__("Sales Order")}:</span> ${frappe.utils.escape_html(card.sales_order)}</div>`
+			: "";
 		const quantity = get_parent_quantity_label(card);
 		const categories = [...new Set(group.operations.map((operation) => operation.category).filter(Boolean))].join(", ");
 		const active_operation = group.column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) || card;
@@ -357,6 +340,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(group.status))}</span>
 				</div>
 				<div class="se-item-reference"><span>${reference_label}:</span> ${frappe.utils.escape_html(reference || "-")}</div>
+				${sales_order_reference}
 				<div class="se-item-quantity">${frappe.utils.escape_html(quantity)}</div>
 				<div class="se-item-meta-grid">
 					<div><span>${__("Progress")}</span><strong>${group.completed_count}/${group.total_count} ${__("Completed")}</strong></div>
@@ -1118,7 +1102,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				const $primary = dialog.get_primary_btn();
 				$primary.prop("disabled", true);
 				try {
-					const start_response = await frappe.call({
+					await frappe.call({
 						method: `${this.method}.start_production_job`,
 						args: {
 							plan_entry: card.id,
@@ -1129,9 +1113,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					});
 					dialog.hide();
 					await this.refresh();
-					if (start_response.message?.production_job) {
-						frappe.set_route("Form", "SmartEdge Production Job", start_response.message.production_job);
-					}
 				} finally {
 					starting = false;
 					$primary.prop("disabled", false);
@@ -1399,6 +1380,27 @@ function get_execution_identity(card) {
 	return `production:${card.production}`;
 }
 
+function resolve_item_group_placement(operations) {
+	const unfinished = operations.filter(
+		(operation) => !["Completed", "Cancelled"].includes(get_card_status(operation))
+	);
+	if (!unfinished.length) return null;
+
+	const active = unfinished.find(
+		(operation) => ["In Progress", "Paused", "On Hold"].includes(get_card_status(operation)) && operation.planned_date
+	);
+	if (active) {
+		return { column_key: active.planned_date, anchor: active };
+	}
+
+	const next_scheduled = unfinished.find((operation) => operation.planned_date);
+	if (next_scheduled) {
+		return { column_key: next_scheduled.planned_date, anchor: next_scheduled };
+	}
+
+	return { column_key: "pending", anchor: unfinished[0] };
+}
+
 function compare_operation_sequence(left, right) {
 	const left_sequence = cint(left.operation_sequence || 0);
 	const right_sequence = cint(right.operation_sequence || 0);
@@ -1656,3 +1658,7 @@ const CATEGORY_COLOR_CLASSES = {
 	orange: "category-mixing",
 	gray: "category-other",
 };
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = { resolve_item_group_placement };
+}
