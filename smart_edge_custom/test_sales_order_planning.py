@@ -3,10 +3,14 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 
+from smart_edge_custom.manufacturing.final_bom_generator import validate_ready_for_planning
 from smart_edge_custom.manufacturing.sales_order_planning import (
 	allocate_finished_stock,
 	create_final_eb_bom_generator,
 	get_existing_coverage,
+)
+from smart_edge_custom.smart_edge_custom.doctype.final_eb_bom_generator.final_eb_bom_generator import (
+	FinalEBBOMGenerator,
 )
 
 
@@ -112,4 +116,34 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 		self.assertEqual(generator.sales_order, "SO-1")
 		self.assertEqual(generator.sales_order_item, "SO-ITEM-1")
 		self.assertEqual(generator.finished_item, "SE-101")
+		self.assertNotIn("compound", generator.__dict__)
+		self.assertNotIn("base_colour", generator.__dict__)
 		self.assertEqual(result["remaining_shortage"], 0)
+
+	def test_sales_order_linked_generator_can_start_without_materials(self):
+		doc = frappe._dict({"sales_order": "SO-1", "compound": None, "base_colour": None})
+
+		FinalEBBOMGenerator.validate_initial_material_configuration(doc)
+
+	def test_manual_generator_still_requires_materials_on_save(self):
+		doc = frappe._dict({"sales_order": None, "compound": None, "base_colour": None})
+
+		with self.assertRaisesRegex(frappe.ValidationError, "Compound is required"):
+			FinalEBBOMGenerator.validate_initial_material_configuration(doc)
+
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.apply_preview_to_doc")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.calculate_bom_preview")
+	def test_planning_still_requires_material_configuration(self, calculate_preview, apply_preview):
+		calculate_preview.return_value = {}
+		doc = MagicMock()
+		values = {
+			"finished_item": "SE-101",
+			"company": "SmartEdge",
+			"compound": None,
+			"base_colour": None,
+			"extrusion_type": "Single Mould Extrusion",
+		}
+		doc.get.side_effect = values.get
+
+		with self.assertRaisesRegex(frappe.ValidationError, "Compound is required"):
+			validate_ready_for_planning(doc)

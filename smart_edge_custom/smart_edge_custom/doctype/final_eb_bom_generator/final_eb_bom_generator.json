@@ -309,8 +309,9 @@
    "fieldname": "compound",
    "fieldtype": "Link",
    "label": "Compound",
+   "mandatory_depends_on": "eval:!doc.sales_order",
    "options": "Compound",
-   "reqd": 1
+   "reqd": 0
   },
   {
    "fieldname": "compound_item",
@@ -367,8 +368,9 @@
    "fieldname": "base_colour",
    "fieldtype": "Link",
    "label": "Base Colour / Shade",
+   "mandatory_depends_on": "eval:!doc.sales_order",
    "options": "Base Colour",
-   "reqd": 1
+   "reqd": 0
   },
   {
    "fieldname": "base_colour_item",

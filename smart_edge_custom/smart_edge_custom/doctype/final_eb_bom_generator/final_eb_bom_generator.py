@@ -1,4 +1,5 @@
 import frappe
+from frappe import _
 from frappe.model.document import Document
 
 from smart_edge_custom.manufacturing.final_bom_generator import (
@@ -19,6 +20,7 @@ class FinalEBBOMGenerator(Document):
 			)
 
 	def validate(self):
+		self.validate_initial_material_configuration()
 		apply_item_configuration_defaults(self)
 		apply_process_defaults(self)
 		if self.finished_item and not self.source_warehouse:
@@ -27,6 +29,18 @@ class FinalEBBOMGenerator(Document):
 		if self.finished_item:
 			preview = calculate_bom_preview(self.as_dict())
 			apply_preview_to_doc(self, preview)
+
+	def validate_initial_material_configuration(self):
+		"""Keep manual creation strict while allowing Sales Order plans to start unconfigured."""
+		if self.sales_order:
+			return
+
+		for fieldname, label in (
+			("compound", "Compound"),
+			("base_colour", "Base Colour / Shade"),
+		):
+			if not self.get(fieldname):
+				frappe.throw(_("{0} is required.").format(label))
 
 	def on_update(self):
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
