@@ -331,7 +331,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const workstation = active_operation.workstation || __("Not Assigned");
 		const expanded = this.expanded_item_cards.has(group.card_key) || this.should_auto_expand_group();
 		const $card = $(
-			`<div class="se-item-card ${category_class}" data-execution-key="${frappe.utils.escape_html(group.key)}">
+			`<div class="se-item-card ${category_class} se-${status_class}" data-execution-key="${frappe.utils.escape_html(group.key)}">
 				<div class="se-item-card-head">
 					<div class="se-item-identity">
 						<div class="se-item-name" title="${frappe.utils.escape_html(item_name)}">${frappe.utils.escape_html(item_name)}</div>
@@ -424,7 +424,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const planned_time = get_planned_time_label(card);
 		const match_class = card._matches_filters && has_active_filters(this.state.filters) ? "is-filter-match" : "";
 		const $row = $(
-			`<div class="se-operation-row ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
+			`<div class="se-operation-row se-${status_class} ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
 				<div class="se-operation-strip">
 					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(card.operation || "")}</div>
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>

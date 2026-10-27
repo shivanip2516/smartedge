@@ -318,6 +318,29 @@
 	box-shadow: 0 5px 15px rgba(15, 23, 42, 0.08);
 }
 
+.smartedge-planning .se-item-card.se-status-pending {
+	background: #fef3c7;
+}
+
+.smartedge-planning .se-item-card.se-status-ready,
+.smartedge-planning .se-item-card.se-status-planned {
+	background: #dbeafe;
+}
+
+.smartedge-planning .se-item-card.se-status-in-progress,
+.smartedge-planning .se-item-card.se-status-partially-completed {
+	background: #dcfce7;
+}
+
+.smartedge-planning .se-item-card.se-status-paused,
+.smartedge-planning .se-item-card.se-status-on-hold {
+	background: #ffedd5;
+}
+
+.smartedge-planning .se-item-card.se-status-completed {
+	background: #ede9fe;
+}
+
 .smartedge-planning .se-item-card-head,
 .smartedge-planning .se-operation-strip,
 .smartedge-planning .se-item-card-actions,
@@ -471,6 +494,29 @@
 .smartedge-planning .se-operation-strip {
 	min-height: 34px;
 	padding: 6px 7px;
+}
+
+.smartedge-planning .se-operation-row.se-status-pending > .se-operation-strip {
+	background: #fef3c7;
+}
+
+.smartedge-planning .se-operation-row.se-status-ready > .se-operation-strip,
+.smartedge-planning .se-operation-row.se-status-planned > .se-operation-strip {
+	background: #dbeafe;
+}
+
+.smartedge-planning .se-operation-row.se-status-in-progress > .se-operation-strip,
+.smartedge-planning .se-operation-row.se-status-partially-completed > .se-operation-strip {
+	background: #dcfce7;
+}
+
+.smartedge-planning .se-operation-row.se-status-paused > .se-operation-strip,
+.smartedge-planning .se-operation-row.se-status-on-hold > .se-operation-strip {
+	background: #ffedd5;
+}
+
+.smartedge-planning .se-operation-row.se-status-completed > .se-operation-strip {
+	background: #ede9fe;
 }
 
 .smartedge-planning .se-operation-title {

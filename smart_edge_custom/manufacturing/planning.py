@@ -1308,6 +1308,9 @@ def link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry, finished_
 		if "stock_posted_qty" in updates:
 			updates["stock_posted_qty"] = flt(job.stock_posting_qty)
 		frappe.db.set_value("SmartEdge Production Job", job.name, updates, update_modified=False)
+	from smart_edge_custom.manufacturing.batch_genealogy import capture_stock_entry
+
+	capture_stock_entry(stock_entry_name)
 
 
 def show_existing_stock_entry_message(stock_entry):

@@ -1,0 +1,212 @@
+.smartedge-batch-genealogy {
+	padding: 12px 0 28px;
+	color: var(--text-color);
+}
+
+.smartedge-batch-genealogy .se-genealogy-empty,
+.smartedge-batch-genealogy .se-genealogy-warning {
+	padding: 28px;
+	border: 1px dashed var(--border-color);
+	border-radius: 8px;
+	background: var(--fg-color);
+	color: var(--text-muted);
+	text-align: center;
+}
+
+.smartedge-batch-genealogy .se-genealogy-warning {
+	margin-bottom: 10px;
+	padding: 10px;
+	border-style: solid;
+	background: var(--yellow-50);
+	color: var(--yellow-800);
+}
+
+.smartedge-batch-genealogy .se-genealogy-summary {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 10px;
+	padding: 9px 12px;
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	background: var(--fg-color);
+}
+
+.smartedge-batch-genealogy .se-batch-node {
+	margin: 7px 0;
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	background: var(--fg-color);
+}
+
+.smartedge-batch-genealogy .se-batch-node > summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	padding: 7px 10px;
+	cursor: pointer;
+	list-style: none;
+}
+
+.smartedge-batch-genealogy .se-batch-node > summary::-webkit-details-marker {
+	display: none;
+}
+
+.smartedge-batch-genealogy .se-node-marker::before {
+	content: "+";
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 4px;
+	background: var(--subtle-fg);
+	font-weight: 700;
+}
+
+.smartedge-batch-genealogy details[open] > summary .se-node-marker::before {
+	content: "−";
+}
+
+.smartedge-batch-genealogy .se-node-title {
+	font-weight: 700;
+}
+
+.smartedge-batch-genealogy .se-node-item,
+.smartedge-batch-genealogy .se-batch-meta,
+.smartedge-batch-genealogy .se-event-refs,
+.smartedge-batch-genealogy .se-genealogy-leaf {
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.smartedge-batch-genealogy .se-node-item {
+	margin-left: auto;
+}
+
+.smartedge-batch-genealogy .se-node-marker,
+.smartedge-batch-genealogy .se-node-title,
+.smartedge-batch-genealogy .se-node-item,
+.smartedge-batch-genealogy .se-stage-label {
+	white-space: nowrap;
+}
+
+.smartedge-batch-genealogy .se-batch-meta {
+	padding: 0 38px 7px;
+}
+
+.smartedge-batch-genealogy .se-event-list {
+	padding: 0 9px 9px 38px;
+}
+
+.smartedge-batch-genealogy .se-genealogy-event {
+	margin-top: 7px;
+	padding: 9px;
+	border-left: 3px solid var(--blue-400);
+	border-radius: 6px;
+	background: var(--subtle-fg);
+}
+
+.smartedge-batch-genealogy .se-event-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.smartedge-batch-genealogy .se-event-head time {
+	margin-left: auto;
+	color: var(--text-muted);
+	font-weight: 400;
+}
+
+.smartedge-batch-genealogy .se-stage-label,
+.smartedge-batch-genealogy .se-genealogy-flag {
+	display: inline-flex;
+	padding: 2px 7px;
+	border-radius: 999px;
+	background: var(--blue-100);
+	color: var(--blue-700);
+	font-size: 11px;
+	font-weight: 700;
+}
+
+.smartedge-batch-genealogy .se-genealogy-flag {
+	background: var(--orange-100);
+	color: var(--orange-700);
+}
+
+.smartedge-batch-genealogy .se-event-refs {
+	margin-top: 5px;
+}
+
+.smartedge-batch-genealogy .se-event-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 7px 12px;
+	margin-top: 8px;
+}
+
+.smartedge-batch-genealogy .se-event-grid > div {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.smartedge-batch-genealogy .se-event-grid label {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+}
+
+.smartedge-batch-genealogy .se-event-grid span {
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+
+.smartedge-batch-genealogy .se-event-children {
+	margin-top: 8px;
+}
+
+.smartedge-batch-genealogy .se-operation-context {
+	margin-top: 8px;
+	border-top: 1px solid var(--border-color);
+	padding-top: 7px;
+}
+
+.smartedge-batch-genealogy .se-operation-context > summary {
+	cursor: pointer;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.smartedge-batch-genealogy .se-operation-context-row {
+	display: grid;
+	grid-template-columns: minmax(100px, 1fr) minmax(125px, 1fr) minmax(100px, 1fr) minmax(180px, 1.5fr) minmax(130px, 1fr);
+	gap: 8px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--border-color);
+	font-size: 11px;
+}
+
+@media (max-width: 768px) {
+	.smartedge-batch-genealogy .se-event-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.smartedge-batch-genealogy .se-node-item {
+		display: none;
+	}
+
+	.smartedge-batch-genealogy .se-event-list {
+		padding-left: 12px;
+	}
+
+	.smartedge-batch-genealogy .se-operation-context-row {
+		grid-template-columns: 1fr;
+	}
+}

@@ -1,0 +1,25 @@
+{
+ "content": null,
+ "creation": "2026-10-27 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-10-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "smartedge-batch-genealogy",
+ "owner": "Administrator",
+ "page_name": "smartedge-batch-genealogy",
+ "roles": [
+  {"role":"Manufacturing Manager"},
+  {"role":"Manufacturing User"},
+  {"role":"Stock Manager"},
+  {"role":"Stock User"},
+  {"role":"System Manager"}
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "SmartEdge Batch Genealogy"
+}

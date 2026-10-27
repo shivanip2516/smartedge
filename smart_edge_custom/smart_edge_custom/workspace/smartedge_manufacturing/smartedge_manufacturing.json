@@ -197,9 +197,19 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Reports / Utilities",
-   "link_count": 1,
+   "link_count": 2,
    "onboard": 0,
    "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Batch Genealogy",
+   "link_count": 0,
+   "link_to": "smartedge-batch-genealogy",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
   },
   {
    "hidden": 0,
