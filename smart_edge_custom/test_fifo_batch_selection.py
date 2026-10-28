@@ -6,6 +6,7 @@ from frappe.tests import IntegrationTestCase
 from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_allocations
 from smart_edge_custom.manufacturing.final_bom_generator import calculate_batch_allocations
 from smart_edge_custom.manufacturing.planning import (
+	get_current_fifo_allocations,
 	get_revalidated_consumption_batches,
 	set_final_component_batch_bundles,
 )
@@ -181,6 +182,45 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 			get_revalidated_consumption_batches(
 				component, [allocation("CMP-001", 65)], "Compound", "Kg"
 			)
+
+	@patch("smart_edge_custom.manufacturing.planning.get_fifo_batch_allocations")
+	@patch(
+		"smart_edge_custom.manufacturing.planning.get_prepared_component_batch_weight",
+		return_value=65,
+	)
+	@patch(
+		"smart_edge_custom.manufacturing.planning.is_saved_fifo_allocation_current",
+		return_value=False,
+	)
+	def test_final_posting_refreshes_a_missing_or_stale_allocation(
+		self, _is_current, _batch_weight, get_allocations
+	):
+		get_allocations.return_value = [allocation("CMP-NEW", 65)]
+		doc = frappe._dict(
+			{
+				"compound": "M3-M6",
+				"compound_batch_allocations": [allocation("CMP-OLD", 65)],
+				"compound_total_required": 65,
+			}
+		)
+		component = {"item_code": "Compound 1", "s_warehouse": "Stores - SE", "qty": 65}
+
+		rows = get_current_fifo_allocations(
+			doc,
+			component,
+			"Compound",
+			"compound_batch_allocations",
+			1,
+			"compound_total_required",
+			"Compound",
+			"compound",
+			"Kg",
+		)
+
+		self.assertEqual([row.batch_no for row in rows], ["CMP-NEW"])
+		get_allocations.assert_called_once_with(
+			"Compound 1", "Stores - SE", 1, 65, "Compound"
+		)
 
 	@patch("erpnext.stock.serial_batch_bundle.SerialBatchCreation")
 	def test_stock_entry_uses_outward_serial_batch_bundle(self, serial_batch_creation):

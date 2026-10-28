@@ -85,6 +85,9 @@ def has_final_eb_planning_entries(production):
 
 
 def get_material_workflow_status(doc, requirements, released_to_planning=False):
+	if has_valid_final_manufacturing_completion(doc):
+		return "Production Completed"
+
 	configured = bool(
 		doc.get("compound")
 		and doc.get("base_colour")
@@ -111,6 +114,45 @@ def get_material_workflow_status(doc, requirements, released_to_planning=False):
 	if not any(cint(row.get("batches_to_plan")) > 0 for row in requirements):
 		return "Ready to Send to Planning"
 	return "Material Configuration Pending"
+
+
+def has_valid_final_manufacturing_completion(doc):
+	if doc.get("status") != "Completed":
+		return False
+	stock_entry = doc.get("final_manufacturing_stock_entry")
+	posted_qty = flt(doc.get("final_stock_posted_qty"))
+	if not stock_entry or posted_qty <= 0 or not doc.get("finished_item"):
+		return False
+
+	entry = frappe.db.get_value(
+		"Stock Entry",
+		stock_entry,
+		["docstatus", "purpose", "company"],
+		as_dict=True,
+	)
+	if (
+		not entry
+		or cint(entry.docstatus) != 1
+		or entry.purpose != "Manufacture"
+		or (doc.get("company") and entry.company != doc.company)
+	):
+		return False
+
+	finished_qty = sum(
+		flt(row.qty)
+		for row in frappe.get_all(
+			"Stock Entry Detail",
+			filters={
+				"parent": stock_entry,
+				"parenttype": "Stock Entry",
+				"item_code": doc.finished_item,
+				"is_finished_item": 1,
+			},
+			fields=["qty"],
+			limit_page_length=100,
+		)
+	)
+	return abs(finished_qty - posted_qty) <= 0.000001
 
 
 def build_material_requirement(doc, material_type, include_planning_details=True):

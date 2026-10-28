@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 
@@ -5,11 +7,21 @@ from smart_edge_custom.manufacturing.planning import (
 	assign_planning_execution_keys,
 	get_planning_execution_key,
 	get_released_productions,
+	get_week_start,
 	is_unreleased_material_entry,
 )
 
 
 class TestPlanningBoardGrouping(IntegrationTestCase):
+	def test_explicit_week_is_normalized_to_monday(self):
+		self.assertEqual(str(get_week_start("2026-10-19")), "2026-10-19")
+		self.assertEqual(str(get_week_start("2026-10-25")), "2026-10-19")
+		self.assertEqual(str(get_week_start("2027-01-01")), "2026-12-28")
+
+	@patch("smart_edge_custom.manufacturing.planning.nowdate", return_value="2026-10-28")
+	def test_missing_week_defaults_to_current_site_week(self, _nowdate):
+		self.assertEqual(str(get_week_start()), "2026-10-26")
+
 	def test_sequence_reset_creates_separate_final_eb_execution_groups(self):
 		rows = [
 			self.make_row("PLAN-1", "2026-10-01 09:00:00", 1),

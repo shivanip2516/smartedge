@@ -21,6 +21,60 @@ from smart_edge_custom.manufacturing.material_production import (
 
 
 class TestRequiredMaterialProduction(IntegrationTestCase):
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.db.get_value")
+	def test_valid_final_manufacturing_completion_takes_banner_priority(
+		self, get_value, get_all
+	):
+		get_value.return_value = frappe._dict(
+			{"docstatus": 1, "purpose": "Manufacture", "company": "SmartEdge"}
+		)
+		get_all.return_value = [frappe._dict({"qty": 9036})]
+		doc = frappe._dict(
+			{
+				"status": "Completed",
+				"company": "SmartEdge",
+				"finished_item": "SE-201",
+				"final_manufacturing_stock_entry": "MAT-STE-00061",
+				"final_stock_posted_qty": 9036,
+				"compound": "M3-M6",
+				"base_colour": "Pumic Grey",
+				"compound_consumption_batches": 2,
+				"shade_consumption_batches": 1,
+			}
+		)
+		requirements = [{"status": "In Progress"}, {"status": "Partially Completed"}]
+
+		self.assertEqual(
+			get_material_workflow_status(doc, requirements),
+			"Production Completed",
+		)
+
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.db.get_value")
+	def test_invalid_final_stock_entry_does_not_claim_completion(self, get_value):
+		get_value.return_value = frappe._dict(
+			{"docstatus": 2, "purpose": "Manufacture", "company": "SmartEdge"}
+		)
+		doc = frappe._dict(
+			{
+				"status": "Completed",
+				"company": "SmartEdge",
+				"finished_item": "SE-201",
+				"final_manufacturing_stock_entry": "MAT-STE-CANCELLED",
+				"final_stock_posted_qty": 9036,
+				"compound": "M3-M6",
+				"base_colour": "Pumic Grey",
+				"compound_consumption_batches": 2,
+				"shade_consumption_batches": 1,
+			}
+		)
+		requirements = [{"status": "In Progress"}, {"status": "Completed"}]
+
+		self.assertEqual(
+			get_material_workflow_status(doc, requirements),
+			"Material Production In Progress",
+		)
+
 	def test_material_workflow_status_tracks_internal_plan_and_release(self):
 		doc = frappe._dict(
 			{

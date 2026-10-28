@@ -125,6 +125,7 @@ def sync_work_order_to_planning(work_order, dry_run=False, refresh_readiness=Tru
 			"planned_date",
 			"final_eb_bom_generator",
 			"manufacture_stock_entry",
+			"weight_per_batch",
 		],
 		order_by="creation asc",
 		limit_page_length=100,
@@ -134,7 +135,17 @@ def sync_work_order_to_planning(work_order, dry_run=False, refresh_readiness=Tru
 	jobs = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"plan_entry": ["in", [entry.name for entry in entries]]},
-		fields=["name", "plan_entry", "status", "completion_type"],
+		fields=[
+			"name",
+			"plan_entry",
+			"status",
+			"completion_type",
+			"actual_qty_meter",
+			"actual_qty_kg",
+			"good_qty",
+			"manufacturing_stock_entry",
+			"stock_posted_qty",
+		],
 		order_by="modified desc",
 		limit_page_length=500,
 	)
@@ -179,6 +190,24 @@ def sync_work_order_to_planning(work_order, dry_run=False, refresh_readiness=Tru
 		for linked_job in entry_jobs:
 			job_target = None
 			job_updates = {}
+			if (
+				progress.verified_qty > QUANTITY_TOLERANCE
+				and linked_job.status not in {"Completed", "Cancelled"}
+			):
+				batch_count = (
+					progress.verified_qty / flt(entry.weight_per_batch)
+					if flt(entry.weight_per_batch) > QUANTITY_TOLERANCE
+					else 0
+				)
+				for fieldname, value in {
+					"actual_qty_meter": batch_count,
+					"actual_qty_kg": progress.verified_qty,
+					"good_qty": progress.verified_qty,
+					"manufacturing_stock_entry": progress.manufacture_stock_entry,
+					"stock_posted_qty": progress.verified_qty,
+				}.items():
+					if linked_job.get(fieldname) != value:
+						job_updates[fieldname] = value
 			if progress.cancelled and linked_job.status != "Cancelled":
 				job_target = "Cancelled"
 			elif progress.completed and completion_supported and linked_job.status not in {
@@ -191,6 +220,7 @@ def sync_work_order_to_planning(work_order, dry_run=False, refresh_readiness=Tru
 				job_updates["remaining_qty_kg"] = 0
 			if job_target:
 				job_updates["status"] = job_target
+			if job_updates:
 				changes.append(
 					{
 						"doctype": "SmartEdge Production Job",

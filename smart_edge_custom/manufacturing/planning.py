@@ -6,7 +6,11 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, get_time, getdate, now_datetime, nowdate
 
-from smart_edge_custom.manufacturing.fifo_batch_selection import get_kg_to_stock_factor
+from smart_edge_custom.manufacturing.fifo_batch_selection import (
+	get_fifo_batch_allocations,
+	get_kg_to_stock_factor,
+)
+from smart_edge_custom.manufacturing.final_bom_generator import get_prepared_component_batch_weight
 from smart_edge_custom.manufacturing.workstation_capacity import (
 	get_capacity,
 	get_reserved_work_order_count,
@@ -1515,6 +1519,47 @@ def validate_final_completion_stock_entry_setup(job, completion_type):
 	validate_batch_control([finished_row])
 
 
+def is_final_stock_posting_entry(entry):
+	if entry.get("plan_type") == MATERIAL_PLAN_TYPE or not entry.get("operation_row"):
+		return False
+	mandatory_rows = get_mandatory_route_operation_rows(entry.final_eb_bom_generator)
+	return bool(mandatory_rows and mandatory_rows[-1].name == entry.operation_row)
+
+
+def get_candidate_final_finished_quantity(entry, actual_qty_meter=None, good_qty=None):
+	completed_qty = sum(
+		flt(row.good_qty) or flt(row.actual_qty_meter)
+		for row in frappe.get_all(
+			"SmartEdge Production Job",
+			filters={"plan_entry": entry.name, "status": "Completed"},
+			fields=["good_qty", "actual_qty_meter"],
+			limit_page_length=100,
+		)
+	)
+	return completed_qty + (flt(good_qty) or flt(actual_qty_meter))
+
+
+@frappe.whitelist()
+def get_final_batch_consumption_preview(
+	plan_entry, actual_qty_meter=None, good_qty=None
+):
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	entry.check_permission("read")
+	if not is_final_stock_posting_entry(entry):
+		return {"applicable": 0, "components": []}
+
+	finished_qty = get_candidate_final_finished_quantity(
+		entry, actual_qty_meter=actual_qty_meter, good_qty=good_qty
+	)
+	if finished_qty <= 0:
+		frappe.throw(_("Actual accepted Finished Goods quantity is required to preview batch consumption."))
+	doc = frappe.get_doc("Final EB BOM Generator", entry.final_eb_bom_generator)
+	doc.check_permission("read")
+	preview = build_final_batch_consumption_preview(doc, finished_qty)
+	preview["applicable"] = 1
+	return preview
+
+
 def get_final_finished_jobs(production):
 	final_entry = get_final_mandatory_plan_entry(production)
 	job_meta = frappe.get_meta("SmartEdge Production Job", cached=True)
@@ -1573,14 +1618,30 @@ def get_final_stock_components(doc, finished_qty, source_warehouse):
 
 def get_final_component_batch_nos(doc, components):
 	batch_nos_by_row = []
-	for index, (label, table_field, batch_count_field, total_field) in enumerate(
+	for index, (
+		label,
+		table_field,
+		batch_count_field,
+		total_field,
+		master_doctype,
+		master_field,
+	) in enumerate(
 		(
-			(_("Compound"), "compound_batch_allocations", "compound_consumption_batches", "compound_total_required"),
+			(
+				_("Compound"),
+				"compound_batch_allocations",
+				"compound_consumption_batches",
+				"compound_total_required",
+				"Compound",
+				"compound",
+			),
 			(
 				_("Base Colour / Shade"),
 				"shade_batch_allocations",
 				"shade_consumption_batches",
 				"shade_total_required",
+				"Base Colour",
+				"base_colour",
 			),
 		)
 	):
@@ -1590,36 +1651,137 @@ def get_final_component_batch_nos(doc, components):
 			batch_nos_by_row.append({})
 			continue
 
-		allocations = list(doc.get(table_field) or [])
 		expected_count = cint(doc.get(batch_count_field))
-		if expected_count <= 0 or len(allocations) != expected_count:
-			frappe.throw(
-				_("{0} FIFO batch allocation is missing or stale. Refresh the batch allocation before posting stock.").format(
-					label
-				)
-			)
-
-		batch_nos = [row.batch_no for row in allocations if row.batch_no]
-		if len(batch_nos) != expected_count or len(set(batch_nos)) != expected_count:
-			frappe.throw(_("{0} FIFO allocation must contain unique inventory Batches.").format(label))
-
-		planned_qty = flt(doc.get(total_field))
-		selected_qty = sum(flt(row.selected_qty) for row in allocations)
-		if abs(planned_qty - selected_qty) > 0.000001:
-			frappe.throw(
-				_("{0} FIFO allocation quantity does not match the planned consumption quantity.").format(label)
-			)
-
+		allocations = get_current_fifo_allocations(
+			doc,
+			component,
+			label,
+			table_field,
+			expected_count,
+			total_field,
+			master_doctype,
+			master_field,
+			item.stock_uom,
+		)
 		batch_nos_by_row.append(
-			get_revalidated_consumption_batches(
-				component,
-				allocations,
-				label,
-				item.stock_uom,
-			)
+			get_revalidated_consumption_batches(component, allocations, label, item.stock_uom)
 		)
 
 	return batch_nos_by_row
+
+
+def get_current_fifo_allocations(
+	doc,
+	component,
+	label,
+	table_field,
+	expected_count,
+	total_field,
+	master_doctype,
+	master_field,
+	stock_uom,
+):
+	"""Reuse a valid saved allocation, otherwise recalculate it with the existing FIFO selector."""
+	if expected_count <= 0:
+		frappe.throw(_("{0} batch count is required before posting stock.").format(label))
+
+	allocations = list(doc.get(table_field) or [])
+	if is_saved_fifo_allocation_current(
+		component, allocations, expected_count, flt(doc.get(total_field)), stock_uom
+	):
+		return allocations
+
+	batch_weight = get_prepared_component_batch_weight(
+		master_doctype, doc.get(master_field), label
+	)
+	return [
+		frappe._dict(row)
+		for row in get_fifo_batch_allocations(
+			component["item_code"],
+			component["s_warehouse"],
+			expected_count,
+			batch_weight,
+			label,
+		)
+	]
+
+
+def is_saved_fifo_allocation_current(
+	component, allocations, expected_count, planned_qty, stock_uom
+):
+	if len(allocations) != expected_count:
+		return False
+	batch_nos = [row.get("batch_no") for row in allocations if row.get("batch_no")]
+	if len(batch_nos) != expected_count or len(set(batch_nos)) != expected_count:
+		return False
+	if abs(sum(flt(row.get("selected_qty")) for row in allocations) - planned_qty) > 0.000001:
+		return False
+	if any(
+		row.get("item_code") != component["item_code"]
+		or row.get("warehouse") != component["s_warehouse"]
+		for row in allocations
+	):
+		return False
+
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	conversion_factor = get_kg_to_stock_factor(component["item_code"], stock_uom)
+	available = {
+		row.batch_no: flt(row.qty)
+		for row in get_batch_qty(
+			item_code=component["item_code"], warehouse=component["s_warehouse"]
+		)
+		or []
+	}
+	return all(
+		available.get(row.get("batch_no"), 0)
+		+ 0.000001
+		>= flt(row.get("selected_qty")) * conversion_factor
+		for row in allocations
+	)
+
+
+def build_final_batch_consumption_preview(doc, finished_qty):
+	source_warehouse = validate_stock_warehouse(
+		doc.get("source_warehouse"), doc.company, _("Source Warehouse")
+	)
+	components = get_final_stock_components(doc, finished_qty, source_warehouse)
+	batch_nos_by_row = get_final_component_batch_nos(doc, components)
+	result = []
+	labels = (_("Compound"), _("Base Colour / Shade"))
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+	for component, batch_nos, label in zip(components, batch_nos_by_row, labels):
+		item = validate_stock_item(component["item_code"])
+		conversion_factor = get_kg_to_stock_factor(component["item_code"], item.stock_uom)
+		available = {
+			row.batch_no: flt(row.qty)
+			for row in get_batch_qty(
+				item_code=component["item_code"], warehouse=component["s_warehouse"]
+			)
+			or []
+		}
+		result.append(
+			{
+				"component_type": label,
+				"item_code": component["item_code"],
+				"item_name": frappe.db.get_value("Item", component["item_code"], "item_name")
+				or component["item_code"],
+				"uom": item.stock_uom,
+				"batches": [
+					{
+						"batch_no": batch_no,
+						"warehouse": component["s_warehouse"],
+						"available_qty": available.get(batch_no, 0),
+						"quantity_to_consume": flt(qty),
+						"uom": item.stock_uom,
+					}
+					for batch_no, qty in batch_nos.items()
+				],
+				"total_to_consume": flt(component["qty"]) * conversion_factor,
+			}
+		)
+	return {"finished_qty": flt(finished_qty), "components": result}
 
 
 def get_revalidated_consumption_batches(component, allocations, label, stock_uom):
@@ -1917,6 +2079,14 @@ def get_complete_job_context(plan_entry):
 				"total_planned_quantity": flt(job.planned_qty_kg),
 			}
 		)
+	elif is_final_stock_posting_entry(entry):
+		preview_qty = flt(job.good_qty) or flt(job.actual_qty_meter) or flt(job.planned_qty_meter)
+		context["batch_consumption_preview"] = get_final_batch_consumption_preview(
+			entry.name,
+			actual_qty_meter=preview_qty,
+			good_qty=preview_qty,
+		)
+		context["show_batch_consumption"] = 1
 	return context
 
 

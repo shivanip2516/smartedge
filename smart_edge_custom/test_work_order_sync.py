@@ -115,6 +115,7 @@ class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
 				"planned_date": "2026-10-23",
 				"final_eb_bom_generator": "FEBG-1",
 				"manufacture_stock_entry": None,
+				"weight_per_batch": 55,
 			}
 		)
 		job = frappe._dict(
@@ -123,6 +124,11 @@ class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
 				"plan_entry": "PLAN-1",
 				"status": "In Progress",
 				"completion_type": None,
+				"actual_qty_meter": 0,
+				"actual_qty_kg": 0,
+				"good_qty": 0,
+				"manufacturing_stock_entry": None,
+				"stock_posted_qty": 0,
 			}
 		)
 		get_all.side_effect = [[entry], [job]]
@@ -139,6 +145,11 @@ class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
 			"SmartEdge Production Job",
 			"JOB-1",
 			{
+				"actual_qty_meter": 1,
+				"actual_qty_kg": 55,
+				"good_qty": 55,
+				"manufacturing_stock_entry": "STE-1",
+				"stock_posted_qty": 55,
 				"completion_type": "Full Completion",
 				"remaining_qty_meter": 0,
 				"remaining_qty_kg": 0,
@@ -165,6 +176,7 @@ class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
 				"planned_date": "2026-10-23",
 				"final_eb_bom_generator": "FEBG-1",
 				"manufacture_stock_entry": "STE-1",
+				"weight_per_batch": 55,
 			}
 		)
 		job = frappe._dict(
@@ -173,6 +185,11 @@ class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
 				"plan_entry": "PLAN-1",
 				"status": "Completed",
 				"completion_type": "Full Completion",
+				"actual_qty_meter": 1,
+				"actual_qty_kg": 55,
+				"good_qty": 55,
+				"manufacturing_stock_entry": "STE-1",
+				"stock_posted_qty": 55,
 			}
 		)
 		get_all.side_effect = [[entry], [job]]

@@ -239,7 +239,7 @@ function show_status(frm) {
 	frm.dashboard.clear_headline();
 	frm.dashboard.set_headline_alert(
 		frappe.utils.escape_html(display_status),
-		["Ready to Send to Planning", "Sent to Planning", "Materials Produced"].includes(workflow_status)
+		["Ready to Send to Planning", "Sent to Planning", "Materials Produced", "Production Completed"].includes(workflow_status)
 			? "green"
 			: get_indicator(frm.doc.status)
 	);

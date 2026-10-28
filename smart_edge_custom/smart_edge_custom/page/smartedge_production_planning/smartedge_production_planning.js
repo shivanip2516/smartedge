@@ -4,7 +4,7 @@ frappe.pages["smartedge-production-planning"].on_page_load = function (wrapper) 
 
 frappe.pages["smartedge-production-planning"].on_page_show = function (wrapper) {
 	if (wrapper.smartedge_planning) {
-		wrapper.smartedge_planning.refresh();
+		wrapper.smartedge_planning.refresh_from_route();
 	}
 };
 
@@ -119,8 +119,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	get_week_start_from_route() {
 		const params = new URLSearchParams(window.location.search);
-		const week = params.get("week");
-		return week || get_monday(frappe.datetime.get_today());
+		return params.get("week") || null;
+	}
+
+	refresh_from_route() {
+		this.state.week_start = this.get_week_start_from_route();
+		return this.refresh();
 	}
 
 	get_search_from_route() {
@@ -134,10 +138,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		window.history.replaceState(null, "", route);
 	}
 
-	set_this_week() {
-		this.state.week_start = get_monday(frappe.datetime.get_today());
+	async set_this_week() {
+		this.state.week_start = null;
+		await this.refresh();
 		this.set_route_week();
-		this.refresh();
 	}
 
 	move_week(days) {
@@ -1223,6 +1227,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Data", fieldname: "actual_running_time", label: __("Actual Running Time"), read_only: 1, default: format_duration_seconds(context.productive_elapsed_seconds || card.job_productive_elapsed_seconds || 0) },
 				{ fieldtype: "Data", fieldname: "total_downtime", label: __("Total Downtime"), read_only: 1, default: format_duration_seconds(context.total_downtime_seconds || 0) },
+				{ fieldtype: "Section Break", label: __("Batch Consumption Summary"), hidden: !context.show_batch_consumption },
+				{
+					fieldtype: "HTML",
+					fieldname: "batch_consumption_summary",
+					hidden: !context.show_batch_consumption,
+					options: render_batch_consumption_summary(context.batch_consumption_preview),
+				},
 				{ fieldtype: "Section Break", label: __("Completion Details") },
 				{
 					fieldtype: "Select",
@@ -1276,6 +1287,30 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		if (context.show_batch_consumption) {
+			let preview_request = 0;
+			const refresh_batch_preview = frappe.utils.debounce(async () => {
+				const request_id = ++preview_request;
+				const response = await frappe.call({
+					method: `${this.method}.get_final_batch_consumption_preview`,
+					args: {
+						plan_entry: card.id,
+						actual_qty_meter: dialog.get_value("actual_qty_meter"),
+						good_qty: dialog.get_value("good_qty"),
+					},
+				});
+				if (request_id !== preview_request) {
+					return;
+				}
+				dialog.fields_dict.batch_consumption_summary.$wrapper.html(
+					render_batch_consumption_summary(response.message)
+				);
+			}, 300);
+			for (const fieldname of ["actual_qty_meter", "good_qty"]) {
+				dialog.fields_dict[fieldname].df.onchange = refresh_batch_preview;
+				dialog.fields_dict[fieldname].$input?.on("change", refresh_batch_preview);
+			}
+		}
 		if (is_material) {
 			const update_material_quantity = () => {
 				const batches = cint(dialog.get_value("actual_qty_meter"));
@@ -1488,14 +1523,6 @@ function has_active_filters(filters = {}) {
 	return Object.values(filters).some(Boolean);
 }
 
-function get_monday(date_value) {
-	const date = new Date(`${date_value}T00:00:00`);
-	const day = date.getDay();
-	const diff = date.getDate() - day + (day === 0 ? -6 : 1);
-	date.setDate(diff);
-	return date.toISOString().slice(0, 10);
-}
-
 function se_format_number(value, precision) {
 	return flt(value || 0, precision).toLocaleString(undefined, {
 		minimumFractionDigits: 0,
@@ -1689,6 +1716,36 @@ function validate_schedule_in_browser(date_value, time_value) {
 		return false;
 	}
 	return true;
+}
+
+function render_batch_consumption_summary(preview) {
+	const components = preview?.components || [];
+	if (!components.length) {
+		return `<p class="text-muted">${__("No batch-controlled prepared materials are required.")}</p>`;
+	}
+	return components
+		.map((component) => {
+			const rows = (component.batches || [])
+				.map(
+					(row) => `<tr>
+						<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
+						<td>${frappe.utils.escape_html(row.warehouse || "")}</td>
+						<td class="text-right">${se_format_number(row.available_qty, 6)} ${frappe.utils.escape_html(row.uom || "")}</td>
+						<td class="text-right"><strong>${se_format_number(row.quantity_to_consume, 6)} ${frappe.utils.escape_html(row.uom || "")}</strong></td>
+					</tr>`
+				)
+				.join("");
+			return `<div class="mb-3">
+				<div class="mb-2"><strong>${frappe.utils.escape_html(component.component_type || "")}: ${frappe.utils.escape_html(component.item_name || component.item_code || "")}</strong></div>
+				<div class="table-responsive">
+					<table class="table table-bordered table-sm mb-0">
+						<thead><tr><th>${__("Batch")}</th><th>${__("Source Warehouse")}</th><th class="text-right">${__("Available Quantity")}</th><th class="text-right">${__("Quantity to Consume")}</th></tr></thead>
+						<tbody>${rows}</tbody>
+					</table>
+				</div>
+			</div>`;
+		})
+		.join("");
 }
 
 function format_duration_seconds(seconds) {
