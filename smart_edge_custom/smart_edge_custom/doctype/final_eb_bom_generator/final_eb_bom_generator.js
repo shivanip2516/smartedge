@@ -228,9 +228,9 @@ function set_child_rows(frm, table_field, rows) {
 }
 
 function show_status(frm) {
-	const readiness = frm.doc.material_readiness_status;
-	const display_status = readiness
-		? __("Material Readiness: {0}", [readiness])
+	const workflow_status = frm.__material_workflow_status || get_material_workflow_status(frm);
+	const display_status = workflow_status
+		? __("Material Workflow: {0}", [workflow_status])
 		: frm.doc.status;
 	if (!display_status) {
 		return;
@@ -239,8 +239,28 @@ function show_status(frm) {
 	frm.dashboard.clear_headline();
 	frm.dashboard.set_headline_alert(
 		frappe.utils.escape_html(display_status),
-		readiness === "Ready to Plan" ? "green" : get_indicator(frm.doc.status)
+		["Ready to Send to Planning", "Sent to Planning", "Materials Produced"].includes(workflow_status)
+			? "green"
+			: get_indicator(frm.doc.status)
 	);
+}
+
+function get_material_workflow_status(frm) {
+	if (!frm.doc.compound || !frm.doc.base_colour || !cint(frm.doc.compound_consumption_batches) || !cint(frm.doc.shade_consumption_batches)) {
+		return __("Material Configuration Pending");
+	}
+	if ([frm.doc.compound_production_status, frm.doc.base_colour_production_status].some((status) =>
+		["In Progress", "Paused", "Partially Completed"].includes(status)
+	)) {
+		return __("Material Production In Progress");
+	}
+	if (frm.__material_planning_context?.released_to_planning) {
+		return __("Sent to Planning");
+	}
+	if (cint(frm.doc.compound_planned_batches) || cint(frm.doc.base_colour_planned_batches)) {
+		return __("Material Production Planned");
+	}
+	return __("Ready to Send to Planning");
 }
 
 function render_configurator_summary(frm, route_summary = {}) {
@@ -284,9 +304,9 @@ function render_configurator_summary(frm, route_summary = {}) {
 			],
 		},
 		{
-			title: __("Material Readiness"),
+			title: __("Material Workflow"),
 			items: [
-				[__("Overall Status"), frm.doc.material_readiness_status],
+				[__("Workflow Status"), frm.__material_workflow_status || get_material_workflow_status(frm)],
 				[__("Compound Status"), frm.doc.compound_production_status],
 				[__("Compound Planned / Completed"), `${cint(frm.doc.compound_planned_batches)} / ${cint(frm.doc.compound_completed_batches)}`],
 				[__("Base Colour Status"), frm.doc.base_colour_production_status],
@@ -417,12 +437,15 @@ function show_insufficient_material_dialog(error, frm) {
 	const rows = shortages
 		.map((row) => {
 			const uom = escape(row.uom || "");
+			const planned = flt(row.planned || 0);
+			const additional = flt(row.uncovered ?? row.shortage);
 			return `<tr>
 				<td><strong>${escape(row.item_name || row.item_code || "")}</strong></td>
 				<td>${escape(row.warehouse || "")}</td>
 				<td class="text-right">${format_number(row.required, 3)} ${uom}</td>
 				<td class="text-right">${format_number(row.available, 3)} ${uom}</td>
-				<td class="text-right text-danger"><strong>${format_number(row.shortage, 3)} ${uom}</strong></td>
+				<td class="text-right">${format_number(planned, 3)} ${uom}</td>
+				<td class="text-right text-danger"><strong>${format_number(additional, 3)} ${uom}</strong></td>
 			</tr>`;
 		})
 		.join("");
@@ -445,17 +468,17 @@ function show_insufficient_material_dialog(error, frm) {
 				<div class="flex align-items-start mb-3">
 					<span class="fa fa-exclamation-triangle text-warning mr-2" aria-hidden="true"></span>
 					<div>
-						<div class="text-muted">${__("Cannot Send to Planning because the required material quantity is not available.")}</div>
-						<div class="font-weight-bold mt-2">${__("{0} material(s) have insufficient stock.", [shortages.length])}</div>
+						<div class="text-muted">${__("Cannot Send to Planning because part of the prepared-material shortage is not covered by linked manufacturing plans.")}</div>
+						<div class="font-weight-bold mt-2">${__("{0} material(s) require additional manufacturing.", [shortages.length])}</div>
 					</div>
 				</div>
 				<div class="table-responsive">
 					<table class="table table-bordered">
-						<thead><tr><th>${__("Material")}</th><th>${__("Warehouse")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available")}</th><th class="text-right">${__("Shortage")}</th></tr></thead>
+						<thead><tr><th>${__("Material")}</th><th>${__("Warehouse")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available")}</th><th class="text-right">${__("Linked Plan")}</th><th class="text-right">${__("Additional Required")}</th></tr></thead>
 						<tbody>${rows}</tbody>
 					</table>
 				</div>
-				<p class="text-muted mt-3 mb-0">${__("Please replenish the required materials before sending this document to planning.")}</p>
+				<p class="text-muted mt-3 mb-0">${__("Plan the additional quantity before sending this document to planning. Physical stock will only change after manufacturing is completed.")}</p>
 			</div>`,
 		}],
 		primary_action_label: __("Plan Required Materials"),
@@ -480,6 +503,7 @@ async function refresh_material_planning(frm) {
 	});
 	const context = response.message || {};
 	frm.__material_planning_context = context;
+	frm.__material_workflow_status = context.workflow_status;
 	apply_material_status(frm, context);
 	add_material_navigation(frm, context);
 	if (context.has_shortage) {
@@ -488,6 +512,7 @@ async function refresh_material_planning(frm) {
 }
 
 function apply_material_status(frm, context) {
+	frm.__material_workflow_status = context.workflow_status || frm.__material_workflow_status;
 	frm.doc.material_readiness_status = context.overall_status;
 	for (const row of context.requirements || []) {
 		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";

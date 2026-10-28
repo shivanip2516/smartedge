@@ -57,13 +57,60 @@ def build_material_planning_context(doc, include_planning_details=True):
 		build_material_requirement(doc, material_type, include_planning_details)
 		for material_type in MATERIAL_CONFIG
 	]
+	released_to_planning = has_final_eb_planning_entries(doc.name)
 	return {
 		"production": doc.name,
 		"source_warehouse": doc.source_warehouse,
 		"requirements": requirements,
 		"has_shortage": any(row["batches_to_plan"] > 0 for row in requirements),
 		"overall_status": get_overall_material_status(requirements),
+		"released_to_planning": released_to_planning,
+		"workflow_status": get_material_workflow_status(doc, requirements, released_to_planning),
 	}
+
+
+def has_final_eb_planning_entries(production):
+	if not production:
+		return False
+	return bool(
+		frappe.db.exists(
+			"SmartEdge Production Plan Entry",
+			{
+				"final_eb_bom_generator": production,
+				"plan_type": ["!=", MATERIAL_PLAN_TYPE],
+				"status": ["!=", "Cancelled"],
+			},
+		)
+	)
+
+
+def get_material_workflow_status(doc, requirements, released_to_planning=False):
+	configured = bool(
+		doc.get("compound")
+		and doc.get("base_colour")
+		and cint(doc.get("compound_consumption_batches")) > 0
+		and cint(doc.get("shade_consumption_batches")) > 0
+	)
+	if not configured:
+		return "Material Configuration Pending"
+
+	statuses = {row.get("status") for row in requirements}
+	if statuses.intersection({"In Progress", "Paused", "Partially Completed"}):
+		return "Material Production In Progress"
+
+	completed_production = any(cint(row.get("completed_batches")) > 0 for row in requirements)
+	active_production = any(cint(row.get("already_planned_batches")) > 0 for row in requirements)
+	if completed_production and not active_production and not any(
+		cint(row.get("batches_to_plan")) > 0 for row in requirements
+	):
+		return "Materials Produced"
+	if released_to_planning:
+		return "Sent to Planning"
+	if active_production:
+		return "Material Production Planned"
+	if not any(cint(row.get("batches_to_plan")) > 0 for row in requirements):
+		return "Ready to Send to Planning"
+	return "Material Configuration Pending"
 
 
 def build_material_requirement(doc, material_type, include_planning_details=True):
@@ -144,7 +191,15 @@ def get_linked_material_plans(production, material_type, required_target_warehou
 		order_by="creation desc",
 		limit_page_length=100,
 	)
+	unique_rows = []
+	seen_work_orders = set()
 	for row in rows:
+		# A Work Order is one manufacturing commitment even if a legacy duplicate
+		# planning row points to it. Never count its quantity twice.
+		if row.work_order and row.work_order in seen_work_orders:
+			continue
+		if row.work_order:
+			seen_work_orders.add(row.work_order)
 		row.completed_batches = get_work_order_completed_batches(row.work_order, row.weight_per_batch)
 		row.outstanding_batches = (
 			max(cint(row.planned_batches) - row.completed_batches, 0)
@@ -153,7 +208,8 @@ def get_linked_material_plans(production, material_type, required_target_warehou
 			and is_active_work_order(row.work_order)
 			else 0
 		)
-	return rows
+		unique_rows.append(row)
+	return unique_rows
 
 
 def get_work_order_completed_batches(work_order, weight_per_batch):
@@ -210,6 +266,9 @@ def get_bom_operation(bom_no, operation=None):
 
 
 def get_material_operations(bom_no):
+	if not bom_no:
+		return []
+
 	operations = get_bom_operations(bom_no)
 	if operations:
 		return operations
@@ -225,6 +284,8 @@ def get_material_operations(bom_no):
 
 
 def get_material_workstation_context(bom_no, operation):
+	if not bom_no:
+		frappe.throw(_("An active submitted batch BOM is required before planning material production."))
 	frappe.get_doc("BOM", bom_no).check_permission("read")
 	operation_doc = frappe.get_doc("Operation", operation)
 	operation_doc.check_permission("read")

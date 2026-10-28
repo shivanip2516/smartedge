@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+import re
 
 import frappe
 from frappe import _
@@ -23,6 +24,8 @@ CATEGORY_COLORS = {
 	"Slitting": "indigo",
 	"Other": "gray",
 }
+MATERIAL_PLAN_TYPE = "Required Material"
+MATERIAL_DISPLAY_ORDER = {"Compound": 1, "Base Colour": 2}
 
 
 @frappe.whitelist()
@@ -105,16 +108,6 @@ def get_week_start(value=None):
 
 def get_plan_entries(week_start, week_end, include_related_operations=False, **filters):
 	entry_filters = {"status": ["!=", "Cancelled"]}
-	if filters.get("category"):
-		entry_filters["planning_category"] = filters["category"]
-	if filters.get("workstation"):
-		entry_filters["workstation"] = filters["workstation"]
-	if filters.get("operation"):
-		entry_filters["operation"] = filters["operation"]
-	if filters.get("status"):
-		entry_filters["status"] = filters["status"]
-	if filters.get("priority"):
-		entry_filters["priority"] = filters["priority"]
 
 	fields = [
 		"name",
@@ -169,9 +162,12 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 	if not rows:
 		return []
 	assign_planning_execution_keys(rows)
+	released_productions = get_released_productions(rows)
 	visible_execution_keys = {
 		get_planning_execution_key(row)
 		for row in rows
+		if not is_unreleased_material_entry(row, released_productions)
+		if row_matches_board_filters(row, filters)
 		if (not row.planned_date and row.status != "Completed")
 		or (row.planned_date and week_start <= getdate(row.planned_date) <= week_end)
 	}
@@ -179,6 +175,8 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 	generators = get_generator_map([row.final_eb_bom_generator for row in rows])
 	result = []
 	for row in rows:
+		if is_unreleased_material_entry(row, released_productions):
+			continue
 		generator = generators.get(row.final_eb_bom_generator)
 		if not generator:
 			continue
@@ -187,7 +185,9 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 				continue
 		elif row.planned_date and not (week_start <= getdate(row.planned_date) <= week_end):
 			continue
-		card_item = row.get("material_item") if row.get("plan_type") == "Required Material" else generator.finished_item
+		elif not row_matches_board_filters(row, filters):
+			continue
+		card_item = generator.finished_item
 		if filters.get("finished_product") and card_item != filters["finished_product"]:
 			continue
 		if filters.get("size") and str(generator.custom_size or "") != str(filters["size"]):
@@ -210,17 +210,35 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 	return result
 
 
+def row_matches_board_filters(row, filters):
+	return not any(
+		(
+			filters.get("category") and row.get("planning_category") != filters["category"],
+			filters.get("workstation") and row.get("workstation") != filters["workstation"],
+			filters.get("operation") and row.get("operation") != filters["operation"],
+			filters.get("status") and row.get("status") != filters["status"],
+			filters.get("priority") and row.get("priority") != filters["priority"],
+		)
+	)
+
+
 def get_planning_execution_key(row):
-	if row.get("plan_type") == "Required Material":
+	if row.get("plan_type") == MATERIAL_PLAN_TYPE and str(row.get("execution_key") or "").startswith(
+		"production:"
+	):
+		return ("Final EB", row.get("execution_key"))
+	if row.get("plan_type") == MATERIAL_PLAN_TYPE:
 		return ("Required Material", row.get("work_order") or row.name)
 	return ("Final EB", row.get("execution_key") or row.get("final_eb_bom_generator"))
 
 
 def assign_planning_execution_keys(rows):
 	by_production = defaultdict(list)
+	material_rows = defaultdict(list)
 	for row in rows:
-		if row.get("plan_type") == "Required Material":
+		if row.get("plan_type") == MATERIAL_PLAN_TYPE:
 			row.execution_key = f"material:{row.get('work_order') or row.name}"
+			material_rows[row.final_eb_bom_generator].append(row)
 		else:
 			by_production[row.final_eb_bom_generator].append(row)
 	for production, production_rows in by_production.items():
@@ -235,6 +253,38 @@ def assign_planning_execution_keys(rows):
 				current_key = f"production:{production}:{row.name}"
 			row.execution_key = current_key
 			last_sequence = sequence
+
+		current_rows = [row for row in production_rows if row.execution_key == current_key]
+		materials = sorted(
+			material_rows.get(production) or [],
+			key=lambda row: (
+				MATERIAL_DISPLAY_ORDER.get(row.get("material_type"), 99),
+				str(row.get("creation") or ""),
+				row.name,
+			),
+		)
+		for display_sequence, row in enumerate(materials, 1):
+			row.execution_key = current_key
+			row.board_sequence = display_sequence
+		material_count = len(materials)
+		for row in current_rows:
+			row.board_sequence = material_count + cint(row.sequence)
+
+
+def get_released_productions(rows):
+	return {
+		row.final_eb_bom_generator
+		for row in rows
+		if row.get("plan_type") != MATERIAL_PLAN_TYPE and row.final_eb_bom_generator
+	}
+
+
+def is_unreleased_material_entry(row, released_productions):
+	return bool(
+		row.get("plan_type") == MATERIAL_PLAN_TYPE
+		and row.final_eb_bom_generator
+		and row.final_eb_bom_generator not in released_productions
+	)
 
 
 def attach_work_order_progress(rows):
@@ -513,7 +563,7 @@ def make_operation_card(row):
 		"production": row.final_eb_bom_generator,
 		"operation_row": row.operation_row,
 		"operation": row.operation,
-		"operation_sequence": row.sequence,
+		"operation_sequence": row.get("board_sequence") or row.sequence,
 		"workstation": display_workstation,
 		"planned_workstation": row.workstation,
 		"actual_workstation": actual_workstation,
@@ -762,8 +812,11 @@ def schedule_operation(
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
 	validate_plan_entry(entry)
+	validate_material_plan_released(entry)
+	validate_material_scheduling_context(entry)
 	validate_selected_workstation(entry, workstation)
 
+	planned_start = normalize_schedule_time(planned_start)
 	start_dt = combine_date_time(planned_date, planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
 	end_dt = start_dt + timedelta(hours=duration_hours)
@@ -809,6 +862,56 @@ def validate_plan_entry(entry):
 		frappe.throw(_("Completed or cancelled entries cannot be planned."))
 
 
+def validate_material_plan_released(entry):
+	if entry.get("plan_type") != MATERIAL_PLAN_TYPE:
+		return
+	if not frappe.db.exists(
+		"SmartEdge Production Plan Entry",
+		{
+			"final_eb_bom_generator": entry.final_eb_bom_generator,
+			"plan_type": ["!=", MATERIAL_PLAN_TYPE],
+			"status": ["!=", "Cancelled"],
+		},
+	):
+		frappe.throw(
+			_("Send Final EB BOM Generator {0} to planning before scheduling linked material production.").format(
+				entry.final_eb_bom_generator
+			)
+		)
+
+
+def validate_material_scheduling_context(entry):
+	"""Validate the linked manufacturing identity without checking its output stock."""
+	if entry.get("plan_type") != MATERIAL_PLAN_TYPE:
+		return
+	if not entry.get("work_order") or not entry.get("bom_no") or not entry.get("material_item"):
+		frappe.throw(_("Linked material Work Order, BOM and production Item are required for scheduling."))
+	work_order = frappe.db.get_value(
+		"Work Order",
+		entry.work_order,
+		[
+			"docstatus",
+			"status",
+			"production_item",
+			"bom_no",
+			"qty",
+			"custom_final_eb_bom_generator",
+			"custom_material_type",
+		],
+		as_dict=True,
+	)
+	if not work_order or work_order.docstatus != 1 or work_order.status in {"Stopped", "Cancelled", "Completed"}:
+		frappe.throw(_("Select an active submitted material Work Order before scheduling this operation."))
+	if work_order.production_item != entry.material_item or work_order.bom_no != entry.bom_no:
+		frappe.throw(_("The linked material Work Order does not match the planning Item and BOM."))
+	if flt(work_order.qty) <= 0:
+		frappe.throw(_("The linked material Work Order quantity must be greater than zero."))
+	if work_order.get("custom_final_eb_bom_generator") not in (None, "", entry.final_eb_bom_generator):
+		frappe.throw(_("The linked material Work Order belongs to another Final EB production."))
+	if work_order.get("custom_material_type") not in (None, "", entry.material_type):
+		frappe.throw(_("The linked material Work Order has a different material type."))
+
+
 def validate_workstation_compatibility(operation, operation_row, workstation):
 	if not workstation:
 		frappe.throw(_("Workstation is required."))
@@ -827,9 +930,18 @@ def validate_workstation_compatibility(operation, operation_row, workstation):
 
 def combine_date_time(date_value, time_value):
 	date_value = getdate(date_value)
-	if isinstance(time_value, str) and len(time_value.split(":")) == 2:
-		time_value = f"{time_value}:00"
+	time_value = normalize_schedule_time(time_value)
 	return get_datetime(datetime.combine(date_value, get_time(time_value or time(9, 0))))
+
+
+def normalize_schedule_time(value):
+	"""Accept the board's HH:mm value while preserving already supplied seconds."""
+	if not isinstance(value, str):
+		return value
+	value = value.strip()
+	if re.fullmatch(r"\d{1,2}:\d{2}", value):
+		return f"{value}:00"
+	return value
 
 
 def validate_future_schedule(start_dt, end_dt):
@@ -2042,6 +2154,7 @@ def apply_released_quantity_to_job(job, entry):
 def validate_start_eligible(entry):
 	if entry.status in {"Completed", "Cancelled"}:
 		frappe.throw(_("Completed or cancelled operations cannot be started."))
+	validate_material_plan_released(entry)
 	validate_scheduled_start_date(entry)
 	validate_predecessor_release(entry)
 	if not entry.workstation:
@@ -2076,6 +2189,15 @@ def validate_scheduled_start_date(entry, current_date=None):
 
 def validate_predecessor_release(entry):
 	previous_entry = get_previous_mandatory_entry(entry)
+	material_predecessors = get_material_start_predecessors(entry, previous_entry)
+	incomplete_materials = [row for row in material_predecessors if row.status != "Completed"]
+	if incomplete_materials:
+		frappe.throw(
+			_("Cannot start {0} before linked material operation {1} is completed.").format(
+				entry.operation,
+				incomplete_materials[0].operation,
+			)
+		)
 	if not previous_entry:
 		return
 	if flt(entry.get("released_qty_meter")) or flt(entry.get("released_qty_kg")):
@@ -2084,6 +2206,28 @@ def validate_predecessor_release(entry):
 		_("Cannot start {0} because the required preceding operation has not released completed production quantity.").format(
 			entry.operation
 		)
+	)
+
+
+def get_material_start_predecessors(entry, route_predecessor=None):
+	filters = {
+		"final_eb_bom_generator": entry.final_eb_bom_generator,
+		"plan_type": MATERIAL_PLAN_TYPE,
+		"status": ["!=", "Cancelled"],
+	}
+	if entry.get("plan_type") == MATERIAL_PLAN_TYPE:
+		if entry.get("material_type") != "Base Colour":
+			return []
+		filters["material_type"] = "Compound"
+	elif route_predecessor:
+		return []
+
+	return frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters=filters,
+		fields=["name", "operation", "material_type", "status"],
+		order_by="creation asc",
+		limit_page_length=100,
 	)
 
 

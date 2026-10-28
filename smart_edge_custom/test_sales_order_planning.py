@@ -3,7 +3,12 @@ from unittest.mock import MagicMock, patch
 
 import frappe
 
-from smart_edge_custom.manufacturing.final_bom_generator import validate_ready_for_planning
+from smart_edge_custom.manufacturing.final_bom_generator import (
+	InsufficientMaterialQuantityError,
+	create_planning_entries,
+	validate_material_availability_for_release,
+	validate_ready_for_planning,
+)
 from smart_edge_custom.manufacturing.sales_order_planning import (
 	allocate_finished_stock,
 	create_final_eb_bom_generator,
@@ -147,3 +152,112 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 
 		with self.assertRaisesRegex(frappe.ValidationError, "Compound is required"):
 			validate_ready_for_planning(doc)
+
+	@patch("smart_edge_custom.manufacturing.material_production.build_material_planning_context")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_material_shortages")
+	def test_release_accepts_stock_shortage_covered_by_internal_material_plans(
+		self, get_shortages, build_context
+	):
+		get_shortages.return_value = [
+			{"item_code": "COMPOUND", "item_name": "Compound", "uom": "Kg", "shortage": 129.7}
+		]
+		build_context.return_value = {
+			"requirements": [
+				{
+					"item_code": "COMPOUND",
+					"required_batches": 14,
+					"available_batches": 0,
+					"already_planned_batches": 2,
+					"completed_batches": 0,
+					"batches_to_plan": 0,
+					"weight_per_batch": 64.85,
+					"stock_uom": "Kg",
+				}
+			]
+		}
+		doc = frappe._dict({"source_warehouse": "Prepared Materials - SE"})
+
+		validate_material_availability_for_release(doc, [{"item_code": "COMPOUND"}])
+
+	@patch("smart_edge_custom.manufacturing.material_production.build_material_planning_context")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_material_shortages")
+	def test_release_rejects_uncovered_material_shortage(self, get_shortages, build_context):
+		get_shortages.return_value = [
+			{"item_code": "COMPOUND", "item_name": "Compound", "uom": "Kg", "shortage": 129.7}
+		]
+		build_context.return_value = {
+			"requirements": [
+				{
+					"item_code": "COMPOUND",
+					"required_batches": 14,
+					"available_batches": 0,
+					"already_planned_batches": 1,
+					"completed_batches": 0,
+					"batches_to_plan": 4,
+					"weight_per_batch": 64.85,
+					"stock_uom": "Kg",
+				}
+			]
+		}
+		doc = frappe._dict({"source_warehouse": "Prepared Materials - SE"})
+
+		with self.assertRaises(InsufficientMaterialQuantityError):
+			validate_material_availability_for_release(doc, [{"item_code": "COMPOUND"}])
+
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_kg_to_stock_factor", return_value=1000)
+	@patch("smart_edge_custom.manufacturing.material_production.build_material_planning_context")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_material_shortages")
+	def test_release_converts_base_colour_plan_from_grams_to_kg(
+		self, get_shortages, build_context, _conversion
+	):
+		get_shortages.return_value = [
+			{"item_code": "SHADE", "item_name": "Pumic Grey", "uom": "Kg", "shortage": 0.3}
+		]
+		build_context.return_value = {
+			"requirements": [
+				{
+					"item_code": "SHADE",
+					"already_planned_batches": 1,
+					"weight_per_batch": 300,
+					"stock_uom": "Gram",
+				}
+			]
+		}
+		doc = frappe._dict({"source_warehouse": "Prepared Materials - SE"})
+
+		validate_material_availability_for_release(doc, [{"item_code": "SHADE"}])
+
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.new_doc")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.db.set_value")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.db.get_value")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.has_permission", return_value=True)
+	def test_repeated_release_reuses_route_entry_after_preview_rows_are_rebuilt(
+		self, _has_permission, get_value, set_value, new_doc
+	):
+		get_value.side_effect = [None, "SE-PLAN-EXISTING"]
+		doc = frappe._dict(
+			{
+				"name": "FEBG-1",
+				"operation_preview": [
+					frappe._dict(
+						{
+							"name": "NEW-ROUTE-ROW",
+							"operation": "Extrusion",
+							"sequence": 1,
+						}
+					)
+				],
+			}
+		)
+
+		entries = create_planning_entries(doc)
+
+		self.assertEqual(entries, ["SE-PLAN-EXISTING"])
+		new_doc.assert_not_called()
+		set_value.assert_called_once_with(
+			"SmartEdge Production Plan Entry",
+			"SE-PLAN-EXISTING",
+			"operation_row",
+			"NEW-ROUTE-ROW",
+			update_modified=False,
+		)

@@ -3,7 +3,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from smart_edge_custom.manufacturing.fifo_batch_selection import (
 	InsufficientBatchStockError,
@@ -387,26 +387,24 @@ def apply_component_consumption_per_meter(doc, materials, production_quantity):
 
 def get_stock_balance_in_kg(item_code, stock_uom, warehouse=None):
 	stock_balance = get_stock_balance(item_code, warehouse)
-	if not stock_uom or stock_uom == "Kg":
-		return stock_balance
-	conversion_factor = frappe.db.get_value(
-		"UOM Conversion Detail",
-		{"parent": item_code, "uom": "Kg"},
-		"conversion_factor",
-	)
-	if flt(conversion_factor) <= 0:
-		from erpnext.stock.doctype.item.item import get_uom_conv_factor
+	return convert_stock_qty_to_kg(item_code, stock_uom, stock_balance)
 
-		conversion_factor = get_uom_conv_factor("Kg", stock_uom)
-	if flt(conversion_factor) <= 0:
-		frappe.throw(
-			_("Item {0} requires a Kg-to-{1} UOM conversion.").format(item_code, stock_uom)
-		)
-	return stock_balance / flt(conversion_factor)
+
+def convert_stock_qty_to_kg(item_code, stock_uom, quantity):
+	if not stock_uom or stock_uom == "Kg":
+		return flt(quantity)
+	return flt(quantity) / get_kg_to_stock_factor(item_code, stock_uom)
 
 
 def validate_material_availability(materials, warehouse):
 	"""Recheck current stock and report every insufficient required material."""
+	shortages = get_material_shortages(materials, warehouse)
+	if shortages:
+		throw_material_shortages(shortages)
+
+
+def get_material_shortages(materials, warehouse):
+	"""Return physical prepared-material shortages without treating plans as stock."""
 	required_by_item = {}
 	for row in materials or []:
 		item_code = row.get("item_code")
@@ -450,9 +448,10 @@ def validate_material_availability(materials, warehouse):
 				}
 			)
 
-	if not shortages:
-		return
+	return shortages
 
+
+def throw_material_shortages(shortages):
 	frappe.throw(
 		json.dumps({"type": "insufficient_material_quantity", "shortages": shortages}),
 		title=_("Insufficient Material Quantity"),
@@ -1021,9 +1020,52 @@ def validate_ready_for_planning(doc):
 	if not doc.get("additional_costs"):
 		frappe.throw(_("No SmartEdge Cost Heads are configured for the selected route."))
 
-	validate_material_availability(preview.get("materials"), doc.get("source_warehouse"))
+	validate_material_availability_for_release(doc, preview.get("materials"))
 
 	return preview
+
+
+def validate_material_availability_for_release(doc, materials):
+	"""Allow planning release when physical shortage is covered by valid linked production."""
+	shortages = get_material_shortages(materials, doc.get("source_warehouse"))
+	if not shortages:
+		return
+
+	from smart_edge_custom.manufacturing.material_production import build_material_planning_context
+
+	context = build_material_planning_context(doc, include_planning_details=False)
+	requirements = {
+		row.get("item_code"): row
+		for row in context.get("requirements") or []
+		if row.get("item_code")
+	}
+	uncovered = []
+	for shortage in shortages:
+		requirement = requirements.get(shortage.get("item_code")) or {}
+		planned_stock_qty = flt(requirement.get("already_planned_batches")) * flt(
+			requirement.get("weight_per_batch")
+		)
+		planned_kg = (
+			convert_stock_qty_to_kg(
+				requirement.get("item_code"),
+				requirement.get("stock_uom"),
+				planned_stock_qty,
+			)
+			if requirement
+			else 0
+		)
+		remaining = max(flt(shortage.get("shortage")) - planned_kg, 0)
+		if remaining > MATERIAL_TOLERANCE:
+			uncovered.append(
+				{
+					**shortage,
+					"planned": min(planned_kg, flt(shortage.get("shortage"))),
+					"uncovered": remaining,
+				}
+			)
+
+	if uncovered:
+		throw_material_shortages(uncovered)
 
 
 def send_generator_to_planning(doc):
@@ -1049,12 +1091,32 @@ def create_planning_entries(doc):
 			},
 			"name",
 		)
+		if not existing:
+			existing = frappe.db.get_value(
+				"SmartEdge Production Plan Entry",
+				{
+					"final_eb_bom_generator": doc.name,
+					"plan_type": "Final EB",
+					"operation": operation.operation,
+					"sequence": operation.sequence,
+					"status": ["!=", "Cancelled"],
+				},
+				"name",
+			)
 		if existing:
+			frappe.db.set_value(
+				"SmartEdge Production Plan Entry",
+				existing,
+				"operation_row",
+				operation.name,
+				update_modified=False,
+			)
 			entries.append(existing)
 			continue
 
 		entry = frappe.new_doc("SmartEdge Production Plan Entry")
 		entry.final_eb_bom_generator = doc.name
+		entry.plan_type = "Final EB"
 		entry.operation_row = operation.name
 		entry.operation = operation.operation
 		entry.workstation = operation.workstation

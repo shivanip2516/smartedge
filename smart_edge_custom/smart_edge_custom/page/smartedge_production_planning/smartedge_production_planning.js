@@ -262,6 +262,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				column_operations: group_operations,
 				matching_operations,
 				anchor: placement.anchor,
+				parent: group_operations.find((operation) => operation.plan_type !== "Required Material") || placement.anchor,
 				column_key: placement.column_key,
 				status: get_item_group_status(group_operations),
 				completed_count,
@@ -314,7 +315,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	}
 
 	make_item_card(group) {
-		const card = group.anchor;
+		const card = group.parent || group.anchor;
+		const placement_card = group.anchor;
 		const is_material = card.plan_type === "Required Material";
 		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
 		const status_class = get_status_class(group.status);
@@ -347,7 +349,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					<div><span>${__("Priority")}</span><strong>${frappe.utils.escape_html(group.priority)}</strong></div>
 					<div><span>${__("Category")}</span><strong>${frappe.utils.escape_html(categories || __("Other"))}</strong></div>
 					<div><span>${__("Workstation")}</span><strong>${frappe.utils.escape_html(workstation)}</strong></div>
-					<div><span>${__("Planned Date")}</span><strong>${card.planned_date ? frappe.datetime.str_to_user(card.planned_date) : __("Not Scheduled")}</strong></div>
+					<div><span>${__("Planned Date")}</span><strong>${placement_card.planned_date ? frappe.datetime.str_to_user(placement_card.planned_date) : __("Not Scheduled")}</strong></div>
 				</div>
 				<div class="se-item-card-actions">
 					<button class="btn btn-xs btn-default se-toggle-operations" type="button" aria-expanded="${expanded ? "true" : "false"}">
@@ -395,7 +397,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	}
 
 	bind_parent_card_actions($card, group) {
-		const card = group.anchor;
+		const card = group.parent || group.anchor;
 		const is_material = card.plan_type === "Required Material";
 		$card.find(".dropdown-item").on("click", (event) => {
 			event.preventDefault();
@@ -634,10 +636,11 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					plan_entry: card.id,
 					planned_date: date_key,
 					workstation,
-					planned_start: get_time_from_datetime(card.planned_start) || "09:00",
+					planned_start: normalize_schedule_time(get_time_from_datetime(card.planned_start) || "09:00"),
 					duration_hours: card.duration_hours || 1,
 					priority: card.priority,
 				},
+				error_handlers: get_planning_error_handlers(),
 			});
 			await this.refresh();
 			return;
@@ -926,17 +929,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							plan_entry: card.id,
 							planned_date: values.planned_date,
 							workstation: values.workstation,
-							planned_start: values.planned_start,
+							planned_start: normalize_schedule_time(values.planned_start),
 							duration_hours: values.duration_hours,
 							priority: card.priority,
 							override_sequence: values.override_sequence,
 							override_capacity: values.override_capacity,
 						},
+						error_handlers: get_planning_error_handlers(),
 				});
 				dialog.hide();
 				await this.refresh();
 			},
 		});
+		normalize_time_control(dialog.fields_dict.planned_start);
 		dialog.show();
 		set_schedule_date_limits(dialog, "planned_date", "planned_start");
 		const update_end = () => {
@@ -1596,6 +1601,56 @@ function compute_planned_end(start, duration_hours) {
 	date.setHours(parts[0] || 0, parts[1] || 0, 0, 0);
 	date.setMinutes(date.getMinutes() + flt(duration_hours) * 60);
 	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function normalize_schedule_time(value) {
+	if (value === null || value === undefined || value === "") return value;
+	const time = String(value).trim();
+	return /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
+}
+
+function normalize_time_control(control) {
+	if (!control || control.__smartedge_time_normalized) return;
+	const validate = control.validate.bind(control);
+	control.validate = (value) => validate(normalize_schedule_time(value));
+	control.__smartedge_time_normalized = true;
+}
+
+function get_planning_error_handlers() {
+	return {
+		InsufficientMaterialQuantityError: (error) => show_planning_material_shortage(error),
+	};
+}
+
+function show_planning_material_shortage(error) {
+	const payload = get_material_shortage_payload(error);
+	const shortages = payload?.shortages || [];
+	const messages = shortages.map((row) => {
+		const name = frappe.utils.escape_html(row.item_name || row.item_code || __("Material"));
+		const quantity = format_qty(flt(row.uncovered ?? row.shortage), row.uom || "");
+		return `<li><strong>${name}</strong>: ${frappe.utils.escape_html(quantity)} ${__("additional manufacturing required")}</li>`;
+	});
+	frappe.msgprint({
+		title: __("Additional Material Manufacturing Required"),
+		message: messages.length
+			? `<ul class="mb-0">${messages.join("")}</ul>`
+			: __("The material availability check could not be completed. Please review the linked material plans."),
+		indicator: "orange",
+	});
+}
+
+function get_material_shortage_payload(error) {
+	try {
+		const messages = JSON.parse(error?._server_messages || "[]");
+		for (const value of messages) {
+			const envelope = typeof value === "string" ? JSON.parse(value) : value;
+			const payload = typeof envelope?.message === "string" ? JSON.parse(envelope.message) : envelope;
+			if (payload?.type === "insufficient_material_quantity") return payload;
+		}
+	} catch (e) {
+		return null;
+	}
+	return null;
 }
 
 function set_schedule_date_limits(dialog, date_field, time_field) {

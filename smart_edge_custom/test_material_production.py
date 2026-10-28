@@ -3,11 +3,14 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from smart_edge_custom.manufacturing.final_bom_generator import apply_item_configuration_defaults
 from smart_edge_custom.manufacturing.material_production import (
+	build_material_planning_context,
 	complete_material_production,
 	create_material_plan,
 	ensure_work_order_stock_entry,
 	get_material_operations,
+	get_material_workflow_status,
 	get_material_workstation_context,
 	get_raw_material_availability,
 	get_linked_material_plans,
@@ -18,6 +21,57 @@ from smart_edge_custom.manufacturing.material_production import (
 
 
 class TestRequiredMaterialProduction(IntegrationTestCase):
+	def test_material_workflow_status_tracks_internal_plan_and_release(self):
+		doc = frappe._dict(
+			{
+				"compound": "TEST-COMPOUND",
+				"base_colour": "TEST-SHADE",
+				"compound_consumption_batches": 14,
+				"shade_consumption_batches": 5,
+			}
+		)
+		requirements = [
+			{
+				"status": "Planned",
+				"already_planned_batches": 14,
+				"completed_batches": 0,
+				"batches_to_plan": 0,
+			},
+			{
+				"status": "Planned",
+				"already_planned_batches": 5,
+				"completed_batches": 0,
+				"batches_to_plan": 0,
+			},
+		]
+
+		self.assertEqual(
+			get_material_workflow_status(doc, requirements),
+			"Material Production Planned",
+		)
+		self.assertEqual(
+			get_material_workflow_status(doc, requirements, released_to_planning=True),
+			"Sent to Planning",
+		)
+
+	@patch(
+		"smart_edge_custom.manufacturing.final_bom_generator.get_finished_item_configuration",
+		return_value={"custom_base_colour": "American Walnut"},
+	)
+	def test_finished_product_colour_does_not_select_prepared_base_colour(self, _configuration):
+		doc = frappe._dict(
+			{
+				"finished_item": "TEST-FINISHED-ITEM",
+				"custom_base_colour": None,
+				"base_colour": None,
+			}
+		)
+
+		apply_item_configuration_defaults(doc)
+
+		self.assertEqual(doc.custom_base_colour, "American Walnut")
+		self.assertIsNone(doc.base_colour)
+
 	@patch(
 		"smart_edge_custom.manufacturing.material_production.now_datetime",
 		return_value="2026-10-22 09:00:00",
@@ -138,6 +192,44 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 
 		self.assertEqual([row.operation for row in operations], ["Mixing", "Packing"])
 
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
+	@patch("smart_edge_custom.manufacturing.material_production.get_bom_operations")
+	def test_missing_bom_does_not_fall_back_to_standard_operations(self, get_bom_operations, get_all):
+		self.assertEqual(get_material_operations(None), [])
+		get_bom_operations.assert_not_called()
+		get_all.assert_not_called()
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_default_warehouses", return_value={})
+	@patch("smart_edge_custom.manufacturing.material_production.get_linked_material_plans", return_value=[])
+	@patch("smart_edge_custom.manufacturing.material_production.get_item_batch_details", return_value={})
+	@patch("smart_edge_custom.manufacturing.material_production.get_material_workstation_context")
+	def test_incomplete_generator_context_defers_bom_lookup(
+		self, workstation_context, _item_details, _linked_plans, _warehouses
+	):
+		doc = frappe._dict(
+			{
+				"name": "FEBG-INCOMPLETE",
+				"source_warehouse": None,
+				"compound": None,
+				"base_colour": None,
+				"compound_consumption_batches": 0,
+				"shade_consumption_batches": 0,
+			}
+		)
+
+		context = build_material_planning_context(doc)
+
+		self.assertFalse(context["has_shortage"])
+		self.assertEqual([row["bom_no"] for row in context["requirements"]], [None, None])
+		self.assertEqual([row["operation"] for row in context["requirements"]], [None, None])
+		workstation_context.assert_not_called()
+
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_doc")
+	def test_workstation_context_rejects_missing_bom_clearly(self, get_doc):
+		with self.assertRaisesRegex(frappe.ValidationError, "active submitted batch BOM is required"):
+			get_material_workstation_context(None, "Mixing")
+		get_doc.assert_not_called()
+
 	@patch("smart_edge_custom.manufacturing.planning.get_compatible_workstations", return_value=[])
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
 	@patch("smart_edge_custom.manufacturing.material_production.get_bom_operations", return_value=[])
@@ -249,6 +341,40 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 
 		self.assertEqual(plans[0].outstanding_batches, 2)
 		self.assertEqual(plans[1].outstanding_batches, 0)
+
+	@patch("smart_edge_custom.manufacturing.material_production.is_active_work_order", return_value=True)
+	@patch("smart_edge_custom.manufacturing.material_production.get_work_order_completed_batches", return_value=0)
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
+	def test_duplicate_plan_rows_do_not_count_the_same_work_order_twice(
+		self, get_all, _completed_batches, _active_work_order
+	):
+		get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "PLAN-NEW",
+					"status": "Planned",
+					"work_order": "WO-ONE",
+					"planned_batches": 2,
+					"weight_per_batch": 10,
+					"target_warehouse": "Prepared Materials - SE",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "PLAN-OLD",
+					"status": "Pending",
+					"work_order": "WO-ONE",
+					"planned_batches": 2,
+					"weight_per_batch": 10,
+					"target_warehouse": "Prepared Materials - SE",
+				}
+			),
+		]
+
+		plans = get_linked_material_plans("FEBG-0001", "Compound", "Prepared Materials - SE")
+
+		self.assertEqual(len(plans), 1)
+		self.assertEqual(plans[0].outstanding_batches, 2)
 
 	def test_material_status_distinguishes_stock_and_production(self):
 		self.assertEqual(get_material_status(4, 4, 0, 0, []), "Stock Available")
