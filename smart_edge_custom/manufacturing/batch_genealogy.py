@@ -76,8 +76,8 @@ def capture_stock_entry(stock_entry):
 	if stock_entry.purpose != "Manufacture" or cint(stock_entry.docstatus) != 1:
 		return {"created": 0, "updated": 0, "skipped": 0}
 
-	context = get_manufacturing_context(stock_entry)
 	movements = extract_batch_movements(stock_entry)
+	context = get_manufacturing_context(stock_entry, movements)
 	created = updated = skipped = 0
 	active_keys = set()
 	for movement in movements:
@@ -214,7 +214,7 @@ def make_source_key(stock_entry, stock_entry_detail, batch_no, direction):
 	return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def get_manufacturing_context(stock_entry):
+def get_manufacturing_context(stock_entry, movements=None):
 	plan_entries = _get_plan_entries(stock_entry)
 	jobs = _get_production_jobs(stock_entry.name, plan_entries)
 	operation_jobs = _get_route_operation_jobs(stock_entry, jobs)
@@ -223,6 +223,9 @@ def get_manufacturing_context(stock_entry):
 	operations = _unique([job.operation for job in operation_jobs] + [row.operation for row in plan_entries])
 	production_jobs = _unique([job.name for job in operation_jobs])
 	primary_operation = primary_job.get("operation") or primary_plan.get("operation")
+	operation_context = build_operation_context(
+		operation_jobs, stock_entry, movements or [], jobs
+	)
 	stage = get_manufacturing_stage(
 		stock_entry, plan_entries, [primary_operation] if primary_operation else operations
 	)
@@ -240,7 +243,7 @@ def get_manufacturing_context(stock_entry):
 		or primary_plan.get("final_eb_bom_generator"),
 		"operation": primary_operation,
 		"operations_json": json.dumps(operations),
-		"operation_context_json": json.dumps([_serialize_job_context(job) for job in operation_jobs], default=str),
+		"operation_context_json": json.dumps(operation_context, default=str),
 		"workstation": primary_job.get("workstation") or primary_plan.get("workstation"),
 		"employee": primary_job.get("operator_employee"),
 		"actual_start": min((job.actual_start for job in operation_jobs if job.actual_start), default=None),
@@ -285,7 +288,7 @@ def _get_production_jobs(stock_entry, plan_entries):
 	fields = [
 		"name", "plan_entry", "final_eb_bom_generator", "operation", "workstation",
 		"operator_employee", "actual_start", "actual_end", "good_qty", "rejected_qty",
-		"rework_qty", "usable_scrap", "unusable_scrap",
+		"rework_qty", "usable_scrap", "unusable_scrap", "actual_qty_meter", "actual_qty_kg",
 	]
 	rows = frappe.get_all(
 		"SmartEdge Production Job",
@@ -311,10 +314,17 @@ def _get_production_jobs(stock_entry, plan_entries):
 def _get_route_operation_jobs(stock_entry, directly_related_jobs):
 	"""Include non-stock route operations as execution context, never as invented batch movement."""
 	if stock_entry.get("work_order") or not directly_related_jobs:
-		return directly_related_jobs
+		return _annotate_job_plan_context(directly_related_jobs)
 	productions = _unique([job.final_eb_bom_generator for job in directly_related_jobs])
 	if len(productions) != 1:
-		return directly_related_jobs
+		return _annotate_job_plan_context(directly_related_jobs)
+	if (
+		frappe.db.get_value(
+			"Final EB BOM Generator", productions[0], "final_manufacturing_stock_entry"
+		)
+		!= stock_entry.name
+	):
+		return _annotate_job_plan_context(directly_related_jobs)
 	fields = [
 		"name", "plan_entry", "final_eb_bom_generator", "operation", "workstation",
 		"operator_employee", "actual_start", "actual_end", "actual_qty_meter", "actual_qty_kg",
@@ -327,13 +337,125 @@ def _get_route_operation_jobs(stock_entry, directly_related_jobs):
 		order_by="actual_start asc, creation asc",
 		limit_page_length=100,
 	)
-	return _unique_rows(rows) or directly_related_jobs
+	rows = _annotate_job_plan_context(_unique_rows(rows))
+	route_rows = [row for row in rows if row.get("plan_type") != "Required Material"]
+	return route_rows or _annotate_job_plan_context(directly_related_jobs)
+
+
+def _annotate_job_plan_context(jobs):
+	plan_names = _unique([job.get("plan_entry") for job in jobs])
+	if not plan_names:
+		return jobs
+	plans = {
+		row.name: row
+		for row in frappe.get_all(
+			"SmartEdge Production Plan Entry",
+			filters={"name": ["in", plan_names]},
+			fields=[
+				"name",
+				"plan_type",
+				"planning_category",
+				"sequence",
+				"operation_row",
+				"quantity_uom",
+			],
+			limit_page_length=len(plan_names),
+		)
+	}
+	for job in jobs:
+		plan = plans.get(job.get("plan_entry")) or frappe._dict()
+		for fieldname in (
+			"plan_type",
+			"planning_category",
+			"sequence",
+			"operation_row",
+			"quantity_uom",
+		):
+			job[fieldname] = plan.get(fieldname)
+	return jobs
+
+
+def build_operation_context(operation_jobs, stock_entry, movements, directly_related_jobs=None):
+	"""Attach physical evidence to operations without inventing intermediate stock movement."""
+	if not operation_jobs:
+		return []
+	direct_names = {job.name for job in directly_related_jobs or []}
+	consumption_job = next(
+		(
+			job
+			for job in operation_jobs
+			if job.get("planning_category") == "Extrusion"
+			or "extrusion" in (job.get("operation") or "").lower()
+		),
+		operation_jobs[0],
+	)
+	output_job = next(
+		(job for job in operation_jobs if job.name in direct_names),
+		operation_jobs[-1],
+	)
+	if stock_entry.get("work_order"):
+		consumption_job = output_job = next(
+			(job for job in operation_jobs if job.name in direct_names), operation_jobs[0]
+		)
+
+	inputs = [_serialize_movement(row) for row in movements if row.get("direction") == "Input"]
+	outputs = [_serialize_movement(row) for row in movements if row.get("direction") == "Output"]
+	input_keys = {(row.get("batch_no"), row.get("item_code")) for row in inputs}
+	has_new_output_batch = any(
+		(row.get("batch_no"), row.get("item_code")) not in input_keys for row in outputs
+	)
+	result = []
+	for job in operation_jobs:
+		row = _serialize_job_context(job)
+		row.update(
+			{
+				"related_stock_entry": stock_entry.name,
+				"input_batches": inputs if job.name == consumption_job.name else [],
+				"output_batches": outputs if job.name == output_job.name else [],
+				"physical_batch_transition": cint(
+					bool(has_new_output_batch and consumption_job.name == output_job.name == job.name)
+				),
+				"evidence_basis": (
+					"Direct submitted operation Stock Entry"
+					if consumption_job.name == output_job.name == job.name
+					else "Final manufacturing event; quantities are not allocated between Production Jobs"
+				),
+				"tracking_mode": (
+					"Physical Batch Movement"
+					if has_new_output_batch and consumption_job.name == output_job.name == job.name
+					else "Submitted Operation Movement — Same Physical Batch"
+					if consumption_job.name == output_job.name == job.name and (inputs or outputs)
+					else "Posted Input Consumption"
+					if job.name == consumption_job.name and inputs
+					else "Posted Output Receipt"
+					if job.name == output_job.name and outputs
+					else "Operation History — Same Physical Identity"
+				),
+			}
+		)
+		result.append(row)
+	return result
+
+
+def _serialize_movement(row):
+	return {
+		"batch_no": row.get("batch_no"),
+		"item_code": row.get("item_code"),
+		"quantity": row.get("quantity"),
+		"uom": row.get("uom"),
+		"warehouse": row.get("warehouse"),
+		"quality_inspection": row.get("quality_inspection"),
+	}
 
 
 def _serialize_job_context(job):
 	return {
 		"production_job": job.name,
 		"operation": job.operation,
+		"planning_category": job.get("planning_category"),
+		"sequence": job.get("sequence"),
+		"plan_type": job.get("plan_type"),
+		"quantity_uom": job.get("quantity_uom"),
 		"workstation": job.workstation,
 		"employee": job.operator_employee,
 		"actual_start": job.actual_start,
@@ -392,12 +514,42 @@ def get_genealogy(batch_no, direction="Backward", filters=None, max_depth=MAX_DE
 		batch_no, batch.item, direction, filters, max_depth
 	)
 	details = get_batch_details(discovered)
-	return {
+	result = {
 		"direction": direction,
 		"root": build_genealogy_tree((batch_no, batch.item), graph, details, set(), [0]),
 		"batch_count": len(discovered),
 		"truncated": truncated,
 	}
+	if direction == "Forward" and frappe.db.exists("DocType", "SmartEdge WIP Ledger Entry"):
+		from smart_edge_custom.manufacturing.production_lot import ACTIVE as LOT_ACTIVE
+		from smart_edge_custom.manufacturing.production_lot import build_lot_genealogy_node
+
+		batch_names = list({key[0] for key in discovered})
+		links = frappe.get_all(
+			"SmartEdge WIP Ledger Entry",
+			filters={
+				"status": LOT_ACTIVE,
+				"source_stock_batch": ["in", batch_names],
+				"destination_production_lot": ["is", "set"],
+			},
+			fields=["source_stock_batch", "destination_production_lot"],
+			limit_page_length=MAX_BATCH_NODES,
+		)
+		links = [
+			row for row in links
+			if safe_link("SmartEdge Production Lot", row.destination_production_lot)
+		]
+		visited_lots = set()
+		result["production_lot_roots"] = [
+			{
+				"attached_to_batch": row.source_stock_batch,
+				**build_lot_genealogy_node(row.destination_production_lot, direction, visited_lots, 0),
+			}
+			for row in links
+			if row.destination_production_lot not in visited_lots
+		]
+		result["production_lot_count"] = len(visited_lots)
+	return result
 
 
 def build_genealogy_graph(root_batch, root_item, direction, filters, max_depth):
@@ -510,15 +662,28 @@ def make_event_payload(anchor, movements, targets):
 		job = safe_link("SmartEdge Production Job", row.get("production_job"))
 		if not job:
 			continue
-		operation_context.append(
-			{
-				**row,
-				"production_job": job,
-				"operation": safe_link("Operation", row.get("operation")),
-				"workstation": safe_link("Workstation", row.get("workstation")),
-				"employee": safe_link("Employee", row.get("employee")),
-			}
-		)
+		safe_row = {
+			**row,
+			"production_job": job,
+			"operation": safe_link("Operation", row.get("operation")),
+			"workstation": safe_link("Workstation", row.get("workstation")),
+			"employee": safe_link("Employee", row.get("employee")),
+			"related_stock_entry": safe_link("Stock Entry", row.get("related_stock_entry")),
+		}
+		for fieldname in ("input_batches", "output_batches"):
+			safe_row[fieldname] = [
+				batch
+				for batch in (_sanitize_operation_batch(value) for value in row.get(fieldname) or [])
+				if batch
+			]
+		operation_context.append(safe_row)
+	quality_inspections = _unique(
+		[
+			safe_link("Quality Inspection", row.quality_inspection)
+			for row in movements
+			if row.get("quality_inspection")
+		]
+	)
 	return {
 		"stock_entry": anchor.stock_entry,
 		"stage": anchor.manufacturing_stage,
@@ -537,6 +702,7 @@ def make_event_payload(anchor, movements, targets):
 			name for name in _safe_json_list(anchor.operations_json) if safe_link("Operation", name)
 		],
 		"operation_context": operation_context,
+		"quality_inspections": quality_inspections,
 		"workstation": safe_link("Workstation", anchor.workstation),
 		"employee": safe_link("Employee", anchor.employee),
 		"actual_start": anchor.actual_start,
@@ -558,6 +724,22 @@ def make_event_payload(anchor, movements, targets):
 	}
 
 
+def _sanitize_operation_batch(row):
+	if not isinstance(row, dict):
+		return None
+	batch_no = safe_link("Batch", row.get("batch_no"))
+	item_code = safe_link("Item", row.get("item_code"))
+	if not batch_no or not item_code:
+		return None
+	return {
+		**row,
+		"batch_no": batch_no,
+		"item_code": item_code,
+		"warehouse": safe_link("Warehouse", row.get("warehouse")),
+		"quality_inspection": safe_link("Quality Inspection", row.get("quality_inspection")),
+	}
+
+
 def safe_link(doctype, name):
 	if not name:
 		return None
@@ -574,12 +756,45 @@ def _can_read_link(user, doctype, name):
 
 def get_batch_details(keys):
 	batch_names = list({key[0] for key in keys})
+	batch_fields = ["name", "item", "manufacturing_date", "expiry_date", "batch_qty"]
+	if frappe.get_meta("Batch", cached=True).has_field("disabled"):
+		batch_fields.append("disabled")
 	rows = frappe.get_list(
 		"Batch",
 		filters={"name": ["in", batch_names]},
-		fields=["name", "item", "manufacturing_date", "expiry_date", "batch_qty"],
+		fields=batch_fields,
 		limit_page_length=MAX_BATCH_NODES,
 	)
+	movements = frappe.get_list(
+		MOVEMENT_DOCTYPE,
+		filters={"batch_no": ["in", batch_names], "source_status": ACTIVE},
+		fields=[
+			"batch_no",
+			"item_code",
+			"direction",
+			"quantity",
+			"uom",
+			"warehouse",
+			"manufacturing_stage",
+			"posting_datetime",
+		],
+		order_by="posting_datetime desc",
+		limit_page_length=MAX_MOVEMENTS_PER_LEVEL,
+	)
+	evidence = {}
+	for movement in movements:
+		key = (movement.batch_no, movement.item_code)
+		current = evidence.get(key)
+		if not current or (current.direction != "Output" and movement.direction == "Output"):
+			evidence[key] = movement
+	for row in rows:
+		movement = evidence.get((row.name, row.item))
+		if movement:
+			row.manufacturing_stage = movement.manufacturing_stage
+			row.production_quantity = movement.quantity
+			row.production_uom = movement.uom
+			row.warehouse = movement.warehouse
+			row.production_datetime = movement.posting_datetime
 	return {(row.name, row.item): row for row in rows}
 
 
@@ -592,6 +807,12 @@ def build_genealogy_tree(key, graph, details, path, counter):
 		"manufacturing_date": batch.get("manufacturing_date"),
 		"expiry_date": batch.get("expiry_date"),
 		"batch_quantity": batch.get("batch_qty"),
+		"batch_status": "Disabled" if cint(batch.get("disabled")) else "Active",
+		"manufacturing_stage": batch.get("manufacturing_stage"),
+		"production_quantity": batch.get("production_quantity"),
+		"production_uom": batch.get("production_uom"),
+		"warehouse": batch.get("warehouse"),
+		"production_datetime": batch.get("production_datetime"),
 		"events": [],
 	}
 	if key in path:

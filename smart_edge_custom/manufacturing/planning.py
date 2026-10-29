@@ -207,6 +207,9 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 				row[key] = value
 		result.append(row)
 	attach_job_details(result)
+	from smart_edge_custom.manufacturing.production_lot import attach_lot_details
+
+	attach_lot_details(result)
 	attach_work_order_progress(result)
 	planned_employee_names = get_employee_name_map(row.get("planned_employee") for row in result)
 	for row in result:
@@ -618,6 +621,13 @@ def make_operation_card(row):
 		"job_unusable_scrap": flt(row.get("job_unusable_scrap")),
 		"job_remaining_qty_meter": flt(row.get("job_remaining_qty_meter")),
 		"job_remaining_qty_kg": flt(row.get("job_remaining_qty_kg")),
+		"production_lot": row.get("production_lot"),
+		"production_lot_status": row.get("production_lot_status"),
+		"lot_produced_quantity": flt(row.get("lot_produced_quantity")),
+		"lot_available_quantity": flt(row.get("lot_available_quantity")),
+		"lot_transferred_quantity": flt(row.get("lot_transferred_quantity")),
+		"lot_remaining_quantity": flt(row.get("lot_remaining_quantity")),
+		"lot_uom": row.get("lot_uom"),
 		"downtime_start": str(row.get("downtime_start")) if row.get("downtime_start") else None,
 		"downtime_reason": row.get("downtime_reason"),
 		"downtime_remarks": row.get("downtime_remarks"),
@@ -1417,16 +1427,17 @@ def link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry, finished_
 		job_updates["manufacturing_stock_entry"] = stock_entry_name
 	if job_meta.has_field("stock_posted_qty"):
 		job_updates["stock_posted_qty"] = None
-	if not job_updates:
-		return
-	for job in final_jobs:
-		updates = dict(job_updates)
-		if "stock_posted_qty" in updates:
-			updates["stock_posted_qty"] = flt(job.stock_posting_qty)
-		frappe.db.set_value("SmartEdge Production Job", job.name, updates, update_modified=False)
+	if job_updates:
+		for job in final_jobs:
+			updates = dict(job_updates)
+			if "stock_posted_qty" in updates:
+				updates["stock_posted_qty"] = flt(job.stock_posting_qty)
+			frappe.db.set_value("SmartEdge Production Job", job.name, updates, update_modified=False)
 	from smart_edge_custom.manufacturing.batch_genealogy import capture_stock_entry
+	from smart_edge_custom.manufacturing.production_lot import reconcile_final_production
 
 	capture_stock_entry(stock_entry_name)
+	reconcile_final_production(doc.name, stock_entry_name)
 
 
 def show_existing_stock_entry_message(stock_entry):
@@ -2266,6 +2277,9 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 				job.save()
 			if job.workstation != workstation:
 				frappe.throw(_("Production Job {0} is already in progress on Workstation {1}.").format(job.name, job.workstation))
+		from smart_edge_custom.manufacturing.production_lot import record_qc_hold
+
+		record_qc_hold(job, entry)
 		return {"production_job": existing, "existing": 1, "requires_operator": 0}
 	job = frappe.new_doc("SmartEdge Production Job")
 	job.plan_entry = entry.name
@@ -2290,6 +2304,9 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	if job.meta.has_field("material_transfer_stock_entry"):
 		job.material_transfer_stock_entry = material_transfer
 	job.insert()
+	from smart_edge_custom.manufacturing.production_lot import record_qc_hold
+
+	record_qc_hold(job, entry)
 	if frappe.get_meta("SmartEdge Production Plan Entry", cached=True).has_field("production_job"):
 		entry.production_job = job.name
 	entry.status = "In Progress"
@@ -2497,13 +2514,18 @@ def complete_production_job(
 	else:
 		validate_final_completion_stock_entry_setup(job, completion_type)
 	job.complete_job(completion_type)
+	lot_result = None
+	if not material_result:
+		from smart_edge_custom.manufacturing.production_lot import record_completed_job
+
+		lot_result = record_completed_job(job)
 	if material_result:
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 		from smart_edge_custom.manufacturing.work_order_sync import sync_work_order_to_planning
 
 		sync_work_order_to_planning(entry.work_order, refresh_readiness=False)
 		refresh_material_readiness(entry.final_eb_bom_generator)
-	return {"production_job": job.name, "status": job.status}
+	return {"production_job": job.name, "status": job.status, **(lot_result or {})}
 
 
 def lock_production_job(production_job):

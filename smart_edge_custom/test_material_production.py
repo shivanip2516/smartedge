@@ -13,6 +13,7 @@ from smart_edge_custom.manufacturing.material_production import (
 	get_material_workflow_status,
 	get_material_workstation_context,
 	get_raw_material_availability,
+	has_final_eb_planning_entries,
 	get_linked_material_plans,
 	get_material_status,
 	get_overall_material_status,
@@ -21,6 +22,14 @@ from smart_edge_custom.manufacturing.material_production import (
 
 
 class TestRequiredMaterialProduction(IntegrationTestCase):
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.db.exists", return_value="SE-PLAN-1")
+	def test_prior_final_release_remains_persistent_regardless_of_entry_status(self, exists):
+		self.assertTrue(has_final_eb_planning_entries("FEBG-1"))
+		exists.assert_called_once_with(
+			"SmartEdge Production Plan Entry",
+			{"final_eb_bom_generator": "FEBG-1", "plan_type": "Final EB"},
+		)
+
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.db.get_value")
 	def test_valid_final_manufacturing_completion_takes_banner_priority(

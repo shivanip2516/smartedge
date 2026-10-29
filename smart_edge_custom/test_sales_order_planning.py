@@ -6,6 +6,7 @@ import frappe
 from smart_edge_custom.manufacturing.final_bom_generator import (
 	InsufficientMaterialQuantityError,
 	create_planning_entries,
+	send_generator_to_planning,
 	validate_material_availability_for_release,
 	validate_ready_for_planning,
 )
@@ -261,3 +262,53 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 			"NEW-ROUTE-ROW",
 			update_modified=False,
 		)
+
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.create_planning_entries")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.validate_ready_for_planning")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_existing_final_planning_entries")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.lock_generator_for_planning")
+	def test_first_release_locks_generator_and_creates_route_entries_once(
+		self, lock_generator, get_existing, validate_ready, create_entries
+	):
+		get_existing.return_value = []
+		validate_ready.return_value = {"selected_route": "Route A"}
+		create_entries.return_value = ["SE-PLAN-1", "SE-PLAN-2"]
+		doc = MagicMock(name="FEBG-1")
+		doc.name = "FEBG-1"
+
+		result = send_generator_to_planning(doc)
+
+		lock_generator.assert_called_once_with("FEBG-1")
+		doc.reload.assert_called_once_with()
+		validate_ready.assert_called_once_with(doc)
+		doc.save.assert_called_once_with()
+		create_entries.assert_called_once_with(doc)
+		self.assertFalse(result["already_sent"])
+		self.assertEqual(result["entries"], ["SE-PLAN-1", "SE-PLAN-2"])
+
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.msgprint")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.create_planning_entries")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.validate_ready_for_planning")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.get_existing_final_planning_entries")
+	@patch("smart_edge_custom.manufacturing.final_bom_generator.lock_generator_for_planning")
+	def test_repeated_release_returns_existing_entries_without_revalidating_or_creating(
+		self, lock_generator, get_existing, validate_ready, create_entries, msgprint
+	):
+		get_existing.return_value = [
+			frappe._dict({"name": "SE-PLAN-1", "status": "Completed"}),
+			frappe._dict({"name": "SE-PLAN-2", "status": "Cancelled"}),
+		]
+		doc = MagicMock(name="FEBG-1")
+		doc.name = "FEBG-1"
+		doc.status = "Completed"
+
+		result = send_generator_to_planning(doc)
+
+		lock_generator.assert_called_once_with("FEBG-1")
+		validate_ready.assert_not_called()
+		create_entries.assert_not_called()
+		doc.save.assert_not_called()
+		self.assertTrue(result["already_sent"])
+		self.assertEqual(result["entries"], ["SE-PLAN-1", "SE-PLAN-2"])
+		self.assertIn("Duplicate planning is not allowed", result["message"])
+		msgprint.assert_called_once()

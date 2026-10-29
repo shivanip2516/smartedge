@@ -67,6 +67,8 @@
   "downtime_table_section",
   "downtime_events",
   "references_section",
+  "input_production_lot",
+  "output_production_lot",
   "released_to_plan_entry",
   "manufacturing_stock_entry",
   "material_transfer_stock_entry",
@@ -386,6 +388,20 @@
    "fieldtype": "Link",
    "label": "Manufacturing Stock Entry",
    "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "input_production_lot",
+   "fieldtype": "Link",
+   "label": "Input Production Lot",
+   "options": "SmartEdge Production Lot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "output_production_lot",
+   "fieldtype": "Link",
+   "label": "Output Production Lot",
+   "options": "SmartEdge Production Lot",
    "read_only": 1
   },
   {

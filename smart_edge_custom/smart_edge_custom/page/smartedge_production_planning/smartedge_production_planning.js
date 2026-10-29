@@ -332,7 +332,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			? `<div class="se-item-reference"><span>${__("Sales Order")}:</span> ${frappe.utils.escape_html(card.sales_order)}</div>`
 			: "";
 		const quantity = get_parent_quantity_label(card);
-		const categories = [...new Set(group.operations.map((operation) => operation.category).filter(Boolean))].join(", ");
 		const active_operation = group.column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) || card;
 		const workstation = active_operation.workstation || __("Not Assigned");
 		const expanded = this.expanded_item_cards.has(group.card_key) || this.should_auto_expand_group();
@@ -351,7 +350,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				<div class="se-item-meta-grid">
 					<div><span>${__("Progress")}</span><strong>${group.completed_count}/${group.total_count} ${__("Completed")}</strong></div>
 					<div><span>${__("Priority")}</span><strong>${frappe.utils.escape_html(group.priority)}</strong></div>
-					<div><span>${__("Category")}</span><strong>${frappe.utils.escape_html(categories || __("Other"))}</strong></div>
 					<div><span>${__("Workstation")}</span><strong>${frappe.utils.escape_html(workstation)}</strong></div>
 					<div><span>${__("Planned Date")}</span><strong>${placement_card.planned_date ? frappe.datetime.str_to_user(placement_card.planned_date) : __("Not Scheduled")}</strong></div>
 				</div>
@@ -423,16 +421,25 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const status_class = get_status_class(status);
 		const is_pending = !card.planned_date;
 		const operation_key = String(card.id);
+		const operation_label = get_operation_display_label(card);
 		const expanded = this.expanded_operation_rows.has(operation_key);
 		const workstation = card.workstation || __("Not Assigned");
 		const employee = card.operator_name || __("Not Assigned");
 		const quantity = get_operation_quantity_label(card);
 		const planned_time = get_planned_time_label(card);
+		const lot_uom = card.lot_uom || card.uom || "";
+		const lot_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(lot_uom)}`.trim();
+		const lot_details = card.production_lot ? `
+			<div><span>${__("Production Lot")}</span><strong><a href="/app/smartedge-production-lot/${encodeURIComponent(card.production_lot)}">${frappe.utils.escape_html(card.production_lot)}</a></strong></div>
+			<div><span>${__("Actual Output")}</span><strong>${lot_quantity(card.lot_produced_quantity)}</strong></div>
+			<div><span>${__("Available WIP")}</span><strong>${lot_quantity(card.lot_available_quantity)}</strong></div>
+			<div><span>${__("Transferred")}</span><strong>${lot_quantity(card.lot_transferred_quantity)}</strong></div>
+			<div><span>${__("Remaining WIP")}</span><strong>${lot_quantity(card.lot_remaining_quantity)}</strong></div>` : "";
 		const match_class = card._matches_filters && has_active_filters(this.state.filters) ? "is-filter-match" : "";
 		const $row = $(
 			`<div class="se-operation-row se-${status_class} ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
 				<div class="se-operation-strip">
-					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(card.operation || "")}</div>
+					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(operation_label)}</div>
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
 					<button class="btn btn-xs btn-default se-toggle-operation-details" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? __("Collapse operation") : __("Expand operation")}">${expanded ? "−" : "+"}</button>
 				</div>
@@ -445,6 +452,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						${card.work_order ? `<div><span>${__("Work Order")}</span><strong>${frappe.utils.escape_html(card.work_order)}</strong></div>` : ""}
 						${card.bom_no ? `<div><span>${__("BOM")}</span><strong>${frappe.utils.escape_html(card.bom_no)}</strong></div>` : ""}
 						${card.shift ? `<div><span>${__("Shift")}</span><strong>${frappe.utils.escape_html(card.shift)}</strong></div>` : ""}
+						${lot_details}
 					</div>
 					<div class="se-operation-state">${this.get_status_line_html(card, planned_time, status_class)}</div>
 					<div class="se-operation-actions">
@@ -1420,6 +1428,17 @@ function get_execution_identity(card) {
 	return `production:${card.production}`;
 }
 
+function get_operation_display_label(card) {
+	if (card.plan_type !== "Required Material") return card.operation || "";
+	const material_label = card.material_type === "Compound"
+		? __("Compound MIXING")
+		: card.material_type === "Base Colour"
+			? __("Base Colour MIXING")
+			: __("Material MIXING");
+	const item_label = card.item_name || card.finished_item || card.bom_no || card.operation || "";
+	return item_label ? `${material_label} — ${item_label}` : material_label;
+}
+
 function resolve_item_group_placement(operations) {
 	const unfinished = operations.filter(
 		(operation) => !["Completed", "Cancelled"].includes(get_card_status(operation))
@@ -1772,5 +1791,5 @@ const CATEGORY_COLOR_CLASSES = {
 };
 
 if (typeof module !== "undefined" && module.exports) {
-	module.exports = { resolve_item_group_placement };
+	module.exports = { get_operation_display_label, resolve_item_group_placement };
 }

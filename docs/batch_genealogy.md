@@ -22,6 +22,10 @@ The stable source key is a SHA-256 digest of Stock Entry, Stock Entry Detail, ba
 
 Where available, each event records its Work Order, Production Plan Entry, Production Job, operation, workstation, employee, actual times, QC reference, and the existing job quality/scrap quantities. For finished EB manufacture events, completed route jobs are retained as operation-level execution context. Operations without their own physical output batch are shown in that context and are not represented as fictional stock movement.
 
+For final manufacturing events, actual prepared-material inputs are associated with the first configured Extrusion route job and the actual output batch, when one exists, is associated with the job that posted final output. Intermediate Printing, Slitting, QC, and Packing jobs retain their execution history and are explicitly labelled as continuing the same physical identity unless a submitted Stock Entry proves a separate WIP batch transition. A separately submitted operation Stock Entry attaches its actual input and output batches directly to that operation.
+
+Batch names remain controlled by each Item's standard ERPNext `batch_number_series`. Genealogy does not rename existing batches, override supplier batches, enable batch control, or create WIP/finished batches solely for reporting.
+
 ## Lifecycle
 
 - Stock Entry `on_submit`: capture or update active movements.

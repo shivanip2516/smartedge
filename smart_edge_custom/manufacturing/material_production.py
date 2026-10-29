@@ -77,8 +77,7 @@ def has_final_eb_planning_entries(production):
 			"SmartEdge Production Plan Entry",
 			{
 				"final_eb_bom_generator": production,
-				"plan_type": ["!=", MATERIAL_PLAN_TYPE],
-				"status": ["!=", "Cancelled"],
+				"plan_type": "Final EB",
 			},
 		)
 	)

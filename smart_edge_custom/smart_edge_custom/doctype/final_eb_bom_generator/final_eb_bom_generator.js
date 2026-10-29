@@ -16,8 +16,8 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		render_configurator_summary(frm);
 		frm.add_custom_button(__("Refresh Route"), () => refresh_preview(frm, true));
 		frm.add_custom_button(__("Refresh Batch Allocation"), () => refresh_preview(frm, true, true));
-		frm.add_custom_button(__("Send to Planning"), () => send_to_planning(frm), __("Actions"));
 		await refresh_material_planning(frm);
+		update_send_to_planning_button(frm);
 	},
 
 	async finished_item(frm) {
@@ -406,24 +406,48 @@ function get_indicator(status) {
 }
 
 async function send_to_planning(frm) {
-	await refresh_preview(frm, true);
-	await frm.save();
-	const response = await frm.call({
-		method: "send_to_planning",
-		doc: frm.doc,
-		error_handlers: {
-			InsufficientMaterialQuantityError: (error) => show_insufficient_material_dialog(error, frm),
-		},
-	});
-
-	if (response.message?.entries) {
-		await frm.reload_doc();
-		frappe.show_alert({
-			message: __("{0} operation(s) sent to planning.", [response.message.entries.length]),
-			indicator: "green",
+	if (frm.__sending_to_planning) return;
+	frm.__sending_to_planning = true;
+	frm.remove_custom_button(__("Send to Planning"), __("Actions"));
+	let sent = false;
+	try {
+		await refresh_preview(frm, true);
+		await frm.save();
+		const response = await frm.call({
+			method: "send_to_planning",
+			doc: frm.doc,
+			freeze: true,
+			freeze_message: __("Sending to Production Planning..."),
+			error_handlers: {
+				InsufficientMaterialQuantityError: (error) => show_insufficient_material_dialog(error, frm),
+			},
 		});
-		frappe.set_route("smartedge-production-planning");
+
+		if (response.message?.already_sent) {
+			sent = true;
+			frappe.show_alert({ message: response.message.message, indicator: "blue" });
+			await frm.reload_doc();
+			return;
+		}
+		if (response.message?.entries) {
+			sent = true;
+			await frm.reload_doc();
+			frappe.show_alert({
+				message: __("{0} operation(s) sent to planning.", [response.message.entries.length]),
+				indicator: "green",
+			});
+			frappe.set_route("smartedge-production-planning");
+		}
+	} finally {
+		frm.__sending_to_planning = false;
+		if (!sent) update_send_to_planning_button(frm);
 	}
+}
+
+function update_send_to_planning_button(frm) {
+	frm.remove_custom_button(__("Send to Planning"), __("Actions"));
+	if (frm.__sending_to_planning || frm.__material_planning_context?.released_to_planning) return;
+	frm.add_custom_button(__("Send to Planning"), () => send_to_planning(frm), __("Actions"));
 }
 
 function show_insufficient_material_dialog(error, frm) {

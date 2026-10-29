@@ -22,6 +22,9 @@ LOCKED_BATCH_ALLOCATION_STATUSES = {
 	"Cancelled",
 }
 IMMUTABLE_BATCH_ALLOCATION_STATUSES = {"Completed", "Cancelled"}
+ALREADY_SENT_TO_PLANNING_MESSAGE = _(
+	"This Finished Product has already been sent to Production Planning. Duplicate planning is not allowed."
+)
 
 
 class InsufficientMaterialQuantityError(frappe.ValidationError):
@@ -1069,11 +1072,43 @@ def validate_material_availability_for_release(doc, materials):
 
 
 def send_generator_to_planning(doc):
+	lock_generator_for_planning(doc.name)
+	doc.reload()
+	existing_entries = get_existing_final_planning_entries(doc.name)
+	if existing_entries:
+		frappe.msgprint(ALREADY_SENT_TO_PLANNING_MESSAGE, alert=True, indicator="blue")
+		return {
+			"status": doc.status,
+			"entries": [row.name for row in existing_entries],
+			"already_sent": True,
+			"message": ALREADY_SENT_TO_PLANNING_MESSAGE,
+		}
+
 	preview = validate_ready_for_planning(doc)
 	doc.status = "Ready for Planning"
 	doc.save()
 	entries = create_planning_entries(doc)
-	return {"status": doc.status, "entries": entries, **preview}
+	return {"status": doc.status, "entries": entries, "already_sent": False, **preview}
+
+
+def lock_generator_for_planning(production):
+	"""Serialize planning release attempts for one production definition."""
+	frappe.db.sql("select name from `tabFinal EB BOM Generator` where name=%s for update", (production,))
+
+
+def get_existing_final_planning_entries(production):
+	"""Use a current locking read so a waiter sees the preceding request's inserts."""
+	return frappe.db.sql(
+		"""
+		select name, status
+		from `tabSmartEdge Production Plan Entry`
+		where final_eb_bom_generator=%s and plan_type='Final EB'
+		order by creation asc, name asc
+		for update
+		""",
+		(production,),
+		as_dict=True,
+	)
 
 
 def create_planning_entries(doc):

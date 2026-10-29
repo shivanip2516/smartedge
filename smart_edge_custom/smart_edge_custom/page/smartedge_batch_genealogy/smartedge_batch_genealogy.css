@@ -193,6 +193,11 @@
 	font-size: 11px;
 }
 
+.smartedge-batch-genealogy .se-operation-context-row > span:nth-child(n + 6) {
+	grid-column: 1 / -1;
+	overflow-wrap: anywhere;
+}
+
 @media (max-width: 768px) {
 	.smartedge-batch-genealogy .se-event-grid {
 		grid-template-columns: 1fr;
