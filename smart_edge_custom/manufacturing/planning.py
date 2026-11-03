@@ -1330,8 +1330,8 @@ def create_final_manufacturing_stock_entry(doc):
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
 
-	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled
-	if physical_stock_enabled():
+	physical_route = physical_operation_route_active(doc.name)
+	if physical_route:
 		from smart_edge_custom.manufacturing.physical_operation_stock import final_wip_components
 		components, component_batch_nos = final_wip_components(doc, final_jobs)
 	else:
@@ -1353,7 +1353,7 @@ def create_final_manufacturing_stock_entry(doc):
 		stock_entry.append("items", component)
 	stock_entry.append("items", finished_row)
 	stock_entry.insert()
-	if physical_stock_enabled():
+	if physical_route:
 		from smart_edge_custom.manufacturing.physical_operation_stock import validate_posted_precision
 		validate_posted_precision(stock_entry)
 	set_final_component_batch_bundles(stock_entry, component_batch_nos)
@@ -1563,8 +1563,9 @@ def validate_final_completion_stock_entry_setup(job, completion_type):
 	finished_qty = get_final_finished_quantity(doc.name) + (flt(job.good_qty) or flt(job.actual_qty_meter))
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
-	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled, final_wip_components
-	if physical_stock_enabled():
+	physical_route = physical_operation_route_active(doc.name)
+	from smart_edge_custom.manufacturing.physical_operation_stock import final_wip_components
+	if physical_route:
 		candidate = frappe._dict(job.as_dict())
 		candidate.stock_posting_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
 		final_wip_components(doc, [candidate])
@@ -1580,6 +1581,35 @@ def is_final_stock_posting_entry(entry):
 		return False
 	mandatory_rows = get_mandatory_route_operation_rows(entry.final_eb_bom_generator)
 	return bool(mandatory_rows and mandatory_rows[-1].name == entry.operation_row)
+
+
+def physical_operation_route_active(production):
+	"""Return true when physical WIP is enabled or already evidenced on route."""
+	from smart_edge_custom.manufacturing.physical_operation_stock import enabled
+	if enabled():
+		return True
+	rows = get_mandatory_route_operation_rows(production)
+	if not rows:
+		return False
+	entry = get_route_plan_entry(production, rows[0].name)
+	job = get_completed_job_for_plan_entry(entry) if entry else None
+	stock_entry = job.get("manufacturing_stock_entry") if job else None
+	return bool(stock_entry and frappe.db.get_value("Stock Entry", stock_entry, ["docstatus", "remarks"], as_dict=True) and
+		frappe.db.get_value("Stock Entry", stock_entry, "docstatus") == 1 and
+		(frappe.db.get_value("Stock Entry", stock_entry, "remarks") or "").startswith("SmartEdge physical operation "))
+
+
+def is_first_fg_operation_entry(entry):
+	"""Return true for the first mandatory FG operation in the actual BOM route.
+
+	The batch consumption preview is useful before the final stock posting as
+	well, but it must only be exposed for a real FG operation (never a material
+	production plan or an arbitrary/non-route entry).
+	"""
+	if entry.get("plan_type") == MATERIAL_PLAN_TYPE or not entry.get("operation_row"):
+		return False
+	mandatory_rows = get_mandatory_route_operation_rows(entry.final_eb_bom_generator)
+	return bool(mandatory_rows and mandatory_rows[0].name == entry.operation_row)
 
 
 def get_candidate_final_finished_quantity(entry, actual_qty_meter=None, good_qty=None):
@@ -1601,12 +1631,22 @@ def get_final_batch_consumption_preview(
 ):
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("read")
-	if not is_final_stock_posting_entry(entry):
+	is_final = is_final_stock_posting_entry(entry)
+	is_first = is_first_fg_operation_entry(entry)
+	if not (is_final or is_first):
 		return {"applicable": 0, "components": []}
+	if is_final and physical_operation_route_active(entry.final_eb_bom_generator):
+		return {"applicable": 1, "components": [], "message": _("Final operation will consume the preceding physical WIP Batch; Compound and Base Colour were posted at the first operation.")}
 
-	finished_qty = get_candidate_final_finished_quantity(
-		entry, actual_qty_meter=actual_qty_meter, good_qty=good_qty
-	)
+	if is_final:
+		finished_qty = get_candidate_final_finished_quantity(
+			entry, actual_qty_meter=actual_qty_meter, good_qty=good_qty
+		)
+	else:
+		# The first-operation dialog previews the quantity being completed now.
+		# Do not include completed jobs from later/final operations in its
+		# proposed material allocation.
+		finished_qty = flt(good_qty) or flt(actual_qty_meter)
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required to preview batch consumption."))
 	doc = frappe.get_doc("Final EB BOM Generator", entry.final_eb_bom_generator)
@@ -2145,7 +2185,7 @@ def get_complete_job_context(plan_entry):
 				"total_planned_quantity": flt(job.planned_qty_kg),
 			}
 		)
-	elif is_final_stock_posting_entry(entry):
+	elif is_first_fg_operation_entry(entry) or is_final_stock_posting_entry(entry):
 		preview_qty = flt(job.good_qty) or flt(job.actual_qty_meter) or flt(job.planned_qty_meter)
 		context["batch_consumption_preview"] = get_final_batch_consumption_preview(
 			entry.name,

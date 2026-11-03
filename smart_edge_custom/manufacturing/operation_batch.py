@@ -59,7 +59,7 @@ def ensure_operation_batch(lot, allow_create=False):
 			posting = job.get("manufacturing_stock_entry")
 			if not posting or frappe.db.get_value("Stock Entry", posting, "docstatus") != 1:
 				frappe.throw(_("Completed physical operation {0} has no submitted stock posting. Review cancellation or historical migration before retrying.").format(job.name))
-		return [frappe.db.get_value("Batch", {LOT_LINK: lot.name}, "name")]
+		return [frappe.db.get_value("Batch", {LOT_LINK: lot.name, PURPOSE: PHYSICAL}, "name")]
 	existing = batch_for_lot(lot.name)
 	if existing:
 		return [existing]

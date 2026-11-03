@@ -1767,6 +1767,9 @@ function validate_schedule_in_browser(date_value, time_value) {
 }
 
 function render_batch_consumption_summary(preview) {
+	if (preview?.message) {
+		return `<p class="text-muted">${frappe.utils.escape_html(preview.message)}</p>`;
+	}
 	const components = preview?.components || [];
 	if (!components.length) {
 		return `<p class="text-muted">${__("No batch-controlled prepared materials are required.")}</p>`;
