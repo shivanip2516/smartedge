@@ -14,6 +14,8 @@ CANCELLED = "Cancelled"
 MAX_DEPTH = 12
 MAX_BATCH_NODES = 250
 MAX_MOVEMENTS_PER_LEVEL = 2000
+PURPOSE = "custom_batch_purpose"
+PHYSICAL = "Physical Stock"
 
 MOVEMENT_FIELDS = [
 	"name",
@@ -53,7 +55,7 @@ MOVEMENT_FIELDS = [
 
 def sync_genealogy_from_stock_entry(doc, method=None):
 	"""Stock Entry hook: observe submitted manufacturing evidence without changing stock."""
-	if doc.purpose != "Manufacture":
+	if doc.purpose != "Manufacture" and not (doc.purpose == "Repack" and (doc.get("remarks") or "").startswith("SmartEdge physical operation ")):
 		return
 	if cint(doc.docstatus) == 2 or method == "on_cancel":
 		mark_stock_entry_cancelled(doc.name)
@@ -73,7 +75,7 @@ def refresh_genealogy_from_production_job(doc, method=None):
 def capture_stock_entry(stock_entry):
 	if isinstance(stock_entry, str):
 		stock_entry = frappe.get_doc("Stock Entry", stock_entry)
-	if stock_entry.purpose != "Manufacture" or cint(stock_entry.docstatus) != 1:
+	if (stock_entry.purpose != "Manufacture" and not (stock_entry.purpose == "Repack" and (stock_entry.get("remarks") or "").startswith("SmartEdge physical operation "))) or cint(stock_entry.docstatus) != 1:
 		return {"created": 0, "updated": 0, "skipped": 0}
 
 	movements = extract_batch_movements(stock_entry)
@@ -503,7 +505,7 @@ def _unique_rows(rows):
 
 
 @frappe.whitelist()
-def get_genealogy(batch_no, direction="Backward", filters=None, max_depth=MAX_DEPTH):
+def get_genealogy(batch_no, direction="Backward", filters=None, max_depth=MAX_DEPTH, include_operation_lots=True):
 	if direction not in {"Backward", "Forward"}:
 		frappe.throw(_("Trace Direction must be Backward or Forward."))
 	batch = frappe.get_doc("Batch", batch_no)
@@ -520,36 +522,291 @@ def get_genealogy(batch_no, direction="Backward", filters=None, max_depth=MAX_DE
 		"batch_count": len(discovered),
 		"truncated": truncated,
 	}
-	if direction == "Forward" and frappe.db.exists("DocType", "SmartEdge WIP Ledger Entry"):
+	if include_operation_lots and batch.get("custom_operation_lot"):
+		from smart_edge_custom.manufacturing.production_lot import get_production_lot_genealogy
+		trace = get_production_lot_genealogy(batch.custom_operation_lot, direction=direction)
+		result["production_lot_roots"] = [{"attached_to_batch": batch.name, **root} for root in trace["roots"]]
+		result["operation_batch_trace"] = project_operation_batches(batch.name, result["production_lot_roots"], direction, max_depth)
+		return result
+	if include_operation_lots and frappe.db.exists("DocType", "SmartEdge WIP Ledger Entry"):
 		from smart_edge_custom.manufacturing.production_lot import ACTIVE as LOT_ACTIVE
 		from smart_edge_custom.manufacturing.production_lot import build_lot_genealogy_node
 
 		batch_names = list({key[0] for key in discovered})
+		stock_field = "source_stock_batch" if direction == "Forward" else "destination_stock_batch"
+		lot_field = "destination_production_lot" if direction == "Forward" else "source_production_lot"
 		links = frappe.get_all(
 			"SmartEdge WIP Ledger Entry",
 			filters={
 				"status": LOT_ACTIVE,
-				"source_stock_batch": ["in", batch_names],
-				"destination_production_lot": ["is", "set"],
+				stock_field: ["in", batch_names],
+				lot_field: ["is", "set"],
 			},
-			fields=["source_stock_batch", "destination_production_lot"],
+			fields=[stock_field, lot_field],
 			limit_page_length=MAX_BATCH_NODES,
 		)
 		links = [
 			row for row in links
-			if safe_link("SmartEdge Production Lot", row.destination_production_lot)
+			if safe_link("SmartEdge Production Lot", row.get(lot_field))
 		]
 		visited_lots = set()
 		result["production_lot_roots"] = [
 			{
-				"attached_to_batch": row.source_stock_batch,
-				**build_lot_genealogy_node(row.destination_production_lot, direction, visited_lots, 0),
+				"attached_to_batch": row.get(stock_field),
+				**build_lot_genealogy_node(row.get(lot_field), direction, visited_lots, 0),
 			}
 			for row in links
-			if row.destination_production_lot not in visited_lots
+			if row.get(lot_field) not in visited_lots
 		]
 		result["production_lot_count"] = len(visited_lots)
+		result["operation_batch_trace"] = project_operation_batches(batch.name, result["production_lot_roots"], direction, max_depth)
 	return result
+
+
+def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
+	"""Read-only Batch view of existing lots, handoffs and submitted stock evidence.
+
+	No edges are persisted and no allocation is inferred from sequence or names.
+	Physical quantities and operation output retain their separate recorded units.
+	"""
+	from smart_edge_custom.manufacturing.operation_batch import TRACE, _context, schema_ready
+
+	if not schema_ready():
+		return {}
+	movements, lot_names = {}, set()
+	def collect(node):
+		if not node.get("movements") or len(lot_names) >= MAX_BATCH_NODES:
+			return
+		lot_names.add(node["production_lot"])
+		for row in node["movements"]:
+			movements[row["name"]] = frappe._dict(row)
+		for child in node.get("children") or []:
+			collect(child)
+	for root in roots:
+		collect(root)
+	if not movements:
+		return {}
+	for row in movements.values():
+		lot_names.update(name for name in (row.source_production_lot, row.destination_production_lot) if name)
+	contexts, warnings = {}, []
+	for name in sorted(lot_names)[:MAX_BATCH_NODES]:
+		if not safe_link("SmartEdge Production Lot", name):
+			continue
+		lot = frappe.get_doc("SmartEdge Production Lot", name)
+		if not all(safe_link(dt, ref) for dt, ref in (
+			("SmartEdge Production Job", lot.production_job), ("SmartEdge Production Plan Entry", lot.plan_entry),
+			("Final EB BOM Generator", lot.final_eb_bom_generator), ("Item", lot.finished_item))):
+			continue
+		try:
+			job, entry = _context(lot)
+			if lot.final_eb_bom_generator != job.final_eb_bom_generator or entry.final_eb_bom_generator != job.final_eb_bom_generator:
+				raise frappe.ValidationError("Mismatched production references")
+		except frappe.ValidationError:
+			warnings.append(_("Production Lot {0} has inconsistent execution references; no Batch relationship was inferred.").format(name))
+			continue
+		contexts[name] = (lot, job, entry)
+	stock_refs = list({r.reference_name for r in movements.values()
+		if r.reference_doctype == "Stock Entry" and safe_link("Stock Entry", r.reference_name)
+		and frappe.db.get_value("Stock Entry", r.reference_name, "docstatus") == 1})
+	stock_refs = list(set(stock_refs) | {context[1].manufacturing_stock_entry for context in contexts.values()
+		if context[1].get("manufacturing_stock_entry")
+		and frappe.db.get_value("Stock Entry", context[1].manufacturing_stock_entry, "docstatus") == 1})
+	stock = frappe.get_list(MOVEMENT_DOCTYPE, filters={"stock_entry": ["in", stock_refs], "source_status": ACTIVE},
+		fields=["name", "stock_entry", "stock_entry_detail", "direction", "batch_no", "item_code", "quantity", "uom", "warehouse", "final_eb_bom_generator"],
+		limit_page_length=MAX_MOVEMENTS_PER_LEVEL) if stock_refs else []
+	def evidence(row, stock_batch, direction, context):
+		if row.reference_doctype != "Stock Entry":
+			return []
+		return [s for s in stock if s.stock_entry == row.reference_name and s.batch_no == stock_batch
+			and s.direction == direction and s.final_eb_bom_generator == context[1].final_eb_bom_generator
+			and (direction != "Output" or s.item_code == context[0].finished_item)
+			and s.uom == row.uom and flt(row.quantity) <= flt(s.quantity) + 0.000001]
+	nodes, mapping = {}, defaultdict(list)
+	def material_inputs(context):
+		"""Project saved plan/FIFO values without treating them as consumption."""
+		lot, job, entry = context
+		generator = frappe.get_doc("Final EB BOM Generator", job.final_eb_bom_generator)
+		allocation_fields = {"Compound": "compound_batch_allocations", "Base Colour / Shade": "shade_batch_allocations"}
+		rows = []
+		for material in generator.get("material_preview") or []:
+			component = material.get("component_type")
+			allocations = [row for row in generator.get(allocation_fields.get(component)) or []
+				if row.get("item_code") == material.get("item_code") and flt(row.get("selected_qty")) > 0]
+			if allocations:
+				for allocation in allocations:
+					rows.append({"item_code": material.item_code, "item_name": material.item_name,
+						"item_group": component, "batch_no": allocation.batch_no,
+						"quantity": flt(allocation.selected_qty), "uom": allocation.uom or material.uom,
+						"quantity_type": "Allocated", "consumption_status": "Not yet consumed",
+						"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name})
+			else:
+				rows.append({"item_code": material.item_code, "item_name": material.item_name,
+					"item_group": component, "batch_no": None, "quantity": flt(material.total_quantity),
+					"uom": material.uom, "quantity_type": "Planned", "consumption_status": "Not yet consumed",
+					"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name})
+		return rows
+	def add_batch(name, context=None):
+		if name in nodes:
+			return True
+		if not safe_link("Batch", name) or len(nodes) >= MAX_BATCH_NODES:
+			return False
+		doc = frappe.get_doc("Batch", name)
+		if not safe_link("Item", doc.item):
+			return False
+		node = {"batch_no": name, "item_code": doc.item, "item_name": doc.item_name,
+			"batch_purpose": doc.get("custom_batch_purpose") or "Physical Stock", "batch_quantity": doc.batch_qty,
+			"stock_uom": frappe.db.get_value("Item", doc.item, "stock_uom"),
+			"stock_eligibility": "Not eligible" if doc.get("custom_batch_purpose") == TRACE else "Standard ERPNext validation"}
+		if context:
+			lot, job, entry = context
+			node.update({"operation": lot.operation, "operation_status": "Completed", "production_job": job.name,
+				"plan_entry": entry.name, "production_lot": lot.name, "operation_sequence": entry.sequence,
+				"operation_output_quantity": job.actual_qty_meter, "operation_output_uom": "Meter",
+				"completed_at": job.actual_end, "planned_quantity": entry.production_quantity,
+				"input_materials": material_inputs(context)})
+		nodes[name] = node
+		return True
+	trace_batches = frappe.get_list("Batch", filters={"custom_operation_lot": ["in", list(contexts)]},
+		fields=["name", "item", "custom_operation_lot", "reference_doctype", "reference_name"], limit_page_length=MAX_BATCH_NODES) if contexts else []
+	for row in trace_batches:
+		context = contexts[row.custom_operation_lot]
+		if row.item == context[0].finished_item and row.reference_doctype == "SmartEdge Production Job" and row.reference_name == context[1].name and add_batch(row.name, context):
+			mapping[row.custom_operation_lot].append(row.name)
+	def physical_output(row, context):
+		from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
+		return (context and row.destination_stock_batch
+			and context[1].manufacturing_stock_entry == row.reference_name
+			and is_final_stock_posting_entry(context[2])
+			and evidence(row, row.destination_stock_batch, "Output", context))
+	# A final lot uses only physical outputs evidenced by its own submitted transaction.
+	for row in movements.values():
+		context = contexts.get(row.source_production_lot)
+		if physical_output(row, context):
+			if add_batch(row.destination_stock_batch, context):
+				mapping[row.source_production_lot].append(row.destination_stock_batch)
+	for name, context in contexts.items():
+		if not mapping[name]:
+			warnings.append(_("Completed operation {0} has no readable standard Batch in this trace. Review its recorded Batch links before any historical repair.").format(context[1].name))
+	edges = {}
+	for row in movements.values():
+		source, target = contexts.get(row.source_production_lot), contexts.get(row.destination_production_lot)
+		sources, targets = mapping.get(row.source_production_lot, []), mapping.get(row.destination_production_lot, [])
+		basis, stock_entry = None, None
+		if source and target and row.source_production_lot != row.destination_production_lot:
+			# Different operation Jobs are valid only with an actual recorded handoff.
+			if (source[1].final_eb_bom_generator != target[1].final_eb_bom_generator
+				or source[0].finished_item != target[0].finished_item
+				or row.production_job != target[1].name
+				or not (target[2].released_from_production_job == source[1].name
+					or target[0].input_production_lot == source[0].name)):
+				continue
+			basis = "Recorded operation handoff"
+		elif row.source_stock_batch and target and row.production_job == target[1].name and evidence(row, row.source_stock_batch, "Input", target):
+			if not add_batch(row.source_stock_batch):
+				continue
+			sources, basis, stock_entry = [row.source_stock_batch], "Submitted manufacturing input", row.reference_name
+		else:
+			continue
+		for source_batch in dict.fromkeys(sources):
+			for target_batch in dict.fromkeys(targets):
+				if source_batch == target_batch:
+					continue
+				material_evidence = next((s for s in stock if s.stock_entry == row.reference_name
+					and s.batch_no == source_batch and s.direction == "Input"
+					and s.final_eb_bom_generator == target[1].final_eb_bom_generator), None)
+				final_evidence = next((s for s in stock if target and target[1].manufacturing_stock_entry
+					and s.stock_entry == target[1].manufacturing_stock_entry and s.batch_no == target_batch
+					and s.direction == "Output" and s.item_code == target[0].finished_item
+					and s.final_eb_bom_generator == target[1].final_eb_bom_generator), None)
+				is_material = basis == "Submitted manufacturing input" and material_evidence
+				from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
+				is_final = bool(final_evidence and target and is_final_stock_posting_entry(target[2])
+					and frappe.db.get_value("Batch", target_batch, PURPOSE) == PHYSICAL)
+				quantity = material_evidence.quantity if is_material else (final_evidence.quantity if is_final else row.quantity)
+				uom = material_evidence.uom if is_material else (final_evidence.uom if is_final else row.uom)
+				quantity_type = "Consumed" if is_material else ("Final FG Posted" if is_final else "Transferred")
+				source_document_type = "Stock Entry" if is_material or is_final else "SmartEdge Production Job"
+				source_document_id = (material_evidence.stock_entry if is_material else
+					final_evidence.stock_entry if is_final else row.production_job)
+				source_row_reference = (material_evidence.stock_entry_detail if is_material else
+					final_evidence.stock_entry_detail if is_final else (target[2].name if target else None))
+				edges[(row.name, source_batch, target_batch)] = {
+					"source": source_batch, "target": target_batch, "evidence": row.name, "basis": basis,
+					"quantity": quantity, "uom": uom, "quantity_type": quantity_type, "stock_entry": stock_entry,
+					"input_quantity": quantity, "input_uom": uom,
+					"source_warehouse": material_evidence.warehouse if is_material else None,
+					"source_document_type": source_document_type, "source_document_id": source_document_id,
+					"source_row_reference": source_row_reference,
+					"production_job": row.production_job, "operation_output_quantity": target[1].actual_qty_meter,
+					"operation_output_uom": "Meter", "completed_at": target[1].actual_end,
+				}
+	# Physical operations have transaction-backed inputs even before final FG
+	# completion. Project those exact bundle rows instead of inferring allocation
+	# from sequence or current stock balances.
+	for lot_name, context in contexts.items():
+		lot, job, entry = context
+		for target_batch in mapping.get(lot_name, []):
+			output = next((s for s in stock if s.stock_entry == job.get("manufacturing_stock_entry")
+				and s.batch_no == target_batch and s.direction == "Output"
+				and s.item_code == lot.finished_item and s.final_eb_bom_generator == job.final_eb_bom_generator), None)
+			if not output:
+				continue
+			posting_remarks = frappe.db.get_value("Stock Entry", output.stock_entry, "remarks") or ""
+			if not posting_remarks.startswith("SmartEdge physical operation ") and not any(
+				s.stock_entry == output.stock_entry and s.direction == "Input" and s.item_code == lot.finished_item for s in stock):
+				continue
+			from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
+			for source in stock:
+				if (source.stock_entry != output.stock_entry or source.direction != "Input"
+					or source.final_eb_bom_generator != job.final_eb_bom_generator or not add_batch(source.batch_no)):
+					continue
+				# Replace the logical counterpart with authoritative transaction evidence.
+				edges = {key: edge for key, edge in edges.items()
+					if (edge["source"], edge["target"]) != (source.batch_no, target_batch)}
+				quantity_type = ("Final FG Posted" if is_final_stock_posting_entry(entry)
+					else "Transferred" if source.item_code == lot.finished_item else "Consumed")
+				edges[(source.name, source.batch_no, target_batch)] = {
+					"source": source.batch_no, "target": target_batch, "evidence": source.name,
+					"basis": "Submitted physical operation stock", "stock_entry": source.stock_entry,
+					"quantity": source.quantity, "uom": source.uom, "quantity_type": quantity_type,
+					"input_quantity": source.quantity, "input_uom": source.uom,
+					"source_warehouse": source.warehouse, "source_document_type": "Stock Entry",
+					"source_document_id": source.stock_entry, "source_row_reference": source.stock_entry_detail,
+					"production_job": job.name, "operation_output_quantity": job.actual_qty_meter,
+					"operation_output_uom": "Meter", "completed_at": job.actual_end,
+				}
+	if batch_no not in nodes:
+		return {}
+	connected, frontier = {batch_no}, {batch_no}
+	while frontier:
+		neighbors = {end for edge in edges.values() if edge["source"] in frontier or edge["target"] in frontier
+			for end in (edge["source"], edge["target"])} - connected
+		connected.update(neighbors)
+		frontier = neighbors
+	nodes = {name: node for name, node in nodes.items() if name in connected}
+	edges = {key: edge for key, edge in edges.items() if edge["source"] in connected and edge["target"] in connected}
+	final_outputs = [r for r in movements.values() if r.destination_stock_batch in nodes
+		and physical_output(r, contexts.get(r.source_production_lot))]
+	verified_stock_entries = {edge["stock_entry"] for edge in edges.values() if edge["stock_entry"]}
+	verified_stock_entries.update(row.reference_name for row in final_outputs)
+	visited_count = [0]
+	def walk(name, path, depth):
+		node = dict(nodes[name], children=[])
+		visited_count[0] += 1
+		if name in path or depth >= max_depth or visited_count[0] > MAX_BATCH_NODES:
+			node["cycle" if name in path else "truncated"] = True
+			return node
+		for edge in edges.values():
+			anchor, other = (edge["source"], edge["target"]) if direction == "Forward" else (edge["target"], edge["source"])
+			if anchor == name:
+				node["children"].append({**walk(other, path | {name}, depth + 1), "via": edge})
+		return node
+	return {"root": walk(batch_no, set(), 0), "nodes": list(nodes.values()), "edges": list(edges.values()),
+		"parent_batches": list(dict.fromkeys(e["source"] for e in edges.values() if e["target"] == batch_no)),
+		"child_batches": list(dict.fromkeys(e["target"] for e in edges.values() if e["source"] == batch_no)),
+		"final_batches": list(dict.fromkeys(r.destination_stock_batch for r in final_outputs)),
+		"stock_entries": sorted(verified_stock_entries), "warnings": warnings,
+		"truncated": len(lot_names) > MAX_BATCH_NODES or len(nodes) >= MAX_BATCH_NODES or visited_count[0] > MAX_BATCH_NODES}
 
 
 def build_genealogy_graph(root_batch, root_item, direction, filters, max_depth):
@@ -759,6 +1016,8 @@ def get_batch_details(keys):
 	batch_fields = ["name", "item", "manufacturing_date", "expiry_date", "batch_qty"]
 	if frappe.get_meta("Batch", cached=True).has_field("disabled"):
 		batch_fields.append("disabled")
+	if frappe.get_meta("Batch", cached=True).has_field("custom_batch_purpose"):
+		batch_fields.append("custom_batch_purpose")
 	rows = frappe.get_list(
 		"Batch",
 		filters={"name": ["in", batch_names]},
@@ -807,7 +1066,7 @@ def build_genealogy_tree(key, graph, details, path, counter):
 		"manufacturing_date": batch.get("manufacturing_date"),
 		"expiry_date": batch.get("expiry_date"),
 		"batch_quantity": batch.get("batch_qty"),
-		"batch_status": "Disabled" if cint(batch.get("disabled")) else "Active",
+		"batch_status": "Completed — Traceability" if batch.get("custom_batch_purpose") == "Operation Traceability" else ("Disabled" if cint(batch.get("disabled")) else "Active"),
 		"manufacturing_stage": batch.get("manufacturing_stage"),
 		"production_quantity": batch.get("production_quantity"),
 		"production_uom": batch.get("production_uom"),

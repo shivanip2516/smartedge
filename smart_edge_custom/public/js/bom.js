@@ -1,163 +1,100 @@
 frappe.ui.form.on("BOM", {
 	setup(frm) {
-		set_item_code_query(frm);
+		frm.set_query("item_code", "items", () => ({
+			query: "smart_edge_custom.bom.get_bom_items",
+			filters: { parent_item: frm.doc.item },
+		}));
 	},
-	refresh(frm) {
-		refresh_batch_field(frm);
+	async refresh(frm) {
+		// Retain historical data while the metadata patch hides the retired field.
+		frm.toggle_display("custom_process_2", false);
+		await refresh_batch_field(frm);
+		await update_recipe_quantity(frm);
 	},
-
-	item(frm) {
-		load_compound_recipe(frm);
-	},
-
-	custom_process_2(frm) {
+	async item(frm) {
 		frm.refresh_field("items");
+		await refresh_batch_field(frm, true);
+		await warn_invalid_components(frm);
+		await update_recipe_quantity(frm);
 	},
+	validate: update_recipe_quantity,
 });
 
-const PROCESS_ITEM_GROUPS = {
-	Extrusion: ["Compounds", "Pigments"],
-	"Extrusion Online Printing": ["Compounds", "Pigments"],
-	"Offline Printing": ["Base Colour"],
-};
+frappe.ui.form.on("BOM Item", {
+	items_add: update_recipe_quantity,
+	items_remove: update_recipe_quantity,
+	item_code: update_recipe_quantity,
+	qty: update_recipe_quantity,
+	uom: update_recipe_quantity,
+	conversion_factor: update_recipe_quantity,
+});
 
-function set_item_code_query(frm) {
-	frm.set_query("item_code", "items", () => {
-		const item_groups = PROCESS_ITEM_GROUPS[frm.doc.custom_process_2];
-
-		if (item_groups?.length) {
-			return {
-				query: "smart_edge_custom.bom.get_process_items",
-				filters: {
-					process: frm.doc.custom_process_2,
-				},
-			};
-		}
-
-		return {
-			query: "erpnext.manufacturing.doctype.bom.bom.item_query",
-			filters: {
-				include_item_in_manufacturing: 1,
-				is_fixed_asset: 0,
-			},
-		};
+async function update_recipe_quantity(frm) {
+	if (frm.doc.docstatus || !frm.doc.item) return;
+	const snapshot = () => JSON.stringify({
+		item_code: frm.doc.item,
+		items: (frm.doc.items || []).map(({ item_code, qty, uom, conversion_factor }) => ({
+			item_code, qty, uom, conversion_factor,
+		})),
 	});
-}
-
-function has_bom_components(frm) {
-	return (frm.doc.items || []).some((row) => row.item_code);
-}
-
-async function load_compound_recipe(frm) {
-	if (!frm.doc.item) {
-		return;
-	}
-
+	const request = snapshot();
 	const response = await frappe.call({
-		method: "smart_edge_custom.bom.get_compound_recipe",
-		args: {
-			item_code: frm.doc.item,
-		},
+		method: "smart_edge_custom.bom.get_bom_quantity",
+		args: JSON.parse(request),
 	});
-	const recipe = response.message || {};
-	await apply_batch_recipe_details(frm, recipe);
-
-	if (!recipe.is_compound) {
-		await load_base_colour_recipe(frm);
-		return;
+	// Ignore responses for rows or a parent that changed while the call ran.
+	if (frm.doc.docstatus || snapshot() !== request || response.message == null) return;
+	const total = flt(response.message);
+	if (flt(frm.doc.quantity) !== total) {
+		await frm.set_value("quantity", total);
 	}
-
-	if (has_bom_components(frm)) {
-		frappe.show_alert({
-			message: __("BOM Items already contain components. Compound recipe was not auto-loaded."),
-			indicator: "orange",
-		});
-		return;
-	}
-
-	if (!recipe.recipe_found) {
-		frappe.show_alert({
-			message: __("No Compound recipe found for the selected Compound Item."),
-			indicator: "orange",
-		});
-		return;
-	}
-
-	if (!(recipe.rows || []).length) {
-		frappe.show_alert({
-			message: __("The selected Compound does not have any Additives in its recipe."),
-			indicator: "orange",
-		});
-		return;
-	}
-
-	frm.clear_table("items");
-	await add_recipe_rows(frm, recipe.rows);
-
-	frappe.show_alert({
-		message: __("Compound recipe loaded into BOM Items."),
-		indicator: "green",
-	});
 }
 
-async function load_base_colour_recipe(frm) {
-	const response = await frappe.call({
-		method: "smart_edge_custom.bom.get_base_colour_recipe",
-		args: {
-			item_code: frm.doc.item,
-		},
-	});
-	const recipe = response.message || {};
-	await apply_batch_recipe_details(frm, recipe);
-
-	if (!recipe.is_base_colour) {
-		return;
-	}
-
-	if (has_bom_components(frm)) {
-		frappe.show_alert({
-			message: __("BOM Items already contain components. Base Colour recipe was not auto-loaded."),
+async function warn_invalid_components(frm) {
+	const parent_item = frm.doc.item;
+	if (!parent_item || !(frm.doc.items || []).some((row) => row.item_code)) return;
+	const { message: item } = await frappe.db.get_value("Item", parent_item, "item_group");
+	if (frm.doc.item !== parent_item) return;
+	const allowed_group = { Compounds: "Additives", "Base Colour": "Pigments" }[item?.item_group];
+	if (!allowed_group) return;
+	const invalid = await Promise.all(
+		frm.doc.items.filter((row) => row.item_code).map(async (row) => {
+			const item_code = row.item_code;
+			const { message: component } = await frappe.db.get_value("Item", item_code, "item_group");
+			if (row.item_code === item_code && component?.item_group !== allowed_group) {
+				return __("Row {0}: {1}", [row.idx, item_code]);
+			}
+		})
+	);
+	if (frm.doc.item === parent_item && invalid.some(Boolean)) {
+		frappe.msgprint({
+			title: __("Invalid BOM components"),
 			indicator: "orange",
+			message: __("Only Items in Item Group {0} are allowed. Please correct: {1}", [
+				frappe.utils.escape_html(allowed_group),
+				invalid.filter(Boolean).map((row) => frappe.utils.escape_html(row)).join("; "),
+			]),
 		});
-		return;
 	}
-
-	if (!recipe.recipe_found) {
-		frappe.show_alert({
-			message: __("No Base Colour recipe found for the selected Base Colour Item."),
-			indicator: "orange",
-		});
-		return;
-	}
-
-	if (!(recipe.rows || []).length) {
-		frappe.show_alert({
-			message: __("The selected Base Colour does not have any Pigments in its recipe."),
-			indicator: "orange",
-		});
-		return;
-	}
-
-	frm.clear_table("items");
-	await add_recipe_rows(frm, recipe.rows);
-
-	frappe.show_alert({
-		message: __("Base Colour recipe loaded into BOM Items."),
-		indicator: "green",
-	});
 }
 
-async function refresh_batch_field(frm) {
-	if (!frm.doc.item) {
+async function refresh_batch_field(frm, apply_defaults = false) {
+	const parent_item = frm.doc.item;
+	if (!parent_item) {
 		set_batch_field_properties(frm, false);
 		return;
 	}
-
 	const response = await frappe.call({
 		method: "smart_edge_custom.bom.get_bom_batch_details",
-		args: { item_code: frm.doc.item },
+		args: { item_code: parent_item },
 	});
-	set_batch_field_properties(frm, Boolean(response.message?.is_batch_manufacturing_item));
+	if (frm.doc.item !== parent_item) return;
+	const details = response.message || {};
+	if (apply_defaults) {
+		await apply_batch_recipe_details(frm, details);
+	} else {
+		set_batch_field_properties(frm, Boolean(details.is_batch_manufacturing_item));
+	}
 }
 
 async function apply_batch_recipe_details(frm, details) {
@@ -176,19 +113,6 @@ async function apply_batch_recipe_details(frm, details) {
 function set_batch_field_properties(frm, enabled) {
 	frm.toggle_display("custom_batch", enabled);
 	frm.toggle_reqd("custom_batch", enabled);
-}
-
-async function add_recipe_rows(frm, items) {
-	for (const item of items) {
-		const row = frm.add_child("items");
-		await frappe.model.set_value(row.doctype, row.name, "item_code", item.item_code);
-		await frappe.model.set_value(row.doctype, row.name, "qty", item.qty);
-		if (item.uom) {
-			await frappe.model.set_value(row.doctype, row.name, "uom", item.uom);
-		}
-	}
-
-	frm.refresh_field("items");
 }
 
 frappe.provide("smart_edge_custom.batch_manufacturing");

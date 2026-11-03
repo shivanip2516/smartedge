@@ -14,6 +14,7 @@
   "customer",
   "required_delivery_date",
   "finished_item",
+  "finished_bom",
   "finished_item_name",
   "custom_size",
   "production_quantity",
@@ -34,18 +35,16 @@
   "width_mm",
   "weight_per_meter_gm",
   "prepared_components_section",
-  "compound",
+  "compound_item",
   "compound_consumption_batches",
   "compound_batch_allocations",
   "source_warehouse",
   "components_col_2",
-  "base_colour",
+  "base_colour_item",
   "shade_consumption_batches",
   "shade_batch_allocations",
   "material_weight_difference_kg_per_meter",
   "components_col_3",
-  "compound_item",
-  "base_colour_item",
   "material_weight_status",
   "allow_weight_mismatch",
   "material_production_section",
@@ -306,19 +305,12 @@
    "read_only": 1
   },
   {
-   "fieldname": "compound",
-   "fieldtype": "Link",
-   "label": "Compound",
-   "mandatory_depends_on": "eval:!doc.sales_order",
-   "options": "Compound",
-   "reqd": 0
-  },
-  {
    "fieldname": "compound_item",
    "fieldtype": "Link",
-   "label": "Compound Stock Item",
+   "label": "Compound Item",
    "options": "Item",
-   "read_only": 1
+   "read_only": 0,
+   "mandatory_depends_on": "eval:!doc.sales_order"
   },
   {
    "fieldname": "compound_consumption_per_meter",
@@ -365,19 +357,12 @@
    "read_only": 1
   },
   {
-   "fieldname": "base_colour",
-   "fieldtype": "Link",
-   "label": "Base Colour / Shade",
-   "mandatory_depends_on": "eval:!doc.sales_order",
-   "options": "Base Colour",
-   "reqd": 0
-  },
-  {
    "fieldname": "base_colour_item",
    "fieldtype": "Link",
-   "label": "Base Colour Stock Item",
+   "label": "Base Colour Item",
    "options": "Item",
-   "read_only": 1
+   "read_only": 0,
+   "mandatory_depends_on": "eval:!doc.sales_order"
   },
   {
    "fieldname": "shade_consumption_per_meter",
@@ -741,6 +726,14 @@
   {
    "fieldname": "cost_col_3",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finished_bom",
+   "fieldtype": "Link",
+   "options": "BOM",
+   "label": "Finished Goods BOM",
+   "read_only": 1,
+   "hidden": 1
   }
  ],
  "index_web_pages_for_search": 1,

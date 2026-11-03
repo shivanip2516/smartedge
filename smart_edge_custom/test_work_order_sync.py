@@ -12,6 +12,18 @@ from smart_edge_custom.manufacturing.work_order_sync import (
 
 
 class TestWorkOrderPlanningSynchronization(IntegrationTestCase):
+	@patch("smart_edge_custom.manufacturing.work_order_sync.frappe.get_doc")
+	@patch("smart_edge_custom.manufacturing.work_order_sync.frappe.get_all", return_value=["PLAN-STALE"])
+	@patch("smart_edge_custom.manufacturing.work_order_sync.frappe.db.exists", return_value=False)
+	def test_deleted_work_order_returns_actionable_reference_without_loading_or_updating(self, _exists, _get_all, get_doc):
+		result = sync_work_order_to_planning("WO-DELETED")
+		self.assertTrue(result["missing"])
+		self.assertEqual(result["changes"], [])
+		self.assertEqual(result["plan_entries"], ["PLAN-STALE"])
+		self.assertIn("WO-DELETED", result["message"])
+		self.assertIn("PLAN-STALE", result["message"])
+		get_doc.assert_not_called()
+
 	def make_progress(self, **values):
 		defaults = {
 			"completed": False,

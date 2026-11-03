@@ -10,6 +10,15 @@ TERMINAL_WORK_ORDER_STATUSES = {"Cancelled", "Stopped"}
 QUANTITY_TOLERANCE = 0.000001
 
 
+def missing_work_order_message(work_order, plan_entry):
+	return _("Work Order {0} referenced by Production Plan {1} is missing. Review and approve correction of the Work Order link before planning or executing this material operation.").format(work_order, plan_entry)
+
+
+def validate_material_work_order_reference(entry):
+	if entry.get("plan_type") == MATERIAL_PLAN_TYPE and entry.get("work_order") and not frappe.db.exists("Work Order", entry.work_order):
+		frappe.throw(missing_work_order_message(entry.work_order, entry.name))
+
+
 def get_work_order_progress(work_order):
 	"""Return manufacturing progress backed by submitted ERPNext transactions."""
 	work_order = (
@@ -108,6 +117,10 @@ def sync_work_order_to_planning(work_order, dry_run=False, refresh_readiness=Tru
 	"""Idempotently reconcile linked planning records from verified ERPNext progress."""
 	if getattr(frappe.flags, "smartedge_board_completion", False):
 		return {"work_order": getattr(work_order, "name", work_order), "skipped": True, "changes": []}
+	if isinstance(work_order, str) and not frappe.db.exists("Work Order", work_order):
+		entries = frappe.get_all("SmartEdge Production Plan Entry", filters={"work_order": work_order}, pluck="name")
+		return {"work_order": work_order, "missing": True, "changes": [], "plan_entries": entries,
+			"message": missing_work_order_message(work_order, ", ".join(entries) or "—")}
 	work_order = (
 		frappe.get_doc("Work Order", work_order) if isinstance(work_order, str) else work_order
 	)
@@ -266,12 +279,16 @@ def reconcile_board_work_orders(week_start, week_end):
 	rows = frappe.get_all(
 		"SmartEdge Production Plan Entry",
 		filters={"work_order": ["is", "set"], "status": ["!=", "Cancelled"]},
-		fields=["work_order", "planned_date"],
+		fields=["work_order", "planned_date", "final_eb_bom_generator"],
 		limit_page_length=1000,
 	)
+	productions = {row.final_eb_bom_generator for row in rows if row.final_eb_bom_generator}
+	existing_productions = set(frappe.get_all("Final EB BOM Generator",
+		filters={"name": ["in", list(productions)]}, pluck="name")) if productions else set()
 	names = {
 		row.work_order
 		for row in rows
+		if row.final_eb_bom_generator in existing_productions
 		if not row.planned_date or getdate(week_start) <= getdate(row.planned_date) <= getdate(week_end)
 	}
 	return [

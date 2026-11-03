@@ -122,19 +122,19 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 		self.assertEqual(generator.sales_order, "SO-1")
 		self.assertEqual(generator.sales_order_item, "SO-ITEM-1")
 		self.assertEqual(generator.finished_item, "SE-101")
-		self.assertNotIn("compound", generator.__dict__)
-		self.assertNotIn("base_colour", generator.__dict__)
+		self.assertNotIn("compound_item", generator.__dict__)
+		self.assertNotIn("base_colour_item", generator.__dict__)
 		self.assertEqual(result["remaining_shortage"], 0)
 
 	def test_sales_order_linked_generator_can_start_without_materials(self):
-		doc = frappe._dict({"sales_order": "SO-1", "compound": None, "base_colour": None})
+		doc = frappe._dict({"sales_order": "SO-1", "compound_item": None, "base_colour_item": None})
 
 		FinalEBBOMGenerator.validate_initial_material_configuration(doc)
 
 	def test_manual_generator_still_requires_materials_on_save(self):
-		doc = frappe._dict({"sales_order": None, "compound": None, "base_colour": None})
+		doc = frappe._dict({"sales_order": None, "compound_item": None, "base_colour_item": None})
 
-		with self.assertRaisesRegex(frappe.ValidationError, "Compound is required"):
+		with self.assertRaisesRegex(frappe.ValidationError, "Compound Item is required"):
 			FinalEBBOMGenerator.validate_initial_material_configuration(doc)
 
 	@patch("smart_edge_custom.manufacturing.final_bom_generator.apply_preview_to_doc")
@@ -145,13 +145,13 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 		values = {
 			"finished_item": "SE-101",
 			"company": "SmartEdge",
-			"compound": None,
-			"base_colour": None,
+			"compound_item": None,
+			"base_colour_item": None,
 			"extrusion_type": "Single Mould Extrusion",
 		}
 		doc.get.side_effect = values.get
 
-		with self.assertRaisesRegex(frappe.ValidationError, "Compound is required"):
+		with self.assertRaisesRegex(frappe.ValidationError, "Compound Item is required"):
 			validate_ready_for_planning(doc)
 
 	@patch("smart_edge_custom.manufacturing.material_production.build_material_planning_context")

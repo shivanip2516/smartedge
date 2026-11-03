@@ -132,7 +132,12 @@ for (const [compound_workstation, colour_workstation] of [["Mixer-1", "Mixer-1"]
 	];
 	assert.equal(placement(operations).column_key, "2026-11-03");
 	operations[1].status = "Completed";
-	assert.equal(placement(operations), null);
+	assert.equal(placement(operations).column_key, "2026-11-03");
+	assert.equal(resolve_item_group_placement(operations, "2026-10-26", "2026-11-01").column_key, "2026-10-27");
+	assert.equal(resolve_item_group_placement(operations, "2026-11-09", "2026-11-15"), null);
 }
+
+assert.equal(placement([operation("CANCELLED", 1, "Cancelled", "2026-10-27")]), null);
+assert.equal(placement([operation("UNDATED", 1, "Completed")]), null);
 
 console.log("Planning board traversal tests passed");

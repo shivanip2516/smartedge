@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, now_datetime
+from frappe.utils import cint, flt, get_datetime, now_datetime
 
 LOT_DOCTYPE = "SmartEdge Production Lot"
 LEDGER_DOCTYPE = "SmartEdge WIP Ledger Entry"
@@ -20,18 +20,18 @@ BALANCE_OUT_TYPES = {
 STAGE_TRANSFER_TYPES = {"Transfer to Next Operation", "QC Release"}
 
 
+def is_qc_operation(entry):
+	if entry.get("operation_row") and cint(frappe.db.get_value("Final EB BOM Operation", entry.operation_row, "is_qc")):
+		return True
+	return entry.get("planning_category") == "QC" or bool(re.search(r"\bQC\b|quality", str(entry.get("operation") or ""), re.IGNORECASE))
+
+
 def get_operation_lot_mode(entry):
 	if entry.get("plan_type") == "Required Material":
 		return "Stock Batch"
-	operation = str(entry.get("operation") or "")
-	category = str(entry.get("planning_category") or "")
-	if entry.get("operation_row"):
-		is_qc = frappe.db.get_value("Final EB BOM Operation", entry.operation_row, "is_qc")
-		if cint(is_qc):
-			return "Preserve Incoming Lot"
-	if category == "QC" or re.search(r"\bQC\b|quality", operation, re.IGNORECASE):
-		return "Preserve Incoming Lot"
-	return "New Production Lot"
+	if entry.get("plan_type") == "Final EB":
+		return "New Production Lot"
+	return "Preserve Incoming Lot" if is_qc_operation(entry) else "New Production Lot"
 
 
 def get_operation_lot_prefix(entry):
@@ -46,6 +46,8 @@ def get_operation_lot_prefix(entry):
 	configured_prefix = configured.get(operation) or configured.get(category)
 	if configured_prefix:
 		return str(configured_prefix).strip().upper()
+	if re.search(r"\bQC\b|quality", operation, re.IGNORECASE):
+		return "QC"
 	if category == "Extrusion" or "extrusion" in operation.lower():
 		return "EXT"
 	if "offline" in operation.lower() and "print" in operation.lower():
@@ -60,16 +62,28 @@ def get_operation_lot_prefix(entry):
 	return letters if len(letters) >= 2 else "LOT"
 
 
-def record_completed_job(job):
+def get_operation_lot_name(prefix, production_job, sequence):
+	"""Identify a non-stock operation lot without allocating an ERPNext Batch."""
+	identity = f"{prefix}-{production_job}-{cint(sequence):02d}"
+	if len(identity) <= 140:
+		return identity
+	digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+	return f"{identity[:115]}-{digest}"
+
+
+def record_completed_job(job, allow_create=True):
 	"""Create/link one non-stock lot and append idempotent WIP movements."""
 	if isinstance(job, str):
 		job = frappe.get_doc("SmartEdge Production Job", job)
 	if job.status != "Completed":
 		frappe.throw(_("Production Lot tracking requires a completed Production Job."))
+	frappe.db.sql("select name from `tabSmartEdge Production Job` where name=%s for update", (job.name,))
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
 	mode = get_operation_lot_mode(entry)
 	if mode == "Stock Batch":
 		return {"mode": mode, "production_lot": None}
+	if entry.final_eb_bom_generator != job.final_eb_bom_generator or entry.operation != job.operation:
+		frappe.throw(_("Production Job must match its plan's Finished Goods production and operation."))
 
 	production = frappe.db.get_value(
 		"Final EB BOM Generator",
@@ -80,8 +94,22 @@ def record_completed_job(job):
 	if not production or not production.finished_item:
 		frappe.throw(_("Finished Item is required before recording a Production Lot."))
 	input_lot = get_input_production_lot(entry)
+	# Preserve recorded historical QC reuse; never rewrite completed ledger history.
+	if is_qc_operation(entry) and input_lot and job.get("output_production_lot") == input_lot:
+		if not allow_create or frappe.db.exists(LEDGER_DOCTYPE, {
+			"production_job": job.name, "movement_type": "QC Release", "status": ACTIVE,
+		}):
+			mode = "Preserve Incoming Lot"
+		else:
+			# A job started with the older QC hold behavior has no completed output yet.
+			link_job_lots(job, input_lot, None)
 
 	if mode == "Preserve Incoming Lot":
+		owned = frappe.db.get_value(LOT_DOCTYPE, {"production_job": job.name}, "name")
+		if owned:
+			return {"mode": "Historical Operation Lot", "production_lot": owned}
+		if not allow_create:
+			return {"mode": mode, "production_lot": None, "backfill_required": True}
 		if not input_lot:
 			frappe.throw(_("QC operation {0} has no released incoming Production Lot.").format(entry.operation))
 		link_job_lots(job, input_lot, input_lot)
@@ -106,47 +134,21 @@ def record_completed_job(job):
 		record_release_movement(job, entry, production, input_lot, qc_release=True)
 		return {"mode": mode, "production_lot": input_lot}
 
-	existing = job.get("output_production_lot") or frappe.db.get_value(
-		LOT_DOCTYPE, {"production_job": job.name}, "name"
-	)
+	existing = frappe.db.get_value(LOT_DOCTYPE, {"production_job": job.name}, "name", for_update=True)
+	if job.get("output_production_lot") and job.output_production_lot != existing:
+		frappe.throw(_("Production Job {0} has an inconsistent output Production Lot reference.").format(job.name))
 	if existing:
 		link_job_lots(job, input_lot, existing)
 		ensure_output_movement(job, entry, production, existing)
 		record_release_movement(job, entry, production, existing)
-		return {"mode": mode, "production_lot": existing}
+		from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
+		return {"mode": mode, "production_lot": existing,
+			"operation_batches": ensure_operation_batch(existing, allow_create=False)}
 
-	produced_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
-	if produced_qty <= 0:
-		frappe.throw(_("Actual good output is required before creating a Production Lot."))
-	lot = frappe.new_doc(LOT_DOCTYPE)
-	lot.naming_prefix = get_operation_lot_prefix(entry)
-	lot.finished_item = production.finished_item
-	lot.finished_item_name = production.finished_item_name or frappe.db.get_value(
-		"Item", production.finished_item, "item_name"
-	)
-	lot.final_eb_bom_generator = job.final_eb_bom_generator
-	lot.plan_entry = entry.name
-	lot.production_job = job.name
-	lot.operation = job.operation
-	lot.operation_sequence = entry.sequence
-	lot.planning_category = entry.planning_category
-	lot.workstation = job.workstation
-	lot.employee = job.operator_employee
-	lot.planned_date = entry.planned_date
-	lot.actual_start = job.actual_start
-	lot.actual_end = job.actual_end
-	lot.input_quantity = flt(entry.released_qty_meter) if input_lot else 0
-	lot.produced_quantity = produced_qty
-	lot.quantity_uom = production.stock_uom
-	lot.produced_quantity_kg = flt(job.actual_qty_kg)
-	lot.good_quantity = flt(job.good_qty) or produced_qty
-	lot.rejected_quantity = flt(job.rejected_qty)
-	lot.rework_quantity = flt(job.rework_qty)
-	lot.usable_scrap = flt(job.usable_scrap)
-	lot.unusable_scrap = flt(job.unusable_scrap)
-	lot.input_production_lot = input_lot
-	lot.work_order = entry.work_order
-	lot.insert(ignore_permissions=True)
+	if not allow_create:
+		frappe.throw(_("Completed Production Job {0} has no operation batch. Use the controlled backfill workflow.").format(job.name))
+	lot = _create_completed_operation_lot(job, entry, production, input_lot)
+	produced_qty = lot.produced_quantity
 	link_job_lots(job, input_lot, lot.name)
 
 	record_movement(
@@ -163,6 +165,12 @@ def record_completed_job(job):
 	)
 	if input_lot:
 		input_qty = flt(entry.released_qty_meter) or produced_qty
+		if is_qc_operation(entry) and frappe.db.exists(LEDGER_DOCTYPE, make_movement_key("qc-hold", job.name, input_lot)):
+			record_movement(
+				"QC Release", ("qc-input-release", job.name, input_lot), job, entry, production,
+				quantity=input_qty, uom=production.stock_uom, source_lot=input_lot, destination_lot=input_lot,
+				source_operation=job.operation, destination_operation=job.operation,
+			)
 		ensure_available_for_transfer(input_lot, job.operation, input_qty)
 		record_movement(
 			"Consume for Operation",
@@ -192,7 +200,49 @@ def record_completed_job(job):
 	record_quality_movements(job, entry, production, lot.name, informational=True)
 	record_release_movement(job, entry, production, lot.name)
 	reconcile_final_production(job.final_eb_bom_generator)
-	return {"mode": mode, "production_lot": lot.name}
+	from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
+	return {"mode": mode, "production_lot": lot.name,
+		"operation_batches": ensure_operation_batch(lot, allow_create=True)}
+
+
+def _create_completed_operation_lot(job, entry, production, input_lot):
+	produced_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
+	if produced_qty <= 0:
+		frappe.throw(_("Actual good output is required before creating a Production Lot."))
+	lot = frappe.new_doc(LOT_DOCTYPE)
+	lot.naming_prefix = get_operation_lot_prefix(entry)
+	lot.is_stock_inventory_batch = 0
+	lot.finished_item = production.finished_item
+	lot.finished_item_name = frappe.db.get_value("Item", production.finished_item, "item_name") or production.finished_item
+	lot.final_eb_bom_generator = job.final_eb_bom_generator
+	lot.plan_entry = entry.name
+	lot.production_job = job.name
+	lot.operation = job.operation
+	lot.operation_sequence = entry.sequence
+	lot.planning_category = entry.planning_category
+	lot.workstation = job.workstation
+	lot.employee = job.operator_employee
+	lot.planned_date = entry.planned_date
+	lot.actual_start = job.actual_start
+	lot.actual_end = job.actual_end
+	lot.planned_quantity = flt(entry.production_quantity)
+	lot.actual_output_quantity = flt(job.actual_qty_meter)
+	lot.quality_inspection = job.get("quality_inspection") or frappe.db.get_value(
+		"Quality Inspection", {"reference_name": job.name, "docstatus": ["!=", 2]}, "name", order_by="creation desc"
+	)
+	lot.input_quantity = flt(entry.released_qty_meter) if input_lot else 0
+	lot.produced_quantity = produced_qty
+	lot.quantity_uom = production.stock_uom
+	lot.produced_quantity_kg = flt(job.actual_qty_kg)
+	lot.good_quantity = flt(job.good_qty) or produced_qty
+	lot.rejected_quantity = flt(job.rejected_qty)
+	lot.rework_quantity = flt(job.rework_qty)
+	lot.usable_scrap = flt(job.usable_scrap)
+	lot.unusable_scrap = flt(job.unusable_scrap)
+	lot.input_production_lot = input_lot
+	lot.work_order = entry.work_order
+	lot.insert(ignore_permissions=True)
+	return lot
 
 
 def ensure_output_movement(job, entry, production, lot_name):
@@ -238,10 +288,13 @@ def get_input_production_lot(entry):
 def record_qc_hold(job, entry=None):
 	"""Mark the predecessor lot as held while a QC-only operation is active."""
 	entry = entry or frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
-	if get_operation_lot_mode(entry) != "Preserve Incoming Lot":
+	preserve_incoming = get_operation_lot_mode(entry) == "Preserve Incoming Lot"
+	if not preserve_incoming and not is_qc_operation(entry):
 		return None
 	input_lot = get_input_production_lot(entry)
 	if not input_lot:
+		if not preserve_incoming:
+			return None
 		frappe.throw(_("QC operation {0} has no released incoming Production Lot.").format(entry.operation))
 	production = frappe.db.get_value(
 		"Final EB BOM Generator",
@@ -249,7 +302,7 @@ def record_qc_hold(job, entry=None):
 		["finished_item", "stock_uom"],
 		as_dict=True,
 	)
-	link_job_lots(job, input_lot, input_lot)
+	link_job_lots(job, input_lot, input_lot if preserve_incoming else None)
 	return record_movement(
 		"QC Hold",
 		("qc-hold", job.name, input_lot),
@@ -484,34 +537,49 @@ def attach_lot_details(rows):
 	jobs = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"name": ["in", job_names]},
-		fields=["name", "operation", "input_production_lot", "output_production_lot"],
+		fields=["name", "status", "operation", "actual_qty_meter", "input_production_lot", "output_production_lot"],
 		limit_page_length=len(job_names),
 	)
 	by_job = {job.name: job for job in jobs}
-	lot_names = {job.output_production_lot or job.input_production_lot for job in jobs}
-	lot_names.discard(None)
-	lots = {
-		lot.name: lot
-		for lot in frappe.get_all(
-			LOT_DOCTYPE,
-			filters={"name": ["in", list(lot_names)]},
-			fields=["name", "produced_quantity", "quantity_uom", "status"],
-			limit_page_length=len(lot_names),
-		)
-	} if lot_names else {}
+	trace_jobs = set(job_names) | {row.get("released_from_production_job") for row in rows if row.get("released_from_production_job")}
+	lots = {lot.production_job: lot for lot in frappe.get_all(
+		LOT_DOCTYPE, filters={"production_job": ["in", list(trace_jobs)]},
+		fields=["name", "production_job", "produced_quantity", "planned_quantity", "actual_output_quantity", "quantity_uom", "status"],
+		limit_page_length=len(trace_jobs),
+	)}
+	lot_names = {lot.name for lot in lots.values()}
 	balances = get_lot_balances(lot_names)
+	finished_batches = defaultdict(list)
+	if lot_names:
+		links = frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={"status": ACTIVE, "movement_type": "Lot Genealogy Link",
+				"source_production_lot": ["in", list(lot_names)],
+				"destination_stock_batch": ["is", "set"], "reference_doctype": "Stock Entry"},
+			fields=["source_production_lot", "destination_stock_batch"],
+		)
+		for link in links:
+			if link.destination_stock_batch not in finished_batches[link.source_production_lot]:
+				finished_batches[link.source_production_lot].append(link.destination_stock_batch)
 	for row in rows:
 		job = by_job.get(row.get("production_job"))
 		if not job:
 			continue
-		lot_name = job.output_production_lot or job.input_production_lot
-		lot = lots.get(lot_name)
+		previous = lots.get(row.get("released_from_production_job"))
+		row.previous_operation_lot = previous.name if previous else job.input_production_lot
+		lot = lots.get(job.name) if job.status == "Completed" else None
+		row.operation_lot_missing = job.status == "Completed" and row.get("plan_type") == "Final EB" and not lot
 		if not lot:
 			continue
+		lot_name = lot.name
 		balance = balances.get(lot_name) or {}
 		row.production_lot = lot_name
+		row.operation_trace_id = lot_name
 		row.production_lot_status = lot.status
 		row.lot_produced_quantity = flt(lot.produced_quantity)
+		row.lot_planned_quantity = flt(lot.planned_quantity)
+		row.lot_actual_output_quantity = flt(job.actual_qty_meter)
+		row.related_finished_goods_batches = finished_batches.get(lot_name, [])
 		row.lot_available_quantity = flt(balance.get("available"))
 		row.lot_transferred_quantity = flt((balance.get("transferred") or {}).get(job.operation))
 		row.lot_remaining_quantity = flt((balance.get("stages") or {}).get(job.operation))
@@ -578,9 +646,30 @@ def reconcile_final_production(production_name, stock_entry=None):
 		remaining -= quantity
 		if remaining <= 0:
 			break
+	link_final_stock_batches(final_lots, stock_entry, production)
 	linked = link_actual_batches_to_first_lot(production_name, all_lots, stock_entry, production)
 	return {"transferred": transferred, "linked_batches": linked}
 
+
+
+def link_final_stock_batches(lots, stock_entry, production):
+	"""Attach only real submitted output batches; never invent a split allocation."""
+	outputs = frappe.get_all(
+		"SmartEdge Batch Genealogy Movement",
+		filters={"stock_entry": stock_entry, "direction": "Output", "source_status": ACTIVE, "item_code": production.finished_item},
+		fields=["batch_no", "quantity", "uom"],
+	)
+	for lot in lots:
+		job = frappe.get_doc("SmartEdge Production Job", lot.production_job)
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
+		for output in outputs:
+			record_movement(
+				"Lot Genealogy Link", ("stock-batch-output", stock_entry, lot.name, output.batch_no),
+				job, entry, production, quantity=output.quantity, uom=output.uom,
+				source_lot=lot.name, destination_batch=output.batch_no, source_operation=lot.operation,
+				reference_doctype="Stock Entry", reference_name=stock_entry,
+				remarks=_("Event-level link to the actual Finished Goods batch received by this Stock Entry. Quantity is the stock-event output total, not an inferred per-lot split."),
+			)
 
 def get_final_stock_lot_names(production_name, stock_entry):
 	"""Return output lots of the exact jobs linked to the authoritative final Stock Entry."""
@@ -709,6 +798,7 @@ def get_production_lot_genealogy(reference, direction="Backward", reference_type
 		"traceability_kind": "SmartEdge Production Lot",
 		"direction": direction,
 		"roots": roots,
+		"input_batches": get_input_material_batch_details(roots) if direction == "Backward" else [],
 		"lot_count": len(visited),
 		"truncated": any(node.get("truncated") for node in roots),
 	}
@@ -739,6 +829,13 @@ def resolve_trace_roots(reference, reference_type, direction):
 	frappe.throw(_("Unsupported trace reference type {0}.").format(reference_type))
 
 
+def _recorded_trace_input(lot):
+	"""Resolve operation ancestry from saved release references, without replaying WIP."""
+	source_job = frappe.db.get_value("SmartEdge Production Plan Entry", lot.get("plan_entry"), "released_from_production_job") if lot.get("plan_entry") else None
+	owned = frappe.db.get_value(LOT_DOCTYPE, {"production_job": source_job}, "name") if source_job else None
+	return owned or lot.get("input_production_lot")
+
+
 def build_lot_genealogy_node(lot_name, direction, visited, depth):
 	if depth >= 12:
 		return {"production_lot": lot_name, "truncated": True, "children": []}
@@ -749,9 +846,9 @@ def build_lot_genealogy_node(lot_name, direction, visited, depth):
 		LOT_DOCTYPE,
 		lot_name,
 		[
-			"name", "finished_item", "finished_item_name", "operation", "planning_category",
+			"name", "finished_item", "finished_item_name", "operation", "planning_category", "plan_entry", "input_production_lot",
 			"production_job", "workstation", "employee", "actual_start", "actual_end",
-			"input_quantity", "produced_quantity", "quantity_uom", "good_quantity",
+			"input_quantity", "planned_quantity", "actual_output_quantity", "produced_quantity", "quantity_uom", "good_quantity",
 			"rejected_quantity", "rework_quantity", "usable_scrap", "unusable_scrap",
 			"quality_inspection", "stock_entry", "status",
 		],
@@ -784,9 +881,33 @@ def build_lot_genealogy_node(lot_name, direction, visited, depth):
 				related_lots.append(movement.destination_production_lot)
 			if movement.destination_stock_batch:
 				stock_batches.append(movement.destination_stock_batch)
+	if lot and direction == "Backward":
+		previous = _recorded_trace_input(lot)
+		if previous:
+			if previous != lot.input_production_lot:
+				related_lots = [name for name in related_lots if name != lot.input_production_lot]
+			related_lots.append(previous)
+	elif lot and direction == "Forward":
+		entries = frappe.get_all("SmartEdge Production Plan Entry", filters={"released_from_production_job": lot.production_job}, pluck="name")
+		if entries:
+			related_lots.extend(frappe.get_all(LOT_DOCTYPE, filters={"plan_entry": ["in", entries]}, pluck="name"))
+		kept = []
+		for name in dict.fromkeys(related_lots):
+			child = frappe.db.get_value(LOT_DOCTYPE, name, ["plan_entry", "input_production_lot"], as_dict=True) or {}
+			previous = _recorded_trace_input(child)
+			if child.get("input_production_lot") != lot_name or not previous or previous == lot_name:
+				kept.append(name)
+		related_lots = kept
+	from smart_edge_custom.manufacturing.batch_genealogy import get_genealogy, safe_link
+
+	physical_history = [
+		get_genealogy(batch, direction=direction, include_operation_lots=False)["root"]
+		for batch in dict.fromkeys(stock_batches) if safe_link("Batch", batch)
+	]
 	return {
 		**dict(lot or {}),
 		"production_lot": lot_name,
+		"stock_batch_genealogy": physical_history,
 		"traceability_type": "SmartEdge Production Lot (non-stock)",
 		"available_quantity": flt(balances.get("available")),
 		"remaining_quantity": flt((balances.get("stages") or {}).get(lot.operation if lot else None)),
@@ -801,13 +922,16 @@ def build_lot_genealogy_node(lot_name, direction, visited, depth):
 
 
 @frappe.whitelist()
-def backfill_completed_job(production_job):
+def backfill_completed_job(production_job, dry_run=False):
+	"""Explicit, reviewable repair; historical QC adds metadata, never WIP or stock."""
+	frappe.only_for(("System Manager", "Manufacturing Manager"))
 	job = frappe.get_doc("SmartEdge Production Job", production_job)
 	job.check_permission("write")
-	frappe.db.sql(
-		"select name from `tabSmartEdge Production Job` where name=%s for update",
-		(production_job,),
-	)
+	if not cint(dry_run):
+		frappe.db.sql(
+			"select name from `tabSmartEdge Production Job` where name=%s for update",
+			(production_job,),
+		)
 	job.reload()
 	missing = [
 		label
@@ -821,10 +945,78 @@ def backfill_completed_job(production_job):
 	]
 	if job.status != "Completed":
 		frappe.throw(_("Only completed Production Jobs can be backfilled."))
-	if not (flt(job.good_qty) or flt(job.actual_qty_meter)):
+	if flt(job.actual_qty_meter) <= 0 or (flt(job.good_qty) or flt(job.actual_qty_meter)) <= 0:
 		missing.append(_("Actual Good Output"))
 	if missing:
 		frappe.throw(_("Cannot backfill Production Lot; missing: {0}.").format(", ".join(missing)))
-	result = record_completed_job(job)
-	result["production_job"] = job.name
-	return result
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
+	if entry.plan_type != "Final EB" or entry.operation != job.operation or entry.final_eb_bom_generator != job.final_eb_bom_generator:
+		frappe.throw(_("Backfill requires a matching Finished Goods plan and completed operation."))
+	if get_datetime(job.actual_end) < get_datetime(job.actual_start) or flt(entry.production_quantity) <= 0 or cint(entry.sequence) <= 0:
+		frappe.throw(_("Backfill requires valid recorded completion times, planned quantity, and operation sequence."))
+	operation = frappe.db.get_value("Final EB BOM Operation", entry.operation_row,
+		["parent", "operation", "sequence"], as_dict=True) if entry.operation_row else None
+	if not operation or operation.parent != job.final_eb_bom_generator or operation.operation != job.operation or cint(operation.sequence) != cint(entry.sequence):
+		frappe.throw(_("Backfill operation must match the saved Finished Goods operation and sequence."))
+	production = frappe.db.get_value("Final EB BOM Generator", job.final_eb_bom_generator,
+		["finished_item", "stock_uom"], as_dict=True)
+	if not production or not production.finished_item or not frappe.db.exists("Item", production.finished_item):
+		frappe.throw(_("A valid Finished Goods Item is required for backfill."))
+	existing = frappe.db.get_value(LOT_DOCTYPE, {"production_job": job.name}, "name", for_update=not cint(dry_run))
+	input_lot = job.get("input_production_lot")
+	historical_qc = bool(is_qc_operation(entry) and input_lot and job.output_production_lot == input_lot)
+	if historical_qc and not existing:
+		source = frappe.db.get_value(LOT_DOCTYPE, input_lot, ["finished_item", "production_job"], as_dict=True)
+		evidence = frappe.db.get_value(LEDGER_DOCTYPE, {
+			"production_job": job.name, "movement_type": "QC Release", "status": ACTIVE,
+			"source_production_lot": input_lot, "destination_plan_entry": job.released_to_plan_entry,
+		}, ["name", "quantity"], as_dict=True)
+		if (not source or source.finished_item != production.finished_item
+			or source.production_job != entry.get("released_from_production_job")
+			or not evidence or flt(evidence.quantity) <= 0
+			or abs(flt(evidence.quantity) - flt(job.released_qty_meter)) > 0.000001):
+			frappe.throw(_("Historical QC backfill requires matching recorded predecessor and QC release evidence."))
+	preview = {"production_job": job.name, "finished_item": production.finished_item,
+		"operation": job.operation, "sequence": entry.sequence,
+		"production_lot": existing or get_operation_lot_name(get_operation_lot_prefix(entry), job.name, entry.sequence),
+		"action": "Reuse" if existing else ("Create historical QC trace record" if historical_qc else "Backfill operation lot"),
+		"planned_quantity": entry.production_quantity, "actual_output_quantity": job.actual_qty_meter,
+		"actual_end": job.actual_end, "previous_operation_lot": input_lot}
+	if cint(dry_run) or existing:
+		return preview
+	savepoint = "lot_backfill_" + frappe.generate_hash(length=10)
+	frappe.db.savepoint(savepoint)
+	try:
+		if historical_qc:
+			# Its output was already released/consumed using the old shared lot.
+			# Preserve every execution pointer, ledger balance and stock document.
+			lot = _create_completed_operation_lot(job, entry, production, input_lot)
+			preview["production_lot"] = lot.name
+		else:
+			preview.update(record_completed_job(job))
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	frappe.db.release_savepoint(savepoint)
+	return preview
+
+
+def get_input_material_batch_details(nodes):
+	"""Display actual prepared-material consumption evidenced by submitted stock movements."""
+	from smart_edge_custom.manufacturing.batch_genealogy import safe_link
+
+	result = {}
+	for node in nodes:
+		for movement in node.get("movements") or []:
+			batch = movement.get("source_stock_batch")
+			if not batch or not safe_link("Batch", batch):
+				continue
+			item = frappe.db.get_value("Batch", batch, "item")
+			details = frappe.db.get_value("Item", item, ["item_name", "item_group"], as_dict=True) or {}
+			if details.get("item_group") in {"Compounds", "Base Colour"}:
+				key = (movement.get("reference_name"), batch)
+				result[key] = {"stock_entry": movement.get("reference_name"), "batch_no": batch, "item_code": item, "item_name": details.get("item_name"),
+					"item_group": details.get("item_group"), "quantity": movement.get("quantity"), "uom": movement.get("uom")}
+		for row in get_input_material_batch_details(node.get("children") or []):
+			result[(row.get("stock_entry"), row["batch_no"])] = row
+	return list(result.values())

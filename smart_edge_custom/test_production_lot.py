@@ -7,6 +7,7 @@ from smart_edge_custom.manufacturing.production_lot import (
 	calculate_lot_balances,
 	get_operation_lot_mode,
 	get_operation_lot_prefix,
+	get_operation_lot_name,
 	get_final_stock_lot_names,
 	make_movement_key,
 )
@@ -20,19 +21,30 @@ class TestProductionLot(unittest.TestCase):
 			(frappe._dict(operation="Offline Printing", planning_category="Printing"), "OFP"),
 			(frappe._dict(operation="Slitting", planning_category="Slitting"), "SLT"),
 			(frappe._dict(operation="Packing", planning_category="Packing"), "PCK"),
+			(frappe._dict(operation="QC After Extrusion", planning_category="Extrusion"), "QC"),
 		)
 		for entry, expected in cases:
 			with self.subTest(operation=entry.operation):
 				self.assertEqual(get_operation_lot_prefix(entry), expected)
 
-	def test_qc_preserves_incoming_lot(self):
+	def test_fg_qc_has_its_own_operation_lot_without_a_bom_reference(self):
 		entry = frappe._dict(
 			plan_type="Final EB",
 			operation="QC After Extrusion",
 			planning_category="QC",
 			operation_row=None,
 		)
-		self.assertEqual(get_operation_lot_mode(entry), "Preserve Incoming Lot")
+		self.assertEqual(get_operation_lot_mode(entry), "New Production Lot")
+
+	def test_operation_id_uses_actual_job_and_sequence_and_handles_long_names(self):
+		self.assertEqual(get_operation_lot_name("EXT", "SE-JOB-2026-00034", 1), "EXT-SE-JOB-2026-00034-01")
+		self.assertNotEqual(get_operation_lot_name("EXT", "JOB-1", 1), get_operation_lot_name("EXT", "JOB-2", 1))
+		self.assertNotEqual(get_operation_lot_name("EXT", "JOB-1", 1), get_operation_lot_name("EXT", "JOB-1", 2))
+		long_job = "J" * 140
+		first = get_operation_lot_name("EXT", long_job, 1)
+		self.assertEqual(len(first), 140)
+		self.assertEqual(first, get_operation_lot_name("EXT", long_job, 1))
+		self.assertNotEqual(first, get_operation_lot_name("EXT", long_job + "2", 1))
 
 	def test_required_material_keeps_stock_batch_mode(self):
 		entry = frappe._dict(plan_type="Required Material", operation="MIXING")

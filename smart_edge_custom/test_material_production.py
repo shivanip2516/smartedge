@@ -13,6 +13,7 @@ from smart_edge_custom.manufacturing.material_production import (
 	get_material_workflow_status,
 	get_material_workstation_context,
 	get_raw_material_availability,
+	validate_raw_material_availability,
 	has_final_eb_planning_entries,
 	get_linked_material_plans,
 	get_material_status,
@@ -46,8 +47,8 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 				"finished_item": "SE-201",
 				"final_manufacturing_stock_entry": "MAT-STE-00061",
 				"final_stock_posted_qty": 9036,
-				"compound": "M3-M6",
-				"base_colour": "Pumic Grey",
+				"compound_item": "M3-M6",
+				"base_colour_item": "Pumic Grey",
 				"compound_consumption_batches": 2,
 				"shade_consumption_batches": 1,
 			}
@@ -71,8 +72,8 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 				"finished_item": "SE-201",
 				"final_manufacturing_stock_entry": "MAT-STE-CANCELLED",
 				"final_stock_posted_qty": 9036,
-				"compound": "M3-M6",
-				"base_colour": "Pumic Grey",
+				"compound_item": "M3-M6",
+				"base_colour_item": "Pumic Grey",
 				"compound_consumption_batches": 2,
 				"shade_consumption_batches": 1,
 			}
@@ -87,8 +88,8 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 	def test_material_workflow_status_tracks_internal_plan_and_release(self):
 		doc = frappe._dict(
 			{
-				"compound": "TEST-COMPOUND",
-				"base_colour": "TEST-SHADE",
+				"compound_item": "TEST-COMPOUND",
+				"base_colour_item": "TEST-SHADE",
 				"compound_consumption_batches": 14,
 				"shade_consumption_batches": 5,
 			}
@@ -126,14 +127,14 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 			{
 				"finished_item": "TEST-FINISHED-ITEM",
 				"custom_base_colour": None,
-				"base_colour": None,
+				"base_colour_item": None,
 			}
 		)
 
 		apply_item_configuration_defaults(doc)
 
 		self.assertEqual(doc.custom_base_colour, "American Walnut")
-		self.assertIsNone(doc.base_colour)
+		self.assertIsNone(doc.base_colour_item)
 
 	@patch(
 		"smart_edge_custom.manufacturing.material_production.now_datetime",
@@ -273,8 +274,8 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 			{
 				"name": "FEBG-INCOMPLETE",
 				"source_warehouse": None,
-				"compound": None,
-				"base_colour": None,
+				"compound_item": None,
+				"base_colour_item": None,
 				"compound_consumption_batches": 0,
 				"shade_consumption_batches": 0,
 			}
@@ -509,3 +510,86 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 		entry.db_set.assert_called_once_with(
 			"material_transfer_stock_entry", "STE-TRANSFER-1", update_modified=False
 		)
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_raw_material_availability")
+	def test_unavailable_stock_responses_cannot_pass_without_shortages(self, get_stock):
+		for material_type in ("Compound", "Base Colour"):
+			for materials, message in (
+				([], "No active submitted BOM"),
+				([], "No transferable Pigment raw materials"),
+				([{"shortage_qty": 0}], "Item is not batch-controlled"),
+			):
+				with self.subTest(material=material_type, message=message):
+					get_stock.return_value = {"available": 0, "materials": materials, "message": message}
+					with self.assertRaisesRegex(frappe.ValidationError, message):
+						validate_raw_material_availability(frappe._dict(), {"material_type": material_type}, "Stores - SE")
+		get_stock.return_value = {"available": 0, "materials": []}
+		with self.assertRaisesRegex(frappe.ValidationError, "could not be confirmed"):
+			validate_raw_material_availability(frappe._dict(), {"material_type": "Base Colour"}, "Stores - SE")
+		# Preserve the legitimate no-transfer requirement response.
+		get_stock.return_value = {"available": 1, "materials": []}
+		validate_raw_material_availability(frappe._dict(), {"material_type": "Compound"}, "Stores - SE")
+
+	@patch("smart_edge_custom.manufacturing.material_production.frappe.db.get_value")
+	@patch("smart_edge_custom.manufacturing.material_production.make_batch_work_order")
+	def test_sufficient_and_insufficient_stock_for_both_materials(self, make_work_order, get_value):
+		work_order = MagicMock()
+		make_work_order.return_value = work_order
+		for material_type, item, uom, quantity in (
+			("Compound", "ADDITIVE", "Kg", 9),
+			("Base Colour", "PIGMENT", "Gram", 900),
+		):
+			work_order.required_items = [frappe._dict(item_code=item, item_name=item, stock_uom=uom,
+				required_qty=quantity, include_item_in_manufacturing=1)]
+			requirement = {"material_type": material_type, "item_code": material_type + "-ITEM", "bom_no": "BOM-1", "batches_to_plan": 3}
+			for enough in (True, False):
+				with self.subTest(material=material_type, enough=enough):
+					def get_bin(doctype, *args, **kwargs):
+						if doctype == "Item":
+							return 1  # Existing batch-controlled Item configuration.
+						return frappe._dict(actual_qty=quantity + 2, reserved_qty_for_production=2 if enough else 3)
+					get_value.side_effect = get_bin
+					stock = get_raw_material_availability(frappe._dict(company="SmartEdge"), requirement, "Stores - SE")
+					self.assertEqual(stock["available"], int(enough))
+					self.assertEqual(stock["materials"][0]["uom"], uom)
+					self.assertEqual(stock["materials"][0]["shortage_qty"], 0 if enough else 1)
+					if enough:
+						validate_raw_material_availability(frappe._dict(company="SmartEdge"), requirement, "Stores - SE")
+					else:
+						with self.assertRaisesRegex(frappe.ValidationError, "Insufficient BOM raw materials"):
+							validate_raw_material_availability(frappe._dict(company="SmartEdge"), requirement, "Stores - SE")
+
+	def test_planning_uses_existing_creation_path_only_after_stock_validation(self):
+		from contextlib import ExitStack
+
+		for material_type in ("Compound", "Base Colour"):
+			for enough in (True, False):
+				with self.subTest(material=material_type, enough=enough), ExitStack() as stack:
+					stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.get_material_workstation_context", return_value={"workstations": ["Mixer"], "restricted": 0}))
+					stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.validate_material_workstation"))
+					stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.validate_warehouse"))
+					stack.enter_context(patch("smart_edge_custom.manufacturing.planning.validate_employee"))
+					stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.get_raw_material_availability", return_value={"available": int(enough), "materials": [], **({} if enough else {"message": "Stock check failed"})}))
+					make_work_order = stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.make_batch_work_order"))
+					make_entry = stack.enter_context(patch("smart_edge_custom.manufacturing.material_production.create_material_plan_entry"))
+					make_entry.return_value.name = "PLAN-1"
+					work_order = make_work_order.return_value
+					work_order.name = "WO-1"
+					doc = frappe._dict(name="FEBG-1", company="SmartEdge")
+					requirement = {"material_type": material_type, "item_code": material_type + "-ITEM", "bom_no": "BOM-1", "batches_to_plan": 3}
+					values = {"operation": "Mixing", "workstation": "Mixer", "employee": "EMP-1", "planned_start": "2026-10-30 10:00:00", "source_warehouse": "Stores", "wip_warehouse": "WIP", "target_warehouse": "Target"}
+					if enough:
+						result = create_material_plan(doc, requirement, values)
+						make_work_order.assert_called_once_with("BOM-1", requirement["item_code"], 3, "SmartEdge")
+						work_order.insert.assert_called_once()
+						work_order.submit.assert_called_once()
+						make_entry.assert_called_once()
+						self.assertEqual(result["plan_entry"], "PLAN-1")
+						self.assertEqual(work_order.source_warehouse, "Stores")
+						self.assertEqual(work_order.wip_warehouse, "WIP")
+						self.assertEqual(work_order.fg_warehouse, "Target")
+					else:
+						with self.assertRaisesRegex(frappe.ValidationError, "Stock check failed"):
+							create_material_plan(doc, requirement, values)
+						make_work_order.assert_not_called()
+						make_entry.assert_not_called()

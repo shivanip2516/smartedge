@@ -535,6 +535,13 @@
 	cursor: grabbing;
 }
 
+.smartedge-planning .se-operation-lot-id {
+	display: block;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	font-weight: 600;
+}
+
 .smartedge-planning .se-operation-title > span {
 	display: inline-flex;
 	align-items: center;

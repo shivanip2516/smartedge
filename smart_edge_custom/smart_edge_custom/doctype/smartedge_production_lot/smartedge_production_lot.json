@@ -8,8 +8,8 @@
   "identity_section", "naming_prefix", "finished_item", "finished_item_name", "status",
   "production_section", "final_eb_bom_generator", "plan_entry", "production_job", "operation", "operation_sequence", "planning_category",
   "execution_section", "workstation", "employee", "planned_date", "actual_start", "actual_end",
-  "quantity_section", "input_quantity", "produced_quantity", "quantity_uom", "produced_quantity_kg", "good_quantity", "rejected_quantity", "rework_quantity", "usable_scrap", "unusable_scrap",
-  "references_section", "input_production_lot", "work_order", "stock_entry", "quality_inspection", "is_stock_inventory_batch"
+  "quantity_section", "planned_quantity", "actual_output_quantity", "input_quantity", "produced_quantity", "quantity_uom", "produced_quantity_kg", "good_quantity", "rejected_quantity", "rework_quantity", "usable_scrap", "unusable_scrap",
+  "references_section", "input_production_lot", "work_order", "stock_entry", "quality_inspection", "traceability_details", "is_stock_inventory_batch"
  ],
  "fields": [
   {"fieldname":"identity_section","fieldtype":"Section Break","label":"Production Lot Identity"},
@@ -31,6 +31,8 @@
   {"fieldname":"actual_start","fieldtype":"Datetime","label":"Actual Start","read_only":1},
   {"fieldname":"actual_end","fieldtype":"Datetime","label":"Actual Completion","read_only":1},
   {"fieldname":"quantity_section","fieldtype":"Section Break","label":"Output and Quality"},
+  {"fieldname":"planned_quantity","fieldtype":"Float","label":"Planned Quantity","precision":"6","read_only":1},
+  {"fieldname":"actual_output_quantity","fieldtype":"Float","label":"Actual Output Quantity","precision":"6","read_only":1},
   {"fieldname":"input_quantity","fieldtype":"Float","label":"Input Quantity","precision":"6","read_only":1},
   {"fieldname":"produced_quantity","fieldtype":"Float","label":"Produced Quantity","precision":"6","read_only":1,"reqd":1,"in_list_view":1},
   {"fieldname":"quantity_uom","fieldtype":"Link","label":"UOM","options":"UOM","read_only":1,"reqd":1},
@@ -45,6 +47,7 @@
   {"fieldname":"work_order","fieldtype":"Link","label":"Work Order","options":"Work Order","read_only":1},
   {"fieldname":"stock_entry","fieldtype":"Link","label":"Related Stock Entry","options":"Stock Entry","read_only":1},
   {"fieldname":"quality_inspection","fieldtype":"Link","label":"Quality Inspection","options":"Quality Inspection","read_only":1},
+  {"fieldname":"traceability_details","fieldtype":"HTML","label":"Input Material Batches"},
   {"default":"0","fieldname":"is_stock_inventory_batch","fieldtype":"Check","label":"ERPNext Stock Inventory Batch","read_only":1}
  ],
  "index_web_pages_for_search": 1,

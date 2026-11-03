@@ -56,7 +56,7 @@ class TestPlanningBoardGrouping(IntegrationTestCase):
 		self.assertEqual(get_planning_execution_key(rows[0]), ("Required Material", "WO-1"))
 		self.assertEqual(get_planning_execution_key(rows[1]), ("Required Material", "WO-2"))
 
-	def test_released_materials_join_finished_product_execution_in_required_order(self):
+	def test_material_processes_share_parent_card_without_changing_fg_sequences(self):
 		rows = [
 			self.make_material_row("PLAN-SHADE", "Base Colour", "WO-SHADE"),
 			self.make_row("PLAN-FINAL-1", "2026-10-01 09:00:02", 1),
@@ -67,12 +67,31 @@ class TestPlanningBoardGrouping(IntegrationTestCase):
 		assign_planning_execution_keys(rows)
 
 		self.assertEqual(len({row.execution_key for row in rows}), 1)
-		self.assertEqual(get_planning_execution_key(rows[0])[0], "Final EB")
+		self.assertEqual(get_planning_execution_key(rows[0]), get_planning_execution_key(rows[1]))
 		sequences = {row.name: row.board_sequence for row in rows}
 		self.assertEqual(sequences["PLAN-COMPOUND"], 1)
 		self.assertEqual(sequences["PLAN-SHADE"], 2)
 		self.assertEqual(sequences["PLAN-FINAL-1"], 3)
 		self.assertEqual(sequences["PLAN-FINAL-2"], 4)
+		self.assertEqual([row.sequence for row in rows if row.plan_type == "Final EB"], [1, 2])
+
+	def test_materials_attach_only_to_latest_execution_and_correct_parent(self):
+		rows = [
+			self.make_row("OLD-1", "2026-10-01 09:00:00", 1),
+			self.make_row("OLD-2", "2026-10-01 09:00:01", 2),
+			self.make_row("NEW-1", "2026-10-02 09:00:00", 1),
+			self.make_row("NEW-2", "2026-10-02 09:00:01", 2),
+			self.make_material_row("MAT-1", "Compound", "WO-1"),
+			self.make_material_row("MAT-2", "Base Colour", "WO-2"),
+		]
+		other = self.make_material_row("OTHER-MAT", "Compound", "WO-OTHER")
+		other.final_eb_bom_generator = "FEBG-OTHER"
+		rows.append(other)
+		assign_planning_execution_keys(rows)
+		self.assertNotEqual(rows[0].execution_key, rows[2].execution_key)
+		self.assertEqual(rows[4].execution_key, rows[2].execution_key)
+		self.assertEqual(rows[5].execution_key, rows[2].execution_key)
+		self.assertEqual(other.execution_key, "material:WO-OTHER")
 
 	def test_linked_material_is_hidden_until_finished_product_release(self):
 		material = self.make_material_row("PLAN-COMPOUND", "Compound", "WO-COMPOUND")

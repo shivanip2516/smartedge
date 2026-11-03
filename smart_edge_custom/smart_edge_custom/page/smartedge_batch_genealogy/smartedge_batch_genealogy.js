@@ -139,14 +139,15 @@ class SmartEdgeBatchGenealogy {
 					<div><label>${__("Source")}</label><span>${row.source_production_lot ? this.link("SmartEdge Production Lot", row.source_production_lot, row.source_production_lot) : (row.source_stock_batch ? this.link("Batch", row.source_stock_batch, row.source_stock_batch) : __("Production output"))}</span></div>
 					<div><label>${__("Destination")}</label><span>${row.destination_production_lot ? this.link("SmartEdge Production Lot", row.destination_production_lot, row.destination_production_lot) : (row.destination_stock_batch ? this.link("Batch", row.destination_stock_batch, row.destination_stock_batch) : __("Finished Goods"))}</span></div>
 					<div><label>${__("Actual Quantity")}</label><span>${this.number(row.quantity)} ${this.escape(row.uom || "")}${row.quantity_kg ? ` / ${this.number(row.quantity_kg)} Kg` : ""}</span></div>
+					${row.remarks ? `<div><label>${__("Evidence")}</label><span>${this.escape(row.remarks)}</span></div>` : ""}
 				</div>
 			</div>`).join("");
 		const batches = (node.stock_batches || []).map((name) => this.link("Batch", name, name)).join(", ") || __("None recorded");
 		return `
 			<details class="se-batch-node" ${depth < 2 ? "open" : ""}>
-				<summary><span class="se-node-marker"></span><span class="se-node-title">${this.link("SmartEdge Production Lot", node.production_lot, node.production_lot)}</span><span class="se-node-item">${this.link("Item", node.finished_item, node.finished_item)}</span>${node.cycle ? `<span class="se-genealogy-flag">${__("Cycle protected")}</span>` : ""}</summary>
-				<div class="se-batch-meta"><strong>${__("SmartEdge Production Lot — non-stock traceability")}</strong> · ${__("Operation")}: ${this.escape(node.operation || "")} · ${__("Produced")}: ${this.number(node.produced_quantity)} ${this.escape(node.quantity_uom || "")} · ${__("Available")}: ${this.number(node.available_quantity)} · ${__("Transferred")}: ${this.number(node.transferred_quantity)} · ${__("Remaining at stage")}: ${this.number(node.remaining_quantity)} · ${__("ERPNext input batches")}: ${batches}</div>
-				<div class="se-event-list">${movement_rows || `<div class="se-genealogy-leaf">${__("No movements recorded")}</div>`}<div class="se-event-children">${(node.children || []).map((child) => this.render_lot(child, depth + 1)).join("")}</div></div>
+				<summary><span class="se-node-marker"></span><span class="se-node-title">${this.link("SmartEdge Production Lot", node.production_lot, node.production_lot)}</span><span class="se-node-item">${this.link("Item", node.finished_item, node.finished_item_name || node.finished_item)}</span>${node.cycle ? `<span class="se-genealogy-flag">${__("Cycle protected")}</span>` : ""}</summary>
+				<div class="se-batch-meta"><strong>${__("SmartEdge Production Lot — non-stock traceability")}</strong> · ${__("Operation")}: ${this.escape(node.operation || "")} · ${__("Planned")}: ${this.number(node.planned_quantity)} · ${__("Actual Output")}: ${this.number(node.actual_output_quantity)} · ${__("Produced")}: ${this.number(node.produced_quantity)} ${this.escape(node.quantity_uom || "")} · ${__("Available")}: ${this.number(node.available_quantity)} · ${__("Transferred")}: ${this.number(node.transferred_quantity)} · ${__("Remaining at stage")}: ${this.number(node.remaining_quantity)} · ${__("ERPNext input batches")}: ${batches}</div>
+				<div class="se-event-list">${movement_rows || `<div class="se-genealogy-leaf">${__("No movements recorded")}</div>`}<div class="se-event-children">${(node.children || []).map((child) => this.render_lot(child, depth + 1)).join("")}${(node.stock_batch_genealogy || []).map((batch) => this.render_batch(batch, depth + 1)).join("")}</div></div>
 			</details>`;
 	}
 
@@ -202,12 +203,29 @@ class SmartEdgeBatchGenealogy {
 				<span>${__("{0} batches", [result.batch_count || 1])}</span>
 			</div>
 			${warning}
+			${result.operation_batch_trace?.root ? `<div class="se-genealogy-summary"><strong>${__("Verified operation Batch chain")}</strong><span>${__("Recorded operation handoffs and submitted stock evidence")}</span></div><div class="se-genealogy-tree">${this.render_operation_batch(result.operation_batch_trace.root, 0)}</div>` : ""}
 			<div class="se-genealogy-tree">${this.render_batch(result.root, 0)}</div>
-			${(result.production_lot_roots || []).length ? `
-				<div class="se-genealogy-summary"><strong>${__("Downstream operation lots")}</strong><span>${__("{0} SmartEdge production lots (non-stock)", [result.production_lot_count || result.production_lot_roots.length])}</span></div>
+			${!result.operation_batch_trace?.root && (result.production_lot_roots || []).length ? `
+				<div class="se-genealogy-summary"><strong>${__("Operation batches (non-stock)")}</strong><span>${__("{0} SmartEdge production lots (non-stock)", [result.production_lot_count || result.production_lot_roots.length])}</span></div>
 				<div class="se-genealogy-tree">${result.production_lot_roots.map((node) => `<div class="se-batch-meta">${__("Linked from ERPNext batch")}: ${this.link("Batch", node.attached_to_batch, node.attached_to_batch)}</div>${this.render_lot(node, 0)}`).join("")}</div>
 			` : ""}
 		`);
+	}
+
+	render_operation_batch(node, depth) {
+		const via = node.via;
+		const input_materials = (node.input_materials || []).map((row) => `${this.escape(row.quantity_type)}: ${this.escape(row.item_name || row.item_code)}${row.batch_no ? ` (${this.link("Batch", row.batch_no, row.batch_no)})` : ""} — ${this.number(row.quantity)} ${this.escape(row.uom || "")} · ${this.escape(row.consumption_status || "")}`).join("<br>");
+		return `<details class="se-batch-node" ${depth < 3 ? "open" : ""}>
+			<summary>${this.link("Batch", node.batch_no, node.batch_no)} · ${this.escape(node.item_name || node.item_code)} · ${this.escape(node.operation || "")}</summary>
+			<div class="se-batch-meta">${this.escape(node.batch_purpose)} · ${this.escape(node.operation_status || "")} · ${__("Physical stock")}: ${this.number(node.batch_quantity)} ${this.escape(node.stock_uom || "")}
+			${node.operation_output_quantity != null ? ` · ${__("Operation output")}: ${this.number(node.operation_output_quantity)} ${this.escape(node.operation_output_uom)}` : ""}
+			${input_materials ? `<div><strong>${__("Input Material Summary")}</strong><br>${input_materials}</div>` : ""}
+			${node.production_job ? ` · ${this.link("SmartEdge Production Job", node.production_job, node.production_job)}` : ""}
+			${node.completed_at ? ` · ${this.escape(node.completed_at)}` : ""}
+			${via ? `<p>${this.link("Batch", via.source, via.source)} → ${this.link("Batch", via.target, via.target)} · ${this.escape(__(via.quantity_type || via.basis))}: ${this.number(via.quantity)} ${this.escape(via.uom)} · ${__("Operation output")}: ${this.number(via.operation_output_quantity)} ${this.escape(via.operation_output_uom)} · ${via.source_document_type === "Stock Entry" && via.source_document_id ? this.link("Stock Entry", via.source_document_id, via.source_document_id) : this.escape(`${via.source_document_type || ""} ${via.source_document_id || ""}`)}${via.source_row_reference ? ` · ${this.escape(via.source_row_reference)}` : ""}${via.source_warehouse ? ` · ${this.escape(via.source_warehouse)}` : ""}</p>` : ""}
+			${node.cycle || node.truncated ? `<span>${__("Traversal limit reached")}</span>` : ""}</div>
+			${(node.children || []).map((child) => this.render_operation_batch(child, depth + 1)).join("")}
+		</details>`;
 	}
 
 	render_batch(node, depth) {

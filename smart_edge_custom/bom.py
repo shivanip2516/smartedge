@@ -1,184 +1,120 @@
+from decimal import Decimal
+
 import frappe
 from frappe import _
-from frappe.query_builder import Field
-from frappe.query_builder.functions import IfNull
-from frappe.utils import parse_json, today
+from frappe.utils import cint, flt, parse_json
 
-from smart_edge_custom.manufacturing.batch_manufacturing import get_item_batch_details
+from smart_edge_custom.base_colour import get_conversion_factor
+
+from smart_edge_custom.manufacturing.batch_manufacturing import (
+	get_item_batch_details,
+)
+from smart_edge_custom.manufacturing.batch_manufacturing import (
+	validate_bom as validate_legacy_batch_bom,
+)
 
 
-COMPOUND_ITEM_GROUP = "Compounds"
-BASE_COLOUR_ITEM_GROUP = "Base Colour"
-PROCESS_ITEM_GROUPS = {
-	"Extrusion": ["Compounds", "Pigments"],
-	"Extrusion Online Printing": ["Compounds", "Pigments"],
-	"Offline Printing": ["Base Colour"],
+COMPONENT_ITEM_GROUPS = {
+	"Compounds": "Additives",
+	"Base Colour": "Pigments",
 }
+
+
+def get_allowed_component_group(item_code):
+	if not item_code:
+		return None
+	return COMPONENT_ITEM_GROUPS.get(frappe.db.get_value("Item", item_code, "item_group"))
 
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_process_items(doctype, txt, searchfield, start, page_len, filters):
+def get_bom_items(doctype, txt, searchfield, start, page_len, filters):
+	from erpnext.manufacturing.doctype.bom.bom import item_query
+
 	filters = frappe._dict(parse_json(filters) or {})
-	process = filters.get("process")
-	allowed_item_groups = PROCESS_ITEM_GROUPS.get(process)
+	allowed_group = get_allowed_component_group(filters.get("parent_item"))
+	query_filters = {"include_item_in_manufacturing": 1, "is_fixed_asset": 0}
+	if allowed_group:
+		# Equality deliberately excludes descendant Item Groups.
+		query_filters["item_group"] = allowed_group
+	return item_query(doctype, txt, searchfield, start, page_len, query_filters)
 
-	if not allowed_item_groups:
-		from erpnext.manufacturing.doctype.bom.bom import item_query
 
-		return item_query(
-			doctype,
-			txt,
-			searchfield,
-			start,
-			page_len,
-			{
-				"include_item_in_manufacturing": 1,
-				"is_fixed_asset": 0,
-			},
-		)
+def validate_bom(doc, method=None):
+	allowed_group = get_allowed_component_group(doc.item)
+	if not allowed_group:
+		validate_legacy_batch_bom(doc, method)
+		return
 
-	meta = frappe.get_meta("Item", cached=True)
-	searchfields = meta.get_search_fields()
-
-	order_by = "idx desc, name, item_name"
-	fields = ["name", "item_name", "item_group", "description"]
-	fields.extend([field for field in searchfields if field not in ["name", "item_group", "description"]])
-
-	if not searchfields:
-		searchfields = ["name"]
-
-	query_filters = [
-		["disabled", "=", 0],
-		[IfNull(Field("end_of_life"), "3099-12-31"), ">", today()],
-		["include_item_in_manufacturing", "=", 1],
-		["is_fixed_asset", "=", 0],
-		["item_group", "in", allowed_item_groups],
+	item_codes = {row.item_code for row in doc.get("items", []) if row.item_code}
+	groups = {}
+	if item_codes:
+		groups = dict(frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(item_codes)]},
+			fields=["name", "item_group"],
+			as_list=True,
+		))
+	invalid = [
+		_("Row {0}: {1}").format(row.idx, row.item_code)
+		for row in doc.get("items", [])
+		if row.item_code and groups.get(row.item_code) != allowed_group
 	]
-
-	or_cond_filters = {}
-	if txt:
-		for fieldname in searchfields:
-			or_cond_filters[fieldname] = ("like", f"%{txt}%")
-
-		barcodes = frappe.get_all(
-			"Item Barcode",
-			fields=["parent as item_code"],
-			filters={"barcode": ("like", f"%{txt}%")},
-			distinct=True,
+	if invalid:
+		frappe.throw(
+			_("BOM for Item {0} allows only components in Item Group {1}. Invalid items: {2}").format(
+				doc.item, allowed_group, "; ".join(invalid)
+			)
 		)
 
-		barcodes = [row.item_code for row in barcodes]
-		if barcodes:
-			or_cond_filters["name"] = ("in", barcodes)
-
-	if filters.get("item_code"):
-		has_variants = frappe.get_cached_value("Item", filters.get("item_code"), "has_variants")
-		if not has_variants:
-			query_filters.append(["has_variants", "=", 0])
-
-	return frappe.get_list(
-		"Item",
-		fields=fields,
-		filters=query_filters,
-		or_filters=or_cond_filters,
-		order_by=order_by,
-		limit_start=start,
-		limit_page_length=page_len,
-		as_list=1,
-	)
-
-
-@frappe.whitelist()
-def get_compound_recipe(item_code):
-	if not item_code:
-		return {"is_compound": False, "rows": [], **get_item_batch_details(item_code)}
-
-	item_group = frappe.db.get_value("Item", item_code, "item_group")
-	if item_group != COMPOUND_ITEM_GROUP:
-		return {"is_compound": False, "rows": [], **get_item_batch_details(item_code)}
-
-	compound = frappe.db.get_value("Compound", {"compound_name": item_code}, "name")
-	if not compound:
-		return {
-			"is_compound": True,
-			"recipe_found": False,
-			"rows": [],
-			**get_item_batch_details(item_code),
-		}
-
-	rows = []
-	for row in frappe.get_all(
-		"Compound Additive",
-		filters={"parent": compound, "parenttype": "Compound"},
-		fields=["additive", "quantity_kg", "uom"],
-		order_by="idx asc",
-	):
-		if not row.additive or not frappe.db.exists("Item", row.additive):
-			frappe.throw(_("Invalid Additive Item in Compound recipe: {0}").format(row.additive or ""))
-
-		rows.append(
-			{
-				"item_code": row.additive,
-				"qty": row.quantity_kg,
-				"uom": row.uom or frappe.db.get_value("Item", row.additive, "stock_uom"),
-			}
-		)
-
-	return {
-		"is_compound": True,
-		"recipe_found": True,
-		"compound": compound,
-		"rows": rows,
-		**get_item_batch_details(item_code),
-	}
-
-
-@frappe.whitelist()
-def get_base_colour_recipe(item_code):
-	if not item_code:
-		return {"is_base_colour": False, "rows": [], **get_item_batch_details(item_code)}
-
-	item_group = frappe.db.get_value("Item", item_code, "item_group")
-	if item_group != BASE_COLOUR_ITEM_GROUP:
-		return {"is_base_colour": False, "rows": [], **get_item_batch_details(item_code)}
-
-	base_colour = frappe.db.get_value("Base Colour", {"colour_name": item_code}, "name")
-	if not base_colour:
-		return {
-			"is_base_colour": True,
-			"recipe_found": False,
-			"rows": [],
-			**get_item_batch_details(item_code),
-		}
-
-	rows = []
-	for row in frappe.get_all(
-		"Base Colour Pigment",
-		filters={"parent": base_colour, "parenttype": "Base Colour"},
-		fields=["pigment_item", "quantity_kg", "uom"],
-		order_by="idx asc",
-	):
-		if not row.pigment_item or not frappe.db.exists("Item", row.pigment_item):
-			frappe.throw(_("Invalid Pigment Item in Base Colour recipe: {0}").format(row.pigment_item or ""))
-
-		rows.append(
-			{
-				"item_code": row.pigment_item,
-				"qty": row.quantity_kg,
-				"uom": row.uom or frappe.db.get_value("Item", row.pigment_item, "stock_uom"),
-			}
-		)
-
-	return {
-		"is_base_colour": True,
-		"recipe_found": True,
-		"base_colour": base_colour,
-		"rows": rows,
-		**get_item_batch_details(item_code),
-	}
+	# Keep the one-batch validation independent of legacy recipe masters.
+	details = get_bom_batch_details(doc.item)
+	if details["is_batch_manufacturing_item"] and cint(doc.get("custom_batch")) != 1:
+		frappe.throw(_("Batch must be 1 for a batch-controlled Compound or Base Colour BOM."))
 
 
 @frappe.whitelist()
 def get_bom_batch_details(item_code):
-	return get_item_batch_details(item_code)
+	if not get_allowed_component_group(item_code):
+		return get_item_batch_details(item_code)
+
+	item = frappe.db.get_value("Item", item_code, ["has_batch_no", "stock_uom"], as_dict=True)
+	return {
+		"has_batch_no": bool(item.has_batch_no),
+		"is_batch_manufacturing_item": bool(item.has_batch_no),
+		"output_qty": 0,
+		"stock_uom": item.stock_uom,
+	}
+
+
+@frappe.whitelist()
+def get_bom_quantity(item_code, items=None):
+	"""Total recipe rows in the output Item's stock UOM, using existing conversions."""
+	if not get_allowed_component_group(item_code):
+		return None
+
+	output_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+	total = Decimal("0")
+	for row in parse_json(items) or []:
+		if not row.get("item_code") or not row.get("qty"):
+			continue
+		stock_uom = frappe.db.get_value("Item", row["item_code"], "stock_uom")
+		row_uom = row.get("uom") or stock_uom
+		# BOM's row factor converts its transaction UOM to its Item stock UOM.
+		# The existing recipe conversion then converts stock UOM to output UOM.
+		row_factor = row.get("conversion_factor") if row_uom != stock_uom else 1
+		if not row_factor:
+			row_factor = get_conversion_factor(row_uom, stock_uom)
+		total += (
+			Decimal(str(flt(row.get("qty"))))
+			* Decimal(str(row_factor))
+			* Decimal(str(get_conversion_factor(stock_uom, output_uom)))
+		)
+	return flt(total, frappe.get_precision("BOM", "quantity"))
+
+
+def set_recipe_quantity(doc, method=None):
+	# Run before core BOM validation/costing, never as a submitted-document update.
+	total = get_bom_quantity(doc.item, [row.as_dict() for row in doc.get("items", [])])
+	if total is not None:
+		doc.quantity = flt(total, doc.precision("quantity"))

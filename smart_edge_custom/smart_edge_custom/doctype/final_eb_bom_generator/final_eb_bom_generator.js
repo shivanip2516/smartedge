@@ -8,6 +8,9 @@ frappe.ui.form.on("Final EB BOM Generator", {
 			},
 		}));
 
+		frm.set_query("compound_item", () => ({ filters: { item_group: "Compounds" } }));
+		frm.set_query("base_colour_item", () => ({ filters: { item_group: "Base Colour" } }));
+
 		frm.preview_debounced = frappe.utils.debounce(() => refresh_preview(frm), 450);
 	},
 
@@ -21,6 +24,7 @@ frappe.ui.form.on("Final EB BOM Generator", {
 	},
 
 	async finished_item(frm) {
+		await frm.set_value("finished_bom", null);
 		await fetch_finished_item_details(frm);
 		frm.preview_debounced();
 	},
@@ -44,16 +48,16 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		frm.preview_debounced();
 	},
 
-	compound(frm) {
-		frm.preview_debounced();
+	compound_item(frm) {
+		if (!frm.__applying_preview) frm.preview_debounced();
 	},
 
 	compound_consumption_batches(frm) {
 		frm.preview_debounced();
 	},
 
-	base_colour(frm) {
-		frm.preview_debounced();
+	base_colour_item(frm) {
+		if (!frm.__applying_preview) frm.preview_debounced();
 	},
 
 	shade_consumption_batches(frm) {
@@ -171,12 +175,11 @@ async function refresh_preview(frm, show_alert = false, refresh_batch_allocation
 
 function apply_preview(frm, preview) {
 	const scalar_fields = [
+		"finished_bom",
 		"production_quantity",
 		"weight_per_meter_gm",
 		"weight_per_meter_kg",
 		"total_eb_weight_kg",
-		"compound_item",
-		"base_colour_item",
 		"compound_consumption_per_meter",
 		"compound_total_required",
 		"compound_available_qty",
@@ -246,7 +249,7 @@ function show_status(frm) {
 }
 
 function get_material_workflow_status(frm) {
-	if (!frm.doc.compound || !frm.doc.base_colour || !cint(frm.doc.compound_consumption_batches) || !cint(frm.doc.shade_consumption_batches)) {
+	if (!frm.doc.compound_item || !frm.doc.base_colour_item || !cint(frm.doc.compound_consumption_batches) || !cint(frm.doc.shade_consumption_batches)) {
 		return __("Material Configuration Pending");
 	}
 	if ([frm.doc.compound_production_status, frm.doc.base_colour_production_status].some((status) =>
@@ -291,12 +294,10 @@ function render_configurator_summary(frm, route_summary = {}) {
 		{
 			title: __("Material Inputs"),
 			items: [
-				[__("Compound"), frm.doc.compound],
 				[__("Compound Item"), frm.doc.compound_item],
 				[__("Compound Batches"), format_number(frm.doc.compound_consumption_batches, 0)],
 				[__("Compound Required"), format_number(frm.doc.compound_total_required, 3)],
 				[__("Compound Available"), format_number(frm.doc.compound_available_qty, 3)],
-				[__("Shade"), frm.doc.base_colour],
 				[__("Shade Item"), frm.doc.base_colour_item],
 				[__("Shade Batches"), format_number(frm.doc.shade_consumption_batches, 0)],
 				[__("Shade Required"), format_number(frm.doc.shade_total_required, 3)],
@@ -719,21 +720,22 @@ async function open_material_planning_dialog(frm) {
 	const render_stock_status = (prefix, stock) => {
 		const state = material_states[prefix];
 		const wrapper = dialog.fields_dict[`${prefix}_raw_stock_status`].$wrapper;
-		if (stock.message) {
-			wrapper.html(`<div class="text-danger">${frappe.utils.escape_html(stock.message)}</div>`);
-			return;
-		}
 		const rows = (stock.materials || []).map((item) => `
 			<tr class="${flt(item.shortage_qty) > 0 ? "text-danger" : ""}">
 				<td>${frappe.utils.escape_html(item.item_name || item.item_code)}</td>
 				<td class="text-right">${flt(item.required_qty, 6)} ${frappe.utils.escape_html(item.uom || "")}</td>
 				<td class="text-right">${flt(item.available_qty, 6)} ${frappe.utils.escape_html(item.uom || "")}</td>
 			</tr>`).join("");
-		wrapper.html(rows
-			? `<div class="table-responsive"><table class="table table-bordered table-sm"><thead><tr><th>${__("Raw Material")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available after reservations")}</th></tr></thead><tbody>${rows}</tbody></table></div>
-				<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("Required BOM raw materials are available.") : __("Insufficient BOM raw materials. Production planning is disabled.")}</div>`
-			: `<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("No transferable raw materials are required by this BOM.") : __("Raw-material availability could not be confirmed.")}</div>`);
-		state.stock_available = Boolean(stock.available);
+		const table = rows
+			? `<div class="table-responsive"><table class="table table-bordered table-sm"><thead><tr><th>${__("Raw Material")}</th><th class="text-right">${__("Required")}</th><th class="text-right">${__("Available after reservations")}</th></tr></thead><tbody>${rows}</tbody></table></div>`
+			: "";
+		const status = stock.message
+			? `<div class="text-danger">${frappe.utils.escape_html(stock.message)}</div>`
+			: rows
+				? `<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("Required BOM raw materials are available.") : __("Insufficient BOM raw materials. Production planning is disabled.")}</div>`
+				: `<div class="${stock.available ? "text-success" : "text-danger"}">${stock.available ? __("No transferable raw materials are required by this BOM.") : __("Raw-material availability could not be confirmed.")}</div>`;
+		wrapper.html(table + status);
+		state.stock_available = Boolean(stock.available) && !stock.message;
 	};
 
 	const update_primary_state = () => {
@@ -754,21 +756,40 @@ async function open_material_planning_dialog(frm) {
 
 	const refresh_raw_stock = async (prefix) => {
 		const state = material_states[prefix];
+		const warehouse = dialog.get_value(`${prefix}_source`);
+		if (state.stock_loading && state.stock_warehouse === warehouse) return;
+		const request_id = (state.stock_request_id || 0) + 1;
+		state.stock_request_id = request_id;
+		state.stock_warehouse = warehouse;
+		state.stock_loading = true;
 		state.stock_checked = false;
 		state.stock_available = false;
 		update_primary_state();
-		dialog.fields_dict[`${prefix}_raw_stock_status`].$wrapper.html(`<div class="text-muted">${__("Checking raw-material stock...")}</div>`);
-		const response = await frappe.call({
-			method: "smart_edge_custom.manufacturing.material_production.get_material_raw_stock",
-			args: {
-				production: frm.doc.name,
-				material_type: state.row.material_type,
-				source_warehouse: dialog.get_value(`${prefix}_source`),
-			},
-		});
-		state.stock_checked = true;
-		render_stock_status(prefix, response.message || {});
-		update_primary_state();
+		const wrapper = dialog.fields_dict[`${prefix}_raw_stock_status`].$wrapper;
+		wrapper.html(`<div class="text-muted">${__("Checking raw-material stock...")}</div>`);
+		try {
+			const response = await frappe.call({
+				method: "smart_edge_custom.manufacturing.material_production.get_material_raw_stock",
+				args: {
+					production: frm.doc.name,
+					material_type: state.row.material_type,
+					source_warehouse: warehouse,
+				},
+			});
+			if (request_id !== state.stock_request_id) return;
+			state.stock_checked = true;
+			render_stock_status(prefix, response.message || {});
+		} catch (error) {
+			if (request_id !== state.stock_request_id) return;
+			render_stock_status(prefix, { available: 0, message: get_raw_stock_error_message(error) });
+			wrapper.append(`<button type="button" class="btn btn-xs btn-default retry-raw-stock">${__("Retry stock check")}</button>`);
+			wrapper.find(".retry-raw-stock").on("click", () => refresh_raw_stock(prefix));
+		} finally {
+			if (request_id === state.stock_request_id) {
+				state.stock_loading = false;
+				update_primary_state();
+			}
+		}
 	};
 
 	const refresh_workstations = async (prefix) => {
@@ -821,4 +842,18 @@ function get_insufficient_material_payload(error) {
 	} catch (e) {
 		return null;
 	}
+}
+
+
+function get_raw_stock_error_message(error) {
+	try {
+		const messages = JSON.parse(error?.responseJSON?._server_messages || error?._server_messages || "[]");
+		for (const value of messages) {
+			const entry = typeof value === "string" ? JSON.parse(value) : value;
+			if (typeof entry?.message === "string") return entry.message;
+		}
+	} catch (e) {
+		// A transport error may not contain Frappe's message envelope.
+	}
+	return error?.message || __("Raw-material stock could not be checked. Please retry.");
 }

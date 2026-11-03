@@ -50,7 +50,7 @@ def get_weekly_planning_board(
 	week_end = week_start + timedelta(days=6)
 	from smart_edge_custom.manufacturing.work_order_sync import reconcile_board_work_orders
 
-	reconcile_board_work_orders(week_start, week_end)
+	reconciled = reconcile_board_work_orders(week_start, week_end)
 	entries = get_plan_entries(
 		week_start,
 		week_end,
@@ -66,6 +66,7 @@ def get_weekly_planning_board(
 		search=search,
 	)
 	board = make_empty_board(week_start)
+	board["work_order_warnings"] = [result for result in (reconciled or []) if result.get("missing")]
 	board["all_operations"] = []
 
 	for row in entries:
@@ -201,9 +202,7 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 		if filters.get("search") and not matches_search(row, generator, filters["search"]):
 			continue
 		for key, value in generator.items():
-			if key not in {"name", "status"} and not (
-				row.get("plan_type") == "Required Material" and key == "production_quantity"
-			):
+			if key not in {"name", "status", "production_quantity"}:
 				row[key] = value
 		result.append(row)
 	attach_job_details(result)
@@ -320,6 +319,10 @@ def attach_work_order_progress(rows):
 	for row in rows:
 		work_order = by_name.get(row.get("work_order"))
 		if not work_order:
+			if row.get("work_order") and row.get("plan_type") == MATERIAL_PLAN_TYPE:
+				from smart_edge_custom.manufacturing.work_order_sync import missing_work_order_message
+				row.work_order_missing = True
+				row.work_order_warning = missing_work_order_message(row.work_order, row.name)
 			continue
 		verified_qty = min(flt(work_order.produced_qty), manufactured[work_order.name])
 		row.work_order_status = work_order.status
@@ -501,9 +504,9 @@ def get_generator_map(names):
 		"production_quantity",
 		"stock_uom",
 		"total_eb_weight_kg",
-		"compound",
+		"compound_item",
 		"compound_total_required",
-		"base_colour",
+		"base_colour_item",
 		"shade_total_required",
 		"printing_type",
 		"printing_route",
@@ -516,10 +519,11 @@ def get_generator_map(names):
 		"customer",
 		"required_delivery_date",
 	]
-	return {
-		row.name: row
-		for row in frappe.get_all("Final EB BOM Generator", filters={"name": ["in", names]}, fields=fields)
-	}
+	rows = frappe.get_all("Final EB BOM Generator", filters={"name": ["in", names]}, fields=fields)
+	item_names = dict(frappe.get_all("Item", filters={"name": ["in", list({row.finished_item for row in rows})]}, fields=["name", "item_name"], as_list=True)) if rows else {}
+	for row in rows:
+		row.finished_item_name = item_names.get(row.finished_item) or row.finished_item
+	return {row.name: row for row in rows}
 
 
 def matches_search(row, generator, search):
@@ -566,6 +570,8 @@ def make_operation_card(row):
 	display_workstation = get_card_workstation(row)
 	card = {
 		"id": row.name,
+		"plan_type": row.get("plan_type") or "Final EB",
+		"planned_quantity": flt(row.production_quantity),
 		"execution_key": row.get("execution_key"),
 		"production": row.final_eb_bom_generator,
 		"operation_row": row.operation_row,
@@ -595,8 +601,8 @@ def make_operation_card(row):
 		"printing_route": row.printing_route,
 		"extrusion_type": row.extrusion_type,
 		"slitting_requirement": row.slitting_requirement,
-		"compound": row.compound,
-		"base_colour": row.base_colour,
+		"compound": row.compound_item,
+		"base_colour": row.base_colour_item,
 		"priority": row.priority or "Normal",
 		"customer_code": row.custom_customer_order_code,
 		"sales_order": row.get("sales_order"),
@@ -622,8 +628,17 @@ def make_operation_card(row):
 		"job_remaining_qty_meter": flt(row.get("job_remaining_qty_meter")),
 		"job_remaining_qty_kg": flt(row.get("job_remaining_qty_kg")),
 		"production_lot": row.get("production_lot"),
+		"operation_lot_missing": bool(row.get("operation_lot_missing")),
+		"work_order_missing": bool(row.get("work_order_missing")),
+		"work_order_warning": row.get("work_order_warning"),
+		"operation_trace_id": row.get("operation_trace_id"),
+		"previous_operation_lot": row.get("previous_operation_lot"),
+		"related_finished_goods_batches": row.get("related_finished_goods_batches") or [],
+		"actual_operation_sequence": row.sequence,
 		"production_lot_status": row.get("production_lot_status"),
 		"lot_produced_quantity": flt(row.get("lot_produced_quantity")),
+		"lot_planned_quantity": flt(row.get("lot_planned_quantity")),
+		"lot_actual_output_quantity": flt(row.get("lot_actual_output_quantity")),
 		"lot_available_quantity": flt(row.get("lot_available_quantity")),
 		"lot_transferred_quantity": flt(row.get("lot_transferred_quantity")),
 		"lot_remaining_quantity": flt(row.get("lot_remaining_quantity")),
@@ -720,9 +735,9 @@ def get_production_plan(production):
 		"qty": doc.production_quantity,
 		"uom": doc.stock_uom,
 		"weight": doc.total_eb_weight_kg,
-		"compound": doc.compound,
+		"compound": doc.compound_item,
 		"compound_required": doc.compound_total_required,
-		"base_colour": doc.base_colour,
+		"base_colour": doc.base_colour_item,
 		"shade_required": doc.shade_total_required,
 		"route": doc.selected_route,
 		"status": doc.status,
@@ -914,7 +929,10 @@ def validate_material_scheduling_context(entry):
 		],
 		as_dict=True,
 	)
-	if not work_order or work_order.docstatus != 1 or work_order.status in {"Stopped", "Cancelled", "Completed"}:
+	if not work_order:
+		from smart_edge_custom.manufacturing.work_order_sync import missing_work_order_message
+		frappe.throw(missing_work_order_message(entry.work_order, entry.name))
+	if work_order.docstatus != 1 or work_order.status in {"Stopped", "Cancelled", "Completed"}:
 		frappe.throw(_("Select an active submitted material Work Order before scheduling this operation."))
 	if work_order.production_item != entry.material_item or work_order.bom_no != entry.bom_no:
 		frappe.throw(_("The linked material Work Order does not match the planning Item and BOM."))
@@ -1312,8 +1330,13 @@ def create_final_manufacturing_stock_entry(doc):
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
 
-	components = get_final_stock_components(doc, finished_qty, source_warehouse)
-	component_batch_nos = get_final_component_batch_nos(doc, components)
+	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled
+	if physical_stock_enabled():
+		from smart_edge_custom.manufacturing.physical_operation_stock import final_wip_components
+		components, component_batch_nos = final_wip_components(doc, final_jobs)
+	else:
+		components = get_final_stock_components(doc, finished_qty, source_warehouse)
+		component_batch_nos = get_final_component_batch_nos(doc, components)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
 	validate_batch_control([finished_row])
 
@@ -1330,10 +1353,26 @@ def create_final_manufacturing_stock_entry(doc):
 		stock_entry.append("items", component)
 	stock_entry.append("items", finished_row)
 	stock_entry.insert()
+	if physical_stock_enabled():
+		from smart_edge_custom.manufacturing.physical_operation_stock import validate_posted_precision
+		validate_posted_precision(stock_entry)
 	set_final_component_batch_bundles(stock_entry, component_batch_nos)
 	stock_entry.save()
 	stock_entry.submit()
 	link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry.name, finished_qty)
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+
+	posted_entry = frappe.get_doc("Stock Entry", stock_entry.name)
+	finished_batches = dict.fromkeys(
+		row["batch_no"] for row in extract_batch_movements(posted_entry)
+		if row["direction"] == "Output" and row["item_code"] == doc.finished_item
+	)
+	frappe.msgprint(
+		_("Manufacturing Stock Entry {0} submitted. Finished Goods Batch: {1}.").format(
+			frappe.get_desk_link("Stock Entry", stock_entry.name),
+			", ".join(frappe.get_desk_link("Batch", batch) for batch in finished_batches),
+		), alert=True, indicator="green",
+	)
 	return stock_entry.name
 
 
@@ -1524,8 +1563,14 @@ def validate_final_completion_stock_entry_setup(job, completion_type):
 	finished_qty = get_final_finished_quantity(doc.name) + (flt(job.good_qty) or flt(job.actual_qty_meter))
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
-	components = get_final_stock_components(doc, finished_qty, source_warehouse)
-	get_final_component_batch_nos(doc, components)
+	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled, final_wip_components
+	if physical_stock_enabled():
+		candidate = frappe._dict(job.as_dict())
+		candidate.stock_posting_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
+		final_wip_components(doc, [candidate])
+	else:
+		components = get_final_stock_components(doc, finished_qty, source_warehouse)
+		get_final_component_batch_nos(doc, components)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
 	validate_batch_control([finished_row])
 
@@ -1574,7 +1619,7 @@ def get_final_batch_consumption_preview(
 def get_final_finished_jobs(production):
 	final_entry = get_final_mandatory_plan_entry(production)
 	job_meta = frappe.get_meta("SmartEdge Production Job", cached=True)
-	fields = ["name", "good_qty", "actual_qty_meter"]
+	fields = ["name", "good_qty", "actual_qty_meter", "plan_entry", "input_production_lot"]
 	for fieldname in ("manufacturing_stock_entry", "stock_posted_qty"):
 		if job_meta.has_field(fieldname):
 			fields.append(fieldname)
@@ -1602,9 +1647,12 @@ def get_final_mandatory_plan_entry(production):
 
 def get_final_stock_components(doc, finished_qty, source_warehouse):
 	components = []
-	for label, item_code, consumption in (
-		(_("Compound"), doc.get("compound_item"), get_final_component_consumption_per_meter(doc, "compound")),
-		(_("Base Colour / Shade"), doc.get("base_colour_item"), get_final_component_consumption_per_meter(doc, "shade")),
+	precision = frappe.get_precision("SmartEdge Production Job", "good_qty")
+	planned_output = flt(doc.get("production_quantity"), precision)
+	full_output = planned_output > 0 and flt(finished_qty, precision) == planned_output
+	for label, item_code, consumption, planned_total in (
+		(_("Compound"), doc.get("compound_item"), get_final_component_consumption_per_meter(doc, "compound"), doc.get("compound_total_required")),
+		(_("Base Colour / Shade"), doc.get("base_colour_item"), get_final_component_consumption_per_meter(doc, "shade"), doc.get("shade_total_required")),
 	):
 		if not item_code:
 			frappe.throw(_("{0} stock item is required before creating final manufacturing Stock Entry.").format(label))
@@ -1612,6 +1660,10 @@ def get_final_stock_components(doc, finished_qty, source_warehouse):
 			frappe.throw(_("{0} consumption per meter must be greater than zero.").format(label))
 		item = validate_stock_item(item_code)
 		qty = flt(consumption) * flt(finished_qty)
+		if full_output and flt(planned_total) > 0:
+			# Planned output has finer precision than the accepted completion quantity.
+			# Equal output at completion precision consumes the recorded planned total.
+			qty = flt(planned_total)
 		if qty <= 0:
 			frappe.throw(_("{0} consumption quantity must be greater than zero.").format(label))
 		components.append(
@@ -1634,8 +1686,7 @@ def get_final_component_batch_nos(doc, components):
 		table_field,
 		batch_count_field,
 		total_field,
-		master_doctype,
-		master_field,
+		item_field,
 	) in enumerate(
 		(
 			(
@@ -1643,16 +1694,14 @@ def get_final_component_batch_nos(doc, components):
 				"compound_batch_allocations",
 				"compound_consumption_batches",
 				"compound_total_required",
-				"Compound",
-				"compound",
+				"compound_item",
 			),
 			(
 				_("Base Colour / Shade"),
 				"shade_batch_allocations",
 				"shade_consumption_batches",
 				"shade_total_required",
-				"Base Colour",
-				"base_colour",
+				"base_colour_item",
 			),
 		)
 	):
@@ -1670,8 +1719,7 @@ def get_final_component_batch_nos(doc, components):
 			table_field,
 			expected_count,
 			total_field,
-			master_doctype,
-			master_field,
+			item_field,
 			item.stock_uom,
 		)
 		batch_nos_by_row.append(
@@ -1688,8 +1736,7 @@ def get_current_fifo_allocations(
 	table_field,
 	expected_count,
 	total_field,
-	master_doctype,
-	master_field,
+	item_field,
 	stock_uom,
 ):
 	"""Reuse a valid saved allocation, otherwise recalculate it with the existing FIFO selector."""
@@ -1703,7 +1750,7 @@ def get_current_fifo_allocations(
 		return allocations
 
 	batch_weight = get_prepared_component_batch_weight(
-		master_doctype, doc.get(master_field), label
+		doc.get(item_field), label
 	)
 	return [
 		frappe._dict(row)
@@ -1826,8 +1873,8 @@ def get_revalidated_consumption_batches(component, allocations, label, stock_uom
 
 	if remaining_kg > 0.000001:
 		frappe.throw(
-			_("{0} FIFO allocation is insufficient for the actual consumption quantity. Refresh the allocation.").format(
-				label
+			_("{0} FIFO allocation is insufficient: required {1} Kg, allocated {2} Kg, shortage {3} Kg. Refresh the allocation.").format(
+				label, flt(component["qty"], 9), flt(component["qty"] - remaining_kg, 9), flt(remaining_kg, 9)
 			)
 		)
 	return batches
@@ -1875,6 +1922,8 @@ def get_finished_stock_row(doc, finished_qty, target_warehouse):
 	if not doc.finished_item:
 		frappe.throw(_("Finished EB Item is required before creating final manufacturing Stock Entry."))
 	item = validate_stock_item(doc.finished_item)
+	if not item.has_batch_no:
+		frappe.throw(_("Finished Goods Item {0} must be batch-controlled before final manufacturing stock posting.").format(doc.finished_item))
 	production_uom = "Meter"
 	return {
 		"item_code": doc.finished_item,
@@ -1923,6 +1972,12 @@ def validate_batch_control(rows):
 	for row in rows:
 		has_batch_no = frappe.db.get_value("Item", row.get("item_code"), "has_batch_no")
 		if has_batch_no and not row.get("batch_no"):
+			if (
+				row.get("is_finished_item") and row.get("t_warehouse") and not row.get("s_warehouse")
+				and frappe.db.get_value("Item", row.get("item_code"), "create_new_batch")
+			):
+				# ERPNext creates the inward batch and bundle during stock posting.
+				continue
 			frappe.throw(
 				_("Batch-controlled Item {0} requires explicit batch allocation before automatic Stock Entry posting.").format(
 					row.get("item_code")
@@ -2339,6 +2394,8 @@ def apply_released_quantity_to_job(job, entry):
 
 
 def validate_start_eligible(entry):
+	from smart_edge_custom.manufacturing.work_order_sync import validate_material_work_order_reference
+	validate_material_work_order_reference(entry)
 	if entry.status in {"Completed", "Cancelled"}:
 		frappe.throw(_("Completed or cancelled operations cannot be started."))
 	validate_material_plan_released(entry)
@@ -2468,12 +2525,16 @@ def complete_production_job(
 	unusable_scrap=None,
 	remarks=None,
 ):
-	job = get_open_job(plan_entry)
+	job = get_open_job(plan_entry, include_completed=True)
 	lock_production_job(job.name)
 	job.reload()
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	if job.status == "Completed" and entry.get("plan_type") != MATERIAL_PLAN_TYPE:
+		return {"production_job": job.name, **job.complete_job(completion_type or "Full Completion")}
 	material_result = None
 	if entry.get("plan_type") == "Required Material":
+		from smart_edge_custom.manufacturing.work_order_sync import validate_material_work_order_reference
+		validate_material_work_order_reference(entry)
 		from smart_edge_custom.manufacturing.material_production import complete_material_production
 
 		completed_batches = cint(actual_qty_meter)
@@ -2513,26 +2574,21 @@ def complete_production_job(
 		job.stock_posted_qty = material_result["quantity"]
 	else:
 		validate_final_completion_stock_entry_setup(job, completion_type)
-	job.complete_job(completion_type)
-	lot_result = None
-	if not material_result:
-		from smart_edge_custom.manufacturing.production_lot import record_completed_job
-
-		lot_result = record_completed_job(job)
+	completion_result = job.complete_job(completion_type)
 	if material_result:
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 		from smart_edge_custom.manufacturing.work_order_sync import sync_work_order_to_planning
 
 		sync_work_order_to_planning(entry.work_order, refresh_readiness=False)
 		refresh_material_readiness(entry.final_eb_bom_generator)
-	return {"production_job": job.name, "status": job.status, **(lot_result or {})}
+	return {"production_job": job.name, "status": job.status, **(completion_result or {})}
 
 
 def lock_production_job(production_job):
 	frappe.db.sql("select name from `tabSmartEdge Production Job` where name=%s for update", (production_job,))
 
 
-def get_open_job(plan_entry):
+def get_open_job(plan_entry, include_completed=False):
 	jobs = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"plan_entry": plan_entry, "status": ["!=", "Cancelled"]},
@@ -2544,6 +2600,8 @@ def get_open_job(plan_entry):
 	if len(active_jobs) > 1:
 		frappe.throw(_("Multiple active Production Jobs exist for this planned operation."))
 	name = active_jobs[0].name if active_jobs else None
+	if not name and include_completed and jobs and jobs[0].status == "Completed":
+		name = jobs[0].name
 	if not name:
 		frappe.throw(_("No active Production Job found for this planned operation."))
 	job = frappe.get_doc("SmartEdge Production Job", name)

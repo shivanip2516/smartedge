@@ -110,6 +110,30 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def complete_job(self, completion_type="Full Completion"):
+		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+		if plan_type == "Required Material":
+			return self._complete_job(completion_type)
+		savepoint = "final_completion_" + frappe.generate_hash(length=10)
+		frappe.db.savepoint(savepoint)
+		try:
+			result = self._complete_job(completion_type)
+		except Exception:
+			frappe.db.rollback(save_point=savepoint)
+			self.reload()
+			raise
+		frappe.db.release_savepoint(savepoint)
+		return result
+
+	def _complete_job(self, completion_type):
+		if self.name and not self.is_new():
+			current_status = frappe.db.get_value("SmartEdge Production Job", self.name, "status", for_update=True)
+			if current_status == "Completed":
+				self.reload()
+		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+		if self.status == "Completed" and plan_type != "Required Material":
+			from smart_edge_custom.manufacturing.production_lot import record_completed_job
+
+			return {"status": self.status, **record_completed_job(self, allow_create=False)}
 		if self.status not in {"In Progress", "Paused"}:
 			frappe.throw(_("Only started jobs can be completed."))
 		if not self.operator_employee:
@@ -129,13 +153,16 @@ class SmartEdgeProductionJob(Document):
 		self.status = "Completed"
 		self.save()
 		self.sync_plan_entry("Completed" if completion_type == "Full Completion" else "On Hold")
-		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
 		if plan_type != "Required Material":
 			from smart_edge_custom.manufacturing.planning import release_completed_quantity_to_next_operation
 
 			release_completed_quantity_to_next_operation(self)
 		if self.get("released_to_plan_entry"):
 			self.save()
+		if plan_type != "Required Material":
+			from smart_edge_custom.manufacturing.production_lot import record_completed_job
+
+			return {"status": self.status, **record_completed_job(self)}
 		return {"status": self.status}
 
 	def accumulate_productive_time(self, end_time=None):

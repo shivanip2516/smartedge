@@ -6,10 +6,16 @@ from frappe.utils import cint, flt
 
 
 SUPPORTED_ITEM_GROUPS = {"Compounds", "Base Colour"}
-MASTER_BY_ITEM_GROUP = {
-	"Compounds": ("Compound", "compound_name"),
-	"Base Colour": ("Base Colour", "colour_name"),
-}
+
+def get_active_batch_bom(item_code):
+	if not item_code:
+		return None
+	return frappe.db.get_value(
+		"BOM",
+		{"item": item_code, "docstatus": 1, "is_active": 1, "custom_batch": 1},
+		"name",
+		order_by="is_default desc, modified desc",
+	)
 
 
 def get_item_batch_details(item_code):
@@ -40,14 +46,10 @@ def get_item_batch_details(item_code):
 	if item.item_group not in SUPPORTED_ITEM_GROUPS:
 		return details
 
-	master_doctype, link_field = MASTER_BY_ITEM_GROUP[item.item_group]
-	# total_kg is the master-owned recipe total. Use it instead of re-summing
-	# child rows whose display UOM can differ from Kg.
-	master = frappe.db.get_value(master_doctype, {link_field: item_code}, ["name", "total_kg"], as_dict=True)
-	if master:
-		details["output_qty"] = flt(master.total_kg)
-		details["master_doctype"] = master_doctype
-		details["master_name"] = master.name
+	bom_no = get_active_batch_bom(item_code)
+	if bom_no:
+		details["output_qty"] = flt(frappe.db.get_value("BOM", bom_no, "quantity"))
+		details["bom_no"] = bom_no
 
 	return details
 
@@ -63,10 +65,7 @@ def validate_bom(doc, method=None):
 	output_qty = flt(details["output_qty"])
 	if output_qty <= 0:
 		frappe.throw(
-			_("The total recipe weight in {0} {1} must be greater than zero.").format(
-				details.get("master_doctype") or _("the manufacturing master"),
-				details.get("master_name") or "",
-			)
+			_("A positive output quantity in an active submitted one-batch BOM is required for Item {0}.").format(doc.item)
 		)
 
 	if doc.is_new() or doc.has_value_changed("item"):

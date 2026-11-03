@@ -22,6 +22,7 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 
 	@classmethod
 	def _ensure_master_data(cls):
+		cls.items = {}
 		for uom in ("Kg", "Gram", "Meter"):
 			if not frappe.db.exists("UOM", uom):
 				frappe.get_doc({"doctype": "UOM", "uom_name": uom}).insert(ignore_permissions=True)
@@ -36,32 +37,33 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 					}
 				).insert(ignore_permissions=True)
 
+		if not frappe.db.exists("Size Weight", "2x24"):
+			frappe.get_doc({"doctype": "Size Weight", "size_name": "2x24", "thickness": 2, "width": 24, "factor": 1.5}).insert()
+
 		cls._ensure_item("TEST-FINAL-EB", "Finished Goods", "Meter", custom_size="2x24")
+		if not frappe.db.exists("Material Type", "Solid"):
+			frappe.get_doc({"doctype": "Material Type", "material_type_name": "Solid"}).insert()
+		if not frappe.db.exists("PVC Type Finish", "TEST-GENERATOR-HIGH-GLOSS"):
+			frappe.get_doc({"doctype": "PVC Type Finish", "type_finish": "TEST-GENERATOR-HIGH-GLOSS", "abbreviation": "HG"}).insert()
+		cls._ensure_item("TEST-FINAL-EB-HG", "Finished Goods", "Meter", custom_size="2x24", custom_type_finish="TEST-GENERATOR-HIGH-GLOSS", custom_product_type_design_category="Solid")
 		cls._ensure_item("TEST-COMPOUND", "Compounds", "Kg")
 		cls._ensure_item("TEST-SHADE", "Base Colour", "Kg")
 		cls._ensure_item("TEST-SHADE-GRAM", "Base Colour", "Gram")
 		cls._ensure_item("TEST-ADDITIVE", "Additives", "Kg")
 		cls._ensure_item("TEST-PIGMENT", "Pigments", "Kg")
 
-		if not frappe.db.exists("Compound", "TEST-COMPOUND"):
-			doc = frappe.new_doc("Compound")
-			doc.compound_name = "TEST-COMPOUND"
-			doc.append("additives", {"additive": "TEST-ADDITIVE", "uom": "Kg", "quantity_kg": 1})
-			doc.insert(ignore_permissions=True)
-
-		if not frappe.db.exists("Base Colour", "TEST-SHADE"):
-			doc = frappe.new_doc("Base Colour")
-			doc.colour_name = "TEST-SHADE"
-			doc.weightage = 5
-			doc.append("pigments", {"pigment_item": "TEST-PIGMENT", "uom": "Kg", "quantity_kg": 1})
-			doc.insert(ignore_permissions=True)
-
-		if not frappe.db.exists("Base Colour", "TEST-SHADE-GRAM"):
-			doc = frappe.new_doc("Base Colour")
-			doc.colour_name = "TEST-SHADE-GRAM"
-			doc.weightage = 5
-			doc.append("pigments", {"pigment_item": "TEST-PIGMENT", "uom": "Kg", "quantity_kg": 1})
-			doc.insert(ignore_permissions=True)
+		for parent, component in (
+			("TEST-COMPOUND", "TEST-ADDITIVE"),
+			("TEST-SHADE", "TEST-PIGMENT"),
+			("TEST-SHADE-GRAM", "TEST-PIGMENT"),
+		):
+			parent, component = cls.items[parent], cls.items[component]
+			if not frappe.db.exists("BOM", {"item": parent, "docstatus": 1, "is_active": 1}):
+				frappe.get_doc({
+					"doctype": "BOM", "item": parent, "company": cls.company,
+					"quantity": 1, "custom_batch": 1,
+					"items": [{"item_code": component, "qty": 1, "rate": 1}],
+				}).insert().submit()
 
 		for workstation in (
 			"Single Mould Extrusion",
@@ -77,7 +79,9 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 
 	@classmethod
 	def _ensure_item(cls, item_code, item_group, stock_uom, **values):
-		if frappe.db.exists("Item", item_code):
+		existing = frappe.db.get_value("Item", {"item_name": item_code}, "name")
+		if existing:
+			cls.items[item_code] = existing
 			return
 
 		doc = frappe.new_doc("Item")
@@ -86,10 +90,12 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 		doc.item_group = item_group
 		doc.stock_uom = stock_uom
 		doc.include_item_in_manufacturing = 1
+		doc.is_sales_item = 0
 		for fieldname, value in values.items():
 			if doc.meta.has_field(fieldname):
 				doc.set(fieldname, value)
 		doc.insert(ignore_permissions=True)
+		cls.items[item_code] = doc.name
 
 	@classmethod
 	def _ensure_workstation(cls, workstation_name):
@@ -114,14 +120,15 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 	def get_generator(self, **values):
 		doc = frappe.new_doc("Final EB BOM Generator")
 		doc.company = self.company
-		doc.finished_item = "TEST-FINAL-EB"
+		doc.source_warehouse = frappe.db.get_value("Warehouse", {"company": self.company, "is_group": 0}, "name")
+		doc.finished_item = self.items["TEST-FINAL-EB"]
 		doc.production_quantity = 1000
 		doc.thickness_mm = 2
 		doc.width_mm = 24
 		doc.weight_factor = 1.5
-		doc.compound = "TEST-COMPOUND"
+		doc.compound_item = self.items["TEST-COMPOUND"]
 		doc.compound_consumption_batches = 66
-		doc.base_colour = "TEST-SHADE"
+		doc.base_colour_item = self.items["TEST-SHADE"]
 		doc.shade_consumption_batches = 6
 		doc.printing_type = "Solid"
 		doc.printing_route = "None"
@@ -129,6 +136,8 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 		doc.slitting_requirement = "None"
 		doc.allow_weight_mismatch = 1
 		for fieldname, value in values.items():
+			if fieldname in ("finished_item", "compound_item", "base_colour_item"):
+				value = self.items.get(value, value)
 			doc.set(fieldname, value)
 		doc.insert(ignore_permissions=True)
 		return doc
@@ -149,6 +158,32 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 		self.assertIn("Single Mould Extrusion + Integrated Online Printing", [row[0] for row in operations])
 		self.assertNotIn("Online Printing", [row[1] for row in operations])
 
+	def test_printing_selection_drives_preview_save_and_planning_without_finished_bom(self):
+		from unittest.mock import patch
+		from smart_edge_custom.manufacturing.final_bom_generator import send_generator_to_planning
+
+		for printing_route in ("Online", "Offline"):
+			with self.subTest(printing_route=printing_route):
+				doc = self.get_generator(finished_item="TEST-FINAL-EB-HG", printing_route=printing_route)
+				self.assertFalse(frappe.db.exists("BOM", {"item": doc.finished_item}))
+				expected = build_eb_route(doc.as_dict())
+				self.assertTrue(expected)
+				self.assertEqual([(r.operation, r.workstation) for r in doc.operation_preview], expected)
+				doc.save()
+				doc.reload()
+				self.assertEqual(doc.printing_route, printing_route)
+				self.assertEqual([(r.operation, r.workstation) for r in doc.operation_preview], expected)
+				counts = {dt: frappe.db.count(dt) for dt in ("Batch", "Stock Entry", "Work Order", "SmartEdge Production Lot")}
+				# Isolate routing/planning from physical raw-material stock requirements.
+				with patch("smart_edge_custom.manufacturing.final_bom_generator.validate_material_availability_for_release"):
+					first = send_generator_to_planning(doc)
+					second = send_generator_to_planning(doc)
+				self.assertEqual(first["entries"], second["entries"])
+				entries = [frappe.get_doc("SmartEdge Production Plan Entry", name) for name in first["entries"]]
+				self.assertEqual([(r.operation, r.workstation) for r in entries], expected)
+				self.assertEqual([r.sequence for r in entries], [r.sequence for r in doc.operation_preview])
+				self.assertEqual(counts, {dt: frappe.db.count(dt) for dt in counts})
+
 	def test_offline_wood_grain_adds_offline_printing_and_qc(self):
 		doc = self.get_generator(printing_type="Wood Grain", printing_route="Offline")
 		operations = [row[0] for row in build_eb_route(doc.as_dict())]
@@ -157,6 +192,7 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 
 	def test_offline_high_gloss_wide_sheet_80_mm_route(self):
 		doc = self.get_generator(
+			finished_item="TEST-FINAL-EB-HG",
 			custom_product_type_design_category="Solid",
 			printing_type="High Gloss",
 			printing_route="Offline",
@@ -183,7 +219,7 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 
 	def test_material_weight_match_normalizes_gram_uom(self):
 		preview = calculate_bom_preview(
-			self.get_generator(base_colour="TEST-SHADE-GRAM", shade_consumption_batches=6).as_dict()
+			self.get_generator(base_colour_item="TEST-SHADE-GRAM", shade_consumption_batches=6).as_dict()
 		)
 		self.assertEqual(preview["material_weight_status"], "Material Weight Matched")
 
@@ -210,23 +246,12 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 		self.assertIn("stock shortage", preview["warnings"].lower())
 
 	def test_missing_workstation_warning(self):
-		operation = "TEST Missing Workstation Operation"
-		if not frappe.db.exists("Operation", operation):
-			op = frappe.new_doc("Operation")
-			op.name = operation
-			op.insert(ignore_permissions=True)
+		from unittest.mock import patch
 
-		if not frappe.db.exists("SmartEdge Process Route", "TEST Missing Workstation Route"):
-			route = frappe.new_doc("SmartEdge Process Route")
-			route.route_name = "TEST Missing Workstation Route"
-			route.enabled = 1
-			route.printing_type = "Solid"
-			route.printing_route = "None"
-			route.extrusion_type = "Single Mould Extrusion"
-			route.slitting_type = "Online 80 mm Slitting"
-			route.append("operations", {"sequence": 1, "operation": operation, "mandatory": 1})
-			route.insert(ignore_permissions=True)
-
-		doc = self.get_generator(slitting_requirement="Online 80 mm Slitting")
-		preview = calculate_bom_preview(doc.as_dict())
+		doc = self.get_generator()
+		from smart_edge_custom.manufacturing.final_bom_generator import resolve_process_route
+		route, _ = resolve_process_route(doc)
+		route.operations[0].workstation = None
+		with patch("smart_edge_custom.manufacturing.final_bom_generator.resolve_process_route", return_value=(route, None)):
+			preview = calculate_bom_preview(doc.as_dict())
 		self.assertIn("No Workstation configured", preview["warnings"])

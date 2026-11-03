@@ -66,6 +66,7 @@ app_include_css = "/assets/smart_edge_custom/css/base_colour.css"
 # include js in doctype views
 # doctype_js = {"doctype" : "public/js/doctype.js"}
 doctype_js = {
+	"Batch": "public/js/batch.js",
 	"Base Colour": "public/js/base_colour.js",
 	"BOM": "public/js/bom.js",
 	"Compound": "public/js/compound.js",
@@ -74,12 +75,18 @@ doctype_js = {
 	"Work Order": "public/js/work_order.js",
 }
 doctype_list_js = {
+	"Batch": "public/js/batch_list.js",
 	"Base Colour": "public/js/base_colour_list.js",
 	"Compound": "public/js/manufacturing_masters.js",
 	"Size Weight": "public/js/manufacturing_masters.js",
 }
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
+
+override_whitelisted_methods = {
+	"erpnext.controllers.queries.get_batch_no": "smart_edge_custom.manufacturing.operation_batch.get_batch_no",
+	"erpnext.controllers.queries.get_batch_numbers": "smart_edge_custom.manufacturing.operation_batch.get_batch_numbers",
+}
 
 # Svg Icons
 # ------------------
@@ -180,17 +187,32 @@ after_install = "smart_edge_custom.setup.setup_smartedge_manufacturing"
 # }
 
 doc_events = {
+	"Batch": {"validate": "smart_edge_custom.manufacturing.operation_batch.validate_batch"},
+	"Serial and Batch Bundle": {"before_validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Stock Ledger Entry": {"before_insert": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Pick List": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Stock Reservation Entry": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Delivery Note": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Purchase Receipt": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Purchase Invoice": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Sales Invoice": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Stock Reconciliation": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Base Colour": {
 		"validate": "smart_edge_custom.base_colour.validate_base_colour",
 	},
 	"BOM": {
-		"validate": "smart_edge_custom.manufacturing.batch_manufacturing.validate_bom",
+		"before_validate": "smart_edge_custom.bom.set_recipe_quantity",
+		"validate": "smart_edge_custom.bom.validate_bom",
 	},
 	"Item": {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
 	},
 	"Stock Entry": {
-		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.validate_batch_stock_entry_quantity",
+		"before_cancel": "smart_edge_custom.manufacturing.physical_operation_stock.prevent_upstream_cancellation",
+		"before_validate": [
+			"smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock",
+			"smart_edge_custom.manufacturing.batch_manufacturing.validate_batch_stock_entry_quantity",
+		],
 		"before_submit": "smart_edge_custom.manufacturing.batch_manufacturing.allocate_finished_batches",
 		"on_submit": [
 			"smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_stock_entry",

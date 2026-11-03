@@ -8,6 +8,7 @@ from smart_edge_custom.manufacturing.final_bom_generator import (
 	apply_preview_to_doc,
 	calculate_bom_preview,
 	send_generator_to_planning,
+	validate_prepared_item,
 )
 
 
@@ -21,6 +22,8 @@ class FinalEBBOMGenerator(Document):
 
 	def validate(self):
 		self.validate_initial_material_configuration()
+		validate_prepared_item(self.compound_item, "Compounds", _("Compound Item"))
+		validate_prepared_item(self.base_colour_item, "Base Colour", _("Base Colour Item"))
 		apply_item_configuration_defaults(self)
 		apply_process_defaults(self)
 		if self.finished_item and not self.source_warehouse:
@@ -36,8 +39,8 @@ class FinalEBBOMGenerator(Document):
 			return
 
 		for fieldname, label in (
-			("compound", "Compound"),
-			("base_colour", "Base Colour / Shade"),
+			("compound_item", "Compound Item"),
+			("base_colour_item", "Base Colour Item"),
 		):
 			if not self.get(fieldname):
 				frappe.throw(_("{0} is required.").format(label))

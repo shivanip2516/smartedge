@@ -67,8 +67,8 @@ class TestBaseColourUOM(IntegrationTestCase):
 	)
 	@patch("smart_edge_custom.manufacturing.final_bom_generator.frappe.db.get_value")
 	@patch(
-		"smart_edge_custom.manufacturing.final_bom_generator.get_base_colour_stock_item",
-		return_value="Pumic Grey",
+		"smart_edge_custom.manufacturing.final_bom_generator.get_active_batch_bom",
+		return_value="BOM-Pumic Grey",
 	)
 	def test_base_colour_batch_weight_is_normalized_to_kg(
 		self, _get_item, get_value, get_factor
@@ -76,7 +76,7 @@ class TestBaseColourUOM(IntegrationTestCase):
 		get_value.side_effect = [300, "Gram"]
 
 		self.assertEqual(
-			get_prepared_component_batch_weight("Base Colour", "Pumic Grey", "Shade"), 0.3
+			get_prepared_component_batch_weight("Pumic Grey", "Shade"), 0.3
 		)
 		get_factor.assert_called_once_with("Pumic Grey", "Gram")
 

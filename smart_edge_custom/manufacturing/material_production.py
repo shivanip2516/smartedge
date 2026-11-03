@@ -5,6 +5,7 @@ from frappe import _
 from frappe.utils import cint, flt, get_datetime, getdate, now_datetime
 
 from smart_edge_custom.manufacturing.batch_manufacturing import (
+	get_active_batch_bom,
 	get_complete_batch_count,
 	get_item_batch_details,
 	make_batch_work_order,
@@ -12,8 +13,6 @@ from smart_edge_custom.manufacturing.batch_manufacturing import (
 )
 from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_availability
 from smart_edge_custom.manufacturing.final_bom_generator import (
-	get_base_colour_stock_item,
-	get_compound_stock_item,
 	get_prepared_component_batch_weight,
 )
 
@@ -21,10 +20,8 @@ MATERIAL_PLAN_TYPE = "Required Material"
 ACTIVE_PLAN_STATUSES = {"Pending", "Ready", "Planned", "In Progress", "On Hold"}
 MATERIAL_CONFIG = {
 	"Compound": {
-		"master_doctype": "Compound",
-		"master_field": "compound",
+		"item_field": "compound_item",
 		"batch_field": "compound_consumption_batches",
-		"item_resolver": get_compound_stock_item,
 		"status_field": "compound_production_status",
 		"plan_field": "compound_production_plan",
 		"work_order_field": "compound_work_order",
@@ -32,10 +29,8 @@ MATERIAL_CONFIG = {
 		"completed_field": "compound_completed_batches",
 	},
 	"Base Colour": {
-		"master_doctype": "Base Colour",
-		"master_field": "base_colour",
+		"item_field": "base_colour_item",
 		"batch_field": "shade_consumption_batches",
-		"item_resolver": get_base_colour_stock_item,
 		"status_field": "base_colour_production_status",
 		"plan_field": "base_colour_production_plan",
 		"work_order_field": "base_colour_work_order",
@@ -88,8 +83,8 @@ def get_material_workflow_status(doc, requirements, released_to_planning=False):
 		return "Production Completed"
 
 	configured = bool(
-		doc.get("compound")
-		and doc.get("base_colour")
+		doc.get("compound_item")
+		and doc.get("base_colour_item")
 		and cint(doc.get("compound_consumption_batches")) > 0
 		and cint(doc.get("shade_consumption_batches")) > 0
 	)
@@ -156,12 +151,11 @@ def has_valid_final_manufacturing_completion(doc):
 
 def build_material_requirement(doc, material_type, include_planning_details=True):
 	config = MATERIAL_CONFIG[material_type]
-	master_name = doc.get(config["master_field"])
+	item_code = doc.get(config["item_field"])
 	required_batches = cint(doc.get(config["batch_field"]))
-	item_code = config["item_resolver"](master_name) if master_name else None
 	batch_weight_kg = (
-		get_prepared_component_batch_weight(config["master_doctype"], master_name, material_type)
-		if master_name and required_batches
+		get_prepared_component_batch_weight(item_code, material_type)
+		if item_code and required_batches
 		else 0
 	)
 	item_details = get_item_batch_details(item_code)
@@ -192,7 +186,7 @@ def build_material_requirement(doc, material_type, include_planning_details=True
 	)
 	return {
 		"material_type": material_type,
-		"master": master_name,
+		"master": item_code,
 		"item_code": item_code,
 		"item_name": frappe.db.get_value("Item", item_code, "item_name") if item_code else None,
 		"required_batches": required_batches,
@@ -265,17 +259,6 @@ def is_active_work_order(work_order):
 		return False
 	row = frappe.db.get_value("Work Order", work_order, ["docstatus", "status"], as_dict=True)
 	return bool(row and row.docstatus == 1 and row.status not in {"Stopped", "Cancelled", "Completed"})
-
-
-def get_active_batch_bom(item_code):
-	if not item_code:
-		return None
-	return frappe.db.get_value(
-		"BOM",
-		{"item": item_code, "docstatus": 1, "is_active": 1, "custom_batch": 1},
-		"name",
-		order_by="is_default desc, modified desc",
-	)
 
 
 def get_bom_operations(bom_no):
@@ -411,15 +394,30 @@ def get_material_raw_stock(production, material_type, source_warehouse):
 def get_raw_material_availability(doc, requirement, source_warehouse):
 	if not source_warehouse:
 		return {"available": 0, "materials": [], "message": _("Source Warehouse is required.")}
-	if not requirement.get("bom_no") or requirement.get("batches_to_plan", 0) <= 0:
+	if requirement.get("batches_to_plan", 0) <= 0:
 		return {"available": 1, "materials": []}
+	if not requirement.get("bom_no"):
+		return {"available": 0, "materials": [], "message": _("No active submitted one-batch BOM found for Item {0}.").format(requirement.get("item_code"))}
 
-	work_order = make_batch_work_order(
-		requirement["bom_no"],
-		requirement["item_code"],
-		requirement["batches_to_plan"],
-		doc.company,
+	unbatched_base_colour = requirement.get("material_type") == "Base Colour" and not frappe.db.get_value(
+		"Item", requirement["item_code"], "has_batch_no"
 	)
+	if unbatched_base_colour:
+		# Availability is a read-only BOM preview, not production authorization.
+		# Keep the existing batch-only Work Order creation guard unchanged.
+		from erpnext.manufacturing.doctype.work_order.work_order import make_work_order
+
+		work_order = make_work_order(
+			bom_no=requirement["bom_no"], item=requirement["item_code"],
+			qty=requirement["total_manufacturing_quantity"], company=doc.company,
+		)
+	else:
+		work_order = make_batch_work_order(
+			requirement["bom_no"],
+			requirement["item_code"],
+			requirement["batches_to_plan"],
+			doc.company,
+		)
 	work_order.source_warehouse = source_warehouse
 	work_order.set_required_items(reset_source_warehouse=True)
 	materials = []
@@ -449,16 +447,26 @@ def get_raw_material_availability(doc, requirement, source_warehouse):
 				"shortage_qty": max(required_qty - available_qty, 0),
 			}
 		)
-	return {
+	result = {
 		"available": cint(all(row["shortage_qty"] <= 0.000001 for row in materials)),
 		"materials": materials,
 	}
+	if requirement.get("material_type") == "Base Colour" and not materials:
+		result.update(available=0, message=_("No transferable Pigment raw materials were found in Base Colour BOM {0}.").format(requirement["bom_no"]))
+	elif unbatched_base_colour:
+		result.update(available=0, message=_(
+			"Base Colour Item {0} is not batch-controlled. Pigment availability is shown, "
+			"but batch-controlled Item configuration is required before planning production."
+		).format(requirement["item_code"]))
+	return result
 
 
 def validate_raw_material_availability(doc, requirement, source_warehouse):
 	stock = get_raw_material_availability(doc, requirement, source_warehouse)
 	shortages = [row for row in stock.get("materials") or [] if row["shortage_qty"] > 0.000001]
 	if not shortages:
+		if not cint(stock.get("available")):
+			frappe.throw(stock.get("message") or _("Raw-material availability could not be confirmed for {0}.").format(requirement["material_type"]))
 		return
 	details = "<br>".join(
 		_("{0}: required {1} {2}, available {3} {2} in {4}").format(

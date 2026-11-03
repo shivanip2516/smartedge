@@ -1,4 +1,5 @@
 [pre_model_sync]
+smart_edge_custom.patches.migrate_generator_material_items
 # Patches added in this section will be executed before doctypes are migrated
 # Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
 
@@ -29,3 +30,5 @@ smart_edge_custom.patches.recalculate_base_colour_totals_in_stock_uom
 smart_edge_custom.patches.setup_required_material_planning
 smart_edge_custom.patches.link_required_material_work_orders
 smart_edge_custom.patches.ensure_smartedge_desktop_registration
+smart_edge_custom.patches.retire_bom_process_field
+smart_edge_custom.patches.setup_operation_batches

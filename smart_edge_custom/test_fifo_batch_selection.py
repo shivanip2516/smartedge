@@ -6,6 +6,7 @@ from frappe.tests import IntegrationTestCase
 from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_allocations
 from smart_edge_custom.manufacturing.final_bom_generator import calculate_batch_allocations
 from smart_edge_custom.manufacturing.planning import (
+	get_final_stock_components,
 	get_current_fifo_allocations,
 	get_revalidated_consumption_batches,
 	set_final_component_batch_bundles,
@@ -13,6 +14,25 @@ from smart_edge_custom.manufacturing.planning import (
 
 
 class TestFIFOBatchSelection(IntegrationTestCase):
+	@patch("smart_edge_custom.manufacturing.planning.validate_stock_item", return_value=frappe._dict(stock_uom="Kg"))
+	@patch("smart_edge_custom.manufacturing.planning.get_required_conversion_factor", return_value=1)
+	def test_full_output_uses_completion_precision_without_false_fifo_shortage(self, _conversion, _item):
+		doc = frappe._dict(production_quantity=39.784205693, compound_item="CMP",
+			base_colour_item="SHADE", compound_total_required=173, shade_total_required=0.3)
+		rows = get_final_stock_components(doc, 39.784206, "Stores")
+		self.assertEqual([row["qty"] for row in rows], [173, 0.3])
+		partial = get_final_stock_components(doc, 20, "Stores")
+		self.assertAlmostEqual(partial[0]["qty"], 173 / 39.784205693 * 20)
+		over = get_final_stock_components(doc, 39.784207, "Stores")
+		self.assertGreater(over[0]["qty"], 173)
+
+	@patch("smart_edge_custom.manufacturing.planning.get_kg_to_stock_factor", return_value=1)
+	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=[frappe._dict(batch_no="CMP-001", qty=173)])
+	def test_genuine_consumption_shortage_reports_required_coverage_and_shortage(self, _stock, _factor):
+		component = {"item_code": "Compound 1", "s_warehouse": "Stores - SE", "qty": 174}
+		with self.assertRaisesRegex(frappe.ValidationError, "required 174.*allocated 173.*shortage 1"):
+			get_revalidated_consumption_batches(component, [allocation("CMP-001", 173)], "Compound", "Kg")
+
 	@patch("smart_edge_custom.manufacturing.fifo_batch_selection.get_first_receipt_order")
 	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty")
 	@patch("smart_edge_custom.manufacturing.fifo_batch_selection.frappe.db.get_value")
@@ -130,7 +150,7 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 			{
 				"status": "Planned",
 				"_refresh_batch_allocations": 1,
-				"compound": "Compound 1",
+				"compound_item": "Compound 1",
 				"compound_consumption_batches": 1,
 				"compound_batch_allocations": [allocation("CMP-OLD", 65)],
 				"shade_consumption_batches": 0,
@@ -198,7 +218,7 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 		get_allocations.return_value = [allocation("CMP-NEW", 65)]
 		doc = frappe._dict(
 			{
-				"compound": "M3-M6",
+				"compound_item": "Compound 1",
 				"compound_batch_allocations": [allocation("CMP-OLD", 65)],
 				"compound_total_required": 65,
 			}
@@ -212,12 +232,12 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 			"compound_batch_allocations",
 			1,
 			"compound_total_required",
-			"Compound",
-			"compound",
+			"compound_item",
 			"Kg",
 		)
 
 		self.assertEqual([row.batch_no for row in rows], ["CMP-NEW"])
+		_batch_weight.assert_called_once_with("Compound 1", "Compound")
 		get_allocations.assert_called_once_with(
 			"Compound 1", "Stores - SE", 1, 65, "Compound"
 		)

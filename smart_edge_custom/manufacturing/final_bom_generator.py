@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
+from smart_edge_custom.manufacturing.batch_manufacturing import get_active_batch_bom
 from smart_edge_custom.manufacturing.fifo_batch_selection import (
 	InsufficientBatchStockError,
 	get_fifo_batch_allocations,
@@ -170,41 +171,14 @@ def calculate_production_quantity(total_eb_weight_kg, weight_per_meter_kg):
 	return total_eb_weight_kg / weight_per_meter_kg
 
 
-def get_compound_stock_item(compound_doc):
-	if isinstance(compound_doc, str):
-		compound_doc = frappe.get_doc("Compound", compound_doc)
-
-	return resolve_stock_item(compound_doc, ("item", "item_code", "compound_item"), "compound_name", "Compound")
-
-
-def get_base_colour_stock_item(base_colour_doc):
-	if isinstance(base_colour_doc, str):
-		base_colour_doc = frappe.get_doc("Base Colour", base_colour_doc)
-
-	return resolve_stock_item(
-		base_colour_doc,
-		("item", "item_code", "base_colour_item", "colour_item"),
-		"colour_name",
-		"Base Colour",
-	)
-
-
-def resolve_stock_item(doc, explicit_fields, name_field, label):
-	for fieldname in explicit_fields:
-		if doc.meta.has_field(fieldname) and doc.get(fieldname) and frappe.db.exists("Item", doc.get(fieldname)):
-			return doc.get(fieldname)
-
-	if doc.meta.has_field(name_field) and doc.get(name_field) and frappe.db.exists("Item", doc.get(name_field)):
-		return doc.get(name_field)
-
-	if frappe.db.exists("Item", doc.name):
-		return doc.name
-
-	frappe.throw(
-		_("{0} {1} is not linked to an existing Item. Configure the stock Item before planning production.").format(
-			label, frappe.bold(doc.name)
-		)
-	)
+def validate_prepared_item(item_code, item_group, label):
+	if not item_code:
+		return
+	item = frappe.db.get_value("Item", item_code, ["item_group", "disabled", "include_item_in_manufacturing"], as_dict=True)
+	if not item or item.item_group != item_group:
+		frappe.throw(_("{0} must be an Item in Item Group {1}.").format(label, item_group))
+	if item.disabled or not item.include_item_in_manufacturing:
+		frappe.throw(_("{0} must be enabled for manufacturing.").format(label))
 
 
 def get_stock_balance(item_code, warehouse=None):
@@ -238,17 +212,17 @@ def get_valuation_rate(item_code, company=None, warehouse=None):
 
 def calculate_component_requirements(doc):
 	production_quantity = flt(doc.get("production_quantity"))
-	compound_item = get_compound_stock_item(doc.get("compound")) if doc.get("compound") else None
-	base_colour_item = get_base_colour_stock_item(doc.get("base_colour")) if doc.get("base_colour") else None
+	compound_item = doc.get("compound_item")
+	validate_prepared_item(compound_item, "Compounds", _("Compound Item"))
+	base_colour_item = doc.get("base_colour_item")
+	validate_prepared_item(base_colour_item, "Base Colour", _("Base Colour Item"))
 
 	components = []
 	legacy_consumption = {}
-	for component_type, item_code, master_doctype, master_name, batch_count, legacy_fieldname, total_fieldname in (
+	for component_type, item_code, batch_count, legacy_fieldname, total_fieldname in (
 		(
 			"Compound",
 			compound_item,
-			"Compound",
-			doc.get("compound"),
 			doc.get("compound_consumption_batches"),
 			"compound_consumption_per_meter",
 			"compound_total_required",
@@ -256,8 +230,6 @@ def calculate_component_requirements(doc):
 		(
 			"Base Colour / Shade",
 			base_colour_item,
-			"Base Colour",
-			doc.get("base_colour"),
 			doc.get("shade_consumption_batches"),
 			"shade_consumption_per_meter",
 			"shade_total_required",
@@ -268,8 +240,8 @@ def calculate_component_requirements(doc):
 
 		item = frappe.db.get_value("Item", item_code, ["item_name", "stock_uom"], as_dict=True)
 		batch_count = validate_batch_count(batch_count, component_type)
+		batch_weight = get_prepared_component_batch_weight(item_code, component_type)
 		if batch_count:
-			batch_weight = get_prepared_component_batch_weight(master_doctype, master_name, component_type)
 			total_quantity = batch_count * batch_weight
 			consumption_per_meter = total_quantity / production_quantity if production_quantity else 0
 		else:
@@ -305,21 +277,19 @@ def calculate_component_requirements(doc):
 
 def calculate_batch_allocations(doc, materials):
 	allocations = {}
-	for component_type, table_field, batch_field, master_doctype, master_name, label in (
+	for component_type, table_field, batch_field, item_code, label in (
 		(
 			"Compound",
 			"compound_batch_allocations",
 			"compound_consumption_batches",
-			"Compound",
-			doc.get("compound"),
+			doc.get("compound_item"),
 			"Compound",
 		),
 		(
 			"Base Colour / Shade",
 			"shade_batch_allocations",
 			"shade_consumption_batches",
-			"Base Colour",
-			doc.get("base_colour"),
+			doc.get("base_colour_item"),
 			"Shade",
 		),
 	):
@@ -337,7 +307,7 @@ def calculate_batch_allocations(doc, materials):
 			allocations[table_field] = []
 			continue
 
-		batch_weight = get_prepared_component_batch_weight(master_doctype, master_name, label)
+		batch_weight = get_prepared_component_batch_weight(item_code, label)
 		try:
 			allocations[table_field] = get_fifo_batch_allocations(
 				material.get("item_code"),
@@ -470,17 +440,17 @@ def validate_batch_count(value, label):
 	return int(flt(value))
 
 
-def get_prepared_component_batch_weight(doctype, name, label):
-	if not name:
+def get_prepared_component_batch_weight(item_code, label):
+	if not item_code:
 		return 0
-	batch_weight = frappe.db.get_value(doctype, name, "total_kg")
-	if flt(batch_weight) <= 0:
-		frappe.throw(_("{0} Weight per Batch is required on {1} {2}.").format(label, doctype, name))
-	if doctype == "Base Colour":
-		item_code = get_base_colour_stock_item(name)
-		stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
-		return flt(batch_weight) / get_kg_to_stock_factor(item_code, stock_uom)
-	return flt(batch_weight)
+	bom_no = get_active_batch_bom(item_code)
+	if not bom_no:
+		frappe.throw(_("An active submitted one-batch BOM is required for {0} Item {1}.").format(label, item_code))
+	quantity = frappe.db.get_value("BOM", bom_no, "quantity")
+	if flt(quantity) <= 0:
+		frappe.throw(_("{0} Weight per Batch must be greater than zero in BOM {1}.").format(label, bom_no))
+	stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+	return convert_stock_qty_to_kg(item_code, stock_uom, quantity)
 
 
 def get_component_weight_kg(materials):
@@ -635,6 +605,16 @@ def get_route_operations(doc, route_doc):
 	rows = []
 	warnings = []
 	production_quantity = flt(doc.get("production_quantity"))
+
+	# Existing releases retain their saved operation snapshot and row identities.
+	if doc.get("name") and doc.get("operation_preview") and frappe.db.exists(
+		"SmartEdge Production Plan Entry",
+		{"final_eb_bom_generator": doc.get("name"), "plan_type": "Final EB", "status": ["!=", "Cancelled"]},
+	):
+		return [
+			row.as_dict() if callable(getattr(row, "as_dict", None)) else dict(row)
+			for row in doc.get("operation_preview")
+		], warnings
 
 	if not route_doc:
 		return rows, warnings
@@ -845,6 +825,7 @@ def calculate_bom_preview(source):
 		"status": status,
 		"missing_consumables": missing_consumables,
 		"selected_route": route_doc.name if route_doc else None,
+		"finished_bom": doc.get("finished_bom"),
 		"route_summary": get_route_summary(doc, route_doc),
 	}
 
@@ -898,7 +879,7 @@ def get_status(doc, difference, materials, missing_consumables, route_warnings):
 		return "Draft"
 	if missing_consumables:
 		return "Draft"
-	if doc.get("finished_item") and doc.get("compound") and doc.get("base_colour") and doc.get("selected_route"):
+	if doc.get("finished_item") and doc.get("compound_item") and doc.get("base_colour_item") and doc.get("selected_route"):
 		return "Ready for Planning"
 	return "Draft"
 
@@ -920,12 +901,11 @@ def get_route_summary(doc, route_doc):
 
 def apply_preview_to_doc(doc, preview):
 	for fieldname in (
+		"finished_bom",
 		"production_quantity",
 		"weight_per_meter_gm",
 		"weight_per_meter_kg",
 		"total_eb_weight_kg",
-		"compound_item",
-		"base_colour_item",
 		"compound_consumption_per_meter",
 		"compound_total_required",
 		"compound_available_qty",
@@ -979,8 +959,8 @@ def validate_ready_for_planning(doc):
 	required = {
 		"finished_item": _("Finished Product Item"),
 		"company": _("Company"),
-		"compound": _("Compound"),
-		"base_colour": _("Base Colour / Shade"),
+		"compound_item": _("Compound Item"),
+		"base_colour_item": _("Base Colour Item"),
 		"extrusion_type": _("Extrusion Type"),
 	}
 	for fieldname, label in required.items():
@@ -1152,6 +1132,7 @@ def create_planning_entries(doc):
 		entry = frappe.new_doc("SmartEdge Production Plan Entry")
 		entry.final_eb_bom_generator = doc.name
 		entry.plan_type = "Final EB"
+		entry.bom_no = doc.get("finished_bom")
 		entry.operation_row = operation.name
 		entry.operation = operation.operation
 		entry.workstation = operation.workstation
