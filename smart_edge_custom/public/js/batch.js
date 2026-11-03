@@ -3,6 +3,35 @@
 	const link = (doctype, name) => name
 		? `<a href="${escape(frappe.utils.get_form_link(doctype, name))}">${escape(name)}</a>` : __("None recorded");
 	const links = (doctype, names) => [...new Set(names)].map((name) => link(doctype, name)).join(", ") || __("None recorded");
+	const material_summary = (rows) => {
+		if (!rows?.length) return __("No planned, allocated, or consumed material recorded");
+		return `<table class="table table-bordered table-sm mb-3"><thead><tr>
+			<th>${__("Material")}</th><th>${__("Batch")}</th><th>${__("Source Warehouse")}</th>
+			<th class="text-right">${__("Quantity")}</th><th>${__("Status")}</th><th>${__("Stock Entry")}</th>
+		</tr></thead><tbody>${rows.map((row) => `<tr>
+			<td>${escape(row.item_name || row.item_code || "")}</td>
+			<td>${row.batch_no ? link("Batch", row.batch_no) : __("Not selected")}</td>
+			<td>${escape(row.source_warehouse || __("Not recorded"))}</td>
+			<td class="text-right">${escape(row.quantity)} ${escape(row.uom || "")}</td>
+			<td>${escape(row.consumption_status || row.quantity_type || "Not recorded")}</td>
+			<td>${row.source_document_type === "Stock Entry" && row.source_document_id
+				? link("Stock Entry", row.source_document_id) : escape(row.source_document_id || __("Not posted"))}</td>
+		</tr>`).join("")}</tbody></table>`;
+	};
+	const movement_summary = (edges) => {
+		if (!edges?.length) return `<p class="text-muted">${__("No verified stock movement recorded")}</p>`;
+		return `<table class="table table-bordered table-sm"><thead><tr>
+			<th>${__("Source Batch")}</th><th>${__("Destination Batch")}</th><th>${__("Item")}</th>
+			<th class="text-right">${__("Quantity")}</th><th>${__("Source Warehouse")}</th><th>${__("Target Warehouse")}</th>
+			<th>${__("Stock Entry")}</th><th>${__("Status")}</th>
+		</tr></thead><tbody>${edges.map((edge) => `<tr>
+			<td>${link("Batch", edge.source)}</td><td>${link("Batch", edge.target)}</td>
+			<td>${escape(edge.item_code || "")}</td><td class="text-right">${escape(edge.quantity)} ${escape(edge.uom || "")}</td>
+			<td>${escape(edge.source_warehouse || __("Not recorded"))}</td><td>${escape(edge.target_warehouse || __("Not recorded"))}</td>
+			<td>${edge.stock_entry ? `${link("Stock Entry", edge.stock_entry)}${edge.source_row_reference ? ` · ${escape(edge.source_row_reference)}` : ""}` : `${escape(edge.source_document_id || __("Metadata only"))}${edge.source_row_reference ? ` · ${escape(edge.source_row_reference)}` : ""}`}</td>
+			<td>${escape(edge.quantity_type || edge.transaction_status || (edge.stock_entry ? __("Submitted") : __("Recorded")))}</td>
+		</tr>`).join("")}</tbody></table>`;
+	};
 	frappe.ui.form.on("Batch", {
 		async refresh(frm) {
 			const request = (frm.operation_trace_request || 0) + 1;
@@ -44,9 +73,7 @@
 						? `${escape(node.operation_output_quantity)} ${escape(node.operation_output_uom)}`
 						: (operation ? `${escape(frm.doc.custom_operation_output_quantity)} ${__("Meter")}` : __("Not applicable"))],
 					[__("Operation Output UOM"), node.operation_output_uom || (operation ? __("Meter") : __("Not applicable"))],
-					[__("Input Material Summary"), node.input_materials?.length
-						? node.input_materials.map((row) => `${escape(row.quantity_type)}: ${escape(row.item_name || row.item_code)}${row.batch_no ? ` (${link("Batch", row.batch_no)})` : ""} — ${escape(row.quantity)} ${escape(row.uom)} · ${escape(row.consumption_status)}`).join("<br>")
-						: __("No planned or allocated material recorded")],
+					[__("Input Material Summary"), material_summary(node.input_materials)],
 					[__("Stock Consumption Eligibility"), trace ? __("Not eligible") : __("Standard ERPNext validation")],
 					[__("Parent Input Batches"), links("Batch", backward.parent_batches || [])],
 					[__("Child Output Batches"), links("Batch", forward.child_batches || [])],
@@ -56,7 +83,7 @@
 				const edges = [...(backward.edges || []), ...(forward.edges || [])];
 				const unique = [...new Map(edges.map((edge) => [`${edge.evidence}:${edge.source}:${edge.target}`, edge])).values()];
 				section.html(`<table class="table table-bordered"><tbody>${rows.map(([label, value]) => `<tr><th>${escape(label)}</th><td>${value}</td></tr>`).join("")}</tbody></table>
-					${unique.map((edge) => `<p>${link("Batch", edge.source)} → ${link("Batch", edge.target)} · ${escape(__(edge.quantity_type || edge.basis))}: ${escape(edge.quantity)} ${escape(edge.uom)} · ${__("Operation output")}: ${escape(edge.operation_output_quantity)} ${escape(edge.operation_output_uom)} · ${escape(edge.source_document_type || "")} ${escape(edge.source_document_id || "")}${edge.source_row_reference ? ` · ${escape(edge.source_row_reference)}` : ""}${edge.source_warehouse ? ` · ${escape(edge.source_warehouse)}` : ""}</p>`).join("")}
+					<h5>${__("Verified Material and Operation Movement")}</h5>${movement_summary(unique)}
 					<p class="text-muted">${__("Operation output is traceability metadata. Stock quantities and input quantities retain their recorded units; no batch allocation is inferred.")}</p>
 					${[...new Set([...(backward.warnings || []), ...(forward.warnings || [])])].map((warning) => `<p class="text-warning">${escape(warning)}</p>`).join("")}`);
 			} catch (error) {

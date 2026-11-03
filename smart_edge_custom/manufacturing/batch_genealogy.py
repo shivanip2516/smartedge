@@ -638,12 +638,14 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 						"item_group": component, "batch_no": allocation.batch_no,
 						"quantity": flt(allocation.selected_qty), "uom": allocation.uom or material.uom,
 						"quantity_type": "Allocated", "consumption_status": "Not yet consumed",
-						"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name})
+						"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name,
+						"source_warehouse": generator.get("source_warehouse"), "transaction_status": "Not posted"})
 			else:
 				rows.append({"item_code": material.item_code, "item_name": material.item_name,
 					"item_group": component, "batch_no": None, "quantity": flt(material.total_quantity),
 					"uom": material.uom, "quantity_type": "Planned", "consumption_status": "Not yet consumed",
-					"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name})
+					"source_document_type": "Final EB BOM Generator", "source_document_id": generator.name,
+					"source_warehouse": generator.get("source_warehouse"), "transaction_status": "Not posted"})
 		return rows
 	def add_batch(name, context=None):
 		if name in nodes:
@@ -735,6 +737,11 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 					"quantity": quantity, "uom": uom, "quantity_type": quantity_type, "stock_entry": stock_entry,
 					"input_quantity": quantity, "input_uom": uom,
 					"source_warehouse": material_evidence.warehouse if is_material else None,
+					"target_warehouse": final_evidence.warehouse if is_final else None,
+					"item_code": (material_evidence.item_code if is_material else
+						final_evidence.item_code if is_final else
+						frappe.db.get_value("Batch", source_batch, "item")),
+					"transaction_status": "Submitted" if (is_material or is_final) else "Recorded",
 					"source_document_type": source_document_type, "source_document_id": source_document_id,
 					"source_row_reference": source_row_reference,
 					"production_job": row.production_job, "operation_output_quantity": target[1].actual_qty_meter,
@@ -771,10 +778,30 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 					"quantity": source.quantity, "uom": source.uom, "quantity_type": quantity_type,
 					"input_quantity": source.quantity, "input_uom": source.uom,
 					"source_warehouse": source.warehouse, "source_document_type": "Stock Entry",
+					"target_warehouse": output.warehouse,
+					"item_code": source.item_code, "transaction_status": "Submitted",
 					"source_document_id": source.stock_entry, "source_row_reference": source.stock_entry_detail,
 					"production_job": job.name, "operation_output_quantity": job.actual_qty_meter,
 					"operation_output_uom": "Meter", "completed_at": job.actual_end,
 				}
+	# Prefer verified consumed batches over the plan-only fallback on every
+	# operation node, including the first operation Batch.
+	for node_name, node in nodes.items():
+		actual = []
+		for edge in edges.values():
+			if edge.get("target") != node_name or edge.get("quantity_type") != "Consumed":
+				continue
+			item_code = frappe.db.get_value("Batch", edge["source"], "item")
+			item = frappe.db.get_value("Item", item_code, ["item_name", "item_group"], as_dict=True) if item_code else None
+			actual.append({"item_code": item_code, "item_name": (item.item_name if item else item_code),
+				"item_group": item.item_group if item else None, "batch_no": edge["source"],
+				"quantity": edge["quantity"], "uom": edge["uom"], "quantity_type": "Consumed",
+				"consumption_status": "Consumed", "source_document_type": edge.get("source_document_type"),
+				"source_document_id": edge.get("source_document_id"), "source_row_reference": edge.get("source_row_reference"),
+				"source_warehouse": edge.get("source_warehouse"), "target_warehouse": edge.get("target_warehouse"),
+				"transaction_status": edge.get("transaction_status") or "Submitted"})
+		if actual:
+			node["input_materials"] = actual
 	if batch_no not in nodes:
 		return {}
 	connected, frontier = {batch_no}, {batch_no}
