@@ -43,6 +43,7 @@
   "created_from",
   "source_warehouse",
   "wip_warehouse",
+  "stock_movement_type",
   "target_warehouse",
   "planned_employee",
   "planned_shift",
@@ -310,6 +311,14 @@
    "fieldtype": "Link",
    "label": "Work-in-Progress Warehouse",
    "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "default": "Non-Stock Operation",
+   "fieldname": "stock_movement_type",
+   "fieldtype": "Select",
+   "label": "Stock Movement",
+   "options": "Non-Stock Operation\nStockable WIP Output\nWIP Transfer / Processing",
    "read_only": 1
   },
   {

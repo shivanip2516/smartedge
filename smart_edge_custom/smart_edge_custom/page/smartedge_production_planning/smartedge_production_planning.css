@@ -692,6 +692,38 @@
 	white-space: nowrap;
 }
 
+.smartedge-planning .se-qc-badge {
+	display: inline-flex;
+	align-items: center;
+	min-height: 18px;
+	padding: 2px 7px;
+	border: 1px solid transparent;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 850;
+	line-height: 13px;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.smartedge-planning .se-qc-pending {
+	background: #ffedd5;
+	color: #9a3412;
+	border-color: #fdba74;
+}
+
+.smartedge-planning .se-qc-approved {
+	background: #dcfce7;
+	color: #166534;
+	border-color: #86efac;
+}
+
+.smartedge-planning .se-qc-rejected {
+	background: #fee2e2;
+	color: #b91c1c;
+	border-color: #fca5a5;
+}
+
 .smartedge-planning .se-card-main {
 	margin-top: 5px;
 	font-size: 12px;
@@ -726,6 +758,44 @@
 	color: #0f172a;
 	font-size: 12px;
 	font-weight: 800;
+}
+
+.smartedge-planning .se-card-capacity {
+	margin-top: 4px;
+	padding: 4px 6px;
+	border-radius: 5px;
+	background: rgba(255, 255, 255, 0.66);
+	color: #334155;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1.35;
+}
+
+.smartedge-planning .se-card-capacity.se-capacity-missing {
+	color: #9a3412;
+}
+
+.smartedge-planning .se-card-capacity.se-capacity-high {
+	box-shadow: inset 3px 0 0 #d97706;
+}
+
+.smartedge-planning .se-card-capacity.se-capacity-overloaded {
+	background: #fff1f2;
+	color: #9f1239;
+	box-shadow: inset 3px 0 0 #e11d48;
+}
+
+.smartedge-planning .se-capacity-high {
+	color: #92400e;
+}
+
+.smartedge-planning .se-capacity-overloaded {
+	color: #be123c;
+	font-weight: 800;
+}
+
+.smartedge-planning .se-capacity-unknown {
+	color: #64748b;
 }
 
 .smartedge-planning .se-card-metrics,

@@ -142,8 +142,13 @@ def record_completed_job(job, allow_create=True):
 		ensure_output_movement(job, entry, production, existing)
 		record_release_movement(job, entry, production, existing)
 		from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
-		return {"mode": mode, "production_lot": existing,
-			"operation_batches": ensure_operation_batch(existing, allow_create=False)}
+		operation_batches = ensure_operation_batch(existing, allow_create=False)
+		if allow_create or frappe.db.exists("SmartEdge Unusable Scrap Lot", {"production_job": job.name}):
+			from smart_edge_custom.manufacturing.unusable_scrap import prepare_unusable_scrap
+			prepare_unusable_scrap(job, frappe.get_doc(LOT_DOCTYPE, existing), operation_batches[0] if operation_batches else None)
+		from smart_edge_custom.manufacturing.scrap_recovery import register_usable_scrap
+		register_usable_scrap(job, frappe.get_doc(LOT_DOCTYPE, existing), operation_batches[0] if operation_batches else None)
+		return {"mode": mode, "production_lot": existing, "operation_batches": operation_batches}
 
 	if not allow_create:
 		frappe.throw(_("Completed Production Job {0} has no operation batch. Use the controlled backfill workflow.").format(job.name))
@@ -199,10 +204,18 @@ def record_completed_job(job, allow_create=True):
 		)
 	record_quality_movements(job, entry, production, lot.name, informational=True)
 	record_release_movement(job, entry, production, lot.name)
+	from smart_edge_custom.manufacturing.unusable_scrap import prepare_unusable_scrap
+	unusable_scrap_lot = prepare_unusable_scrap(job, lot)
 	reconcile_final_production(job.final_eb_bom_generator)
 	from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
-	return {"mode": mode, "production_lot": lot.name,
-		"operation_batches": ensure_operation_batch(lot, allow_create=True)}
+	operation_batches = ensure_operation_batch(lot, allow_create=True)
+	if unusable_scrap_lot and operation_batches:
+		unusable = frappe.get_doc("SmartEdge Unusable Scrap Lot", unusable_scrap_lot)
+		if not unusable.source_batch and not unusable.storage_stock_entry:
+			unusable.db_set("source_batch", operation_batches[0], update_modified=False)
+	from smart_edge_custom.manufacturing.scrap_recovery import register_usable_scrap
+	register_usable_scrap(job, lot, operation_batches[0] if operation_batches else None)
+	return {"mode": mode, "production_lot": lot.name, "operation_batches": operation_batches}
 
 
 def _create_completed_operation_lot(job, entry, production, input_lot):
@@ -537,18 +550,38 @@ def attach_lot_details(rows):
 	jobs = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"name": ["in", job_names]},
-		fields=["name", "status", "operation", "actual_qty_meter", "input_production_lot", "output_production_lot"],
+		fields=["name", "status", "operation", "actual_qty_meter", "input_production_lot", "output_production_lot", "manufacturing_stock_entry"],
 		limit_page_length=len(job_names),
 	)
 	by_job = {job.name: job for job in jobs}
 	trace_jobs = set(job_names) | {row.get("released_from_production_job") for row in rows if row.get("released_from_production_job")}
 	lots = {lot.production_job: lot for lot in frappe.get_all(
 		LOT_DOCTYPE, filters={"production_job": ["in", list(trace_jobs)]},
-		fields=["name", "production_job", "produced_quantity", "planned_quantity", "actual_output_quantity", "quantity_uom", "status"],
+		fields=["name", "production_job", "finished_item", "produced_quantity", "planned_quantity", "actual_output_quantity", "quantity_uom", "status"],
 		limit_page_length=len(trace_jobs),
 	)}
 	lot_names = {lot.name for lot in lots.values()}
 	balances = get_lot_balances(lot_names)
+	physical_by_lot = {}
+	if lot_names and frappe.get_meta("Batch").has_field("custom_operation_lot"):
+		physical_batches = frappe.get_all("Batch", filters={
+			"custom_operation_lot": ["in", list(lot_names)], "custom_batch_purpose": "Physical Stock",
+		}, fields=["name", "custom_operation_lot"])
+		batch_to_lot = {batch.name: batch.custom_operation_lot for batch in physical_batches}
+		stock_movements = frappe.get_all("SmartEdge Batch Genealogy Movement", filters={
+			"batch_no": ["in", list(batch_to_lot)], "source_status": ACTIVE,
+		}, fields=["batch_no", "direction", "quantity", "warehouse", "stock_entry"]) if batch_to_lot else []
+		for movement in stock_movements:
+			data = physical_by_lot.setdefault(batch_to_lot[movement.batch_no], {
+				"batch": movement.batch_no, "posted": 0.0, "transferred": 0.0,
+				"warehouse": None, "stock_entry": None,
+			})
+			if movement.direction == "Output":
+				data["posted"] += flt(movement.quantity)
+				data["warehouse"] = movement.warehouse
+				data["stock_entry"] = movement.stock_entry
+			else:
+				data["transferred"] += flt(movement.quantity)
 	finished_batches = defaultdict(list)
 	if lot_names:
 		links = frappe.get_all(
@@ -584,6 +617,18 @@ def attach_lot_details(rows):
 		row.lot_transferred_quantity = flt((balance.get("transferred") or {}).get(job.operation))
 		row.lot_remaining_quantity = flt((balance.get("stages") or {}).get(job.operation))
 		row.lot_uom = lot.quantity_uom
+		physical = physical_by_lot.get(lot_name)
+		if physical:
+			from smart_edge_custom.manufacturing.planning import get_required_conversion_factor
+			stock_uom = frappe.db.get_value("Item", lot.finished_item, "stock_uom")
+			factor = get_required_conversion_factor(lot.finished_item, "Meter", stock_uom)
+			row.physical_stock_entry = job.manufacturing_stock_entry or physical["stock_entry"]
+			row.physical_batch = physical["batch"]
+			row.physical_wip_warehouse = physical["warehouse"]
+			row.physical_posted_quantity = physical["posted"] / factor
+			row.physical_transferred_quantity = physical["transferred"] / factor
+			stock_available = max((physical["posted"] - physical["transferred"]) / factor, 0)
+			row.physical_available_quantity = min(stock_available, flt(balance.get("available")))
 
 
 def reconcile_final_production(production_name, stock_entry=None):

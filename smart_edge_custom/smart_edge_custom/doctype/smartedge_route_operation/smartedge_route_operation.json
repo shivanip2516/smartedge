@@ -9,7 +9,9 @@
   "operation",
   "workstation",
   "planning_category",
-  "mandatory"
+  "mandatory",
+  "stock_movement_type",
+  "wip_warehouse"
  ],
  "fields": [
   {
@@ -52,6 +54,25 @@
    "options": "\nExtrusion\nPrinting\nSlitting\nQC\nPacking\nMixing\nOther",
    "columns": 2,
    "in_list_view": 1
+  },
+  {
+   "columns": 2,
+   "default": "Non-Stock Operation",
+   "fieldname": "stock_movement_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Stock Movement",
+   "options": "Non-Stock Operation\nStockable WIP Output\nWIP Transfer / Processing",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "depends_on": "eval:doc.stock_movement_type!='Non-Stock Operation'",
+   "fieldname": "wip_warehouse",
+   "fieldtype": "Link",
+   "label": "Output WIP Warehouse",
+   "mandatory_depends_on": "eval:doc.stock_movement_type!='Non-Stock Operation'",
+   "options": "Warehouse"
   }
  ],
  "istable": 1,

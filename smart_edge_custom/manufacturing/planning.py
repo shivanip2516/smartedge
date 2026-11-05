@@ -1,5 +1,7 @@
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+import hashlib
+import json
 import re
 
 import frappe
@@ -11,6 +13,11 @@ from smart_edge_custom.manufacturing.fifo_batch_selection import (
 	get_kg_to_stock_factor,
 )
 from smart_edge_custom.manufacturing.final_bom_generator import get_prepared_component_batch_weight
+from smart_edge_custom.manufacturing.machine_capacity import (
+	attach_board_capacity_details,
+	get_capacity_availability,
+	get_schedule_capacity_projection,
+)
 from smart_edge_custom.manufacturing.workstation_capacity import (
 	get_capacity,
 	get_reserved_work_order_count,
@@ -30,6 +37,8 @@ CATEGORY_COLORS = {
 }
 MATERIAL_PLAN_TYPE = "Required Material"
 MATERIAL_DISPLAY_ORDER = {"Compound": 1, "Base Colour": 2}
+CAPACITY_CONFIRMATION_TTL_SECONDS = 300
+CAPACITY_CONFIRMATION_CACHE_PREFIX = "smartedge:capacity-confirmation:"
 
 
 @frappe.whitelist()
@@ -142,6 +151,7 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 		"quantity_uom",
 		"source_warehouse",
 		"wip_warehouse",
+		"stock_movement_type",
 		"target_warehouse",
 		"planned_employee",
 		"planned_shift",
@@ -209,10 +219,14 @@ def get_plan_entries(week_start, week_end, include_related_operations=False, **f
 	from smart_edge_custom.manufacturing.production_lot import attach_lot_details
 
 	attach_lot_details(result)
+	from smart_edge_custom.manufacturing.quality_control import attach_qc_details
+
+	attach_qc_details(result)
 	attach_work_order_progress(result)
 	planned_employee_names = get_employee_name_map(row.get("planned_employee") for row in result)
 	for row in result:
 		row.planned_employee_name = planned_employee_names.get(row.get("planned_employee"))
+	attach_board_capacity_details(result)
 	return result
 
 
@@ -341,6 +355,8 @@ def attach_work_order_progress(rows):
 def attach_job_details(rows):
 	if not rows:
 		return
+	from smart_edge_custom.manufacturing.scrap_recovery import get_recovery_uom, get_unusable_scrap_uom
+
 	job_rows = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"plan_entry": ["in", [row.name for row in rows]], "status": ["!=", "Cancelled"]},
@@ -352,6 +368,8 @@ def attach_job_details(rows):
 	for job in job_rows:
 		by_entry[job.plan_entry].append(job)
 	employee_names = get_employee_name_map(job.operator_employee for job in job_rows)
+	recovery_uoms = {}
+	unusable_scrap_uoms = {}
 	for row in rows:
 		job = get_authoritative_job(by_entry.get(row.name, []))
 		if not job:
@@ -373,6 +391,12 @@ def attach_job_details(rows):
 		row.job_rework_qty = job.get("rework_qty")
 		row.job_usable_scrap = job.get("usable_scrap")
 		row.job_unusable_scrap = job.get("unusable_scrap")
+		source_item = row.get("finished_item") or row.get("material_item")
+		if source_item not in recovery_uoms:
+			recovery_uoms[source_item] = get_recovery_uom(source_item)
+			unusable_scrap_uoms[source_item] = get_unusable_scrap_uom(source_item)
+		row.scrap_uom = recovery_uoms[source_item]
+		row.unusable_scrap_uom = unusable_scrap_uoms[source_item]
 		row.job_remaining_qty_meter = job.get("remaining_qty_meter")
 		row.job_remaining_qty_kg = job.get("remaining_qty_kg")
 	attach_open_downtime_details(rows)
@@ -496,6 +520,7 @@ def get_generator_map(names):
 		return {}
 	fields = [
 		"name",
+		"company",
 		"finished_item",
 		"finished_item_name",
 		"custom_size",
@@ -625,6 +650,8 @@ def make_operation_card(row):
 		"job_rework_qty": flt(row.get("job_rework_qty")),
 		"job_usable_scrap": flt(row.get("job_usable_scrap")),
 		"job_unusable_scrap": flt(row.get("job_unusable_scrap")),
+		"scrap_uom": row.get("scrap_uom"),
+		"unusable_scrap_uom": row.get("unusable_scrap_uom"),
 		"job_remaining_qty_meter": flt(row.get("job_remaining_qty_meter")),
 		"job_remaining_qty_kg": flt(row.get("job_remaining_qty_kg")),
 		"production_lot": row.get("production_lot"),
@@ -643,15 +670,40 @@ def make_operation_card(row):
 		"lot_transferred_quantity": flt(row.get("lot_transferred_quantity")),
 		"lot_remaining_quantity": flt(row.get("lot_remaining_quantity")),
 		"lot_uom": row.get("lot_uom"),
+		"stock_movement_type": row.get("stock_movement_type") or "Non-Stock Operation",
+		"physical_stock_entry": row.get("physical_stock_entry"),
+		"physical_batch": row.get("physical_batch"),
+		"physical_wip_warehouse": row.get("physical_wip_warehouse"),
+		"physical_posted_quantity": flt(row.get("physical_posted_quantity")),
+		"physical_transferred_quantity": flt(row.get("physical_transferred_quantity")),
+		"physical_available_quantity": flt(row.get("physical_available_quantity")),
+		"is_qc": bool(row.get("is_qc")),
+		"qc_required": bool(row.get("qc_required")),
+		"qc_checkpoint_operation": row.get("qc_checkpoint_operation"),
+		"quality_inspection": row.get("quality_inspection"),
+		"qc_status": row.get("qc_status"),
+		"qc_display_status": row.get("qc_display_status"),
+		"qc_notification_warning": row.get("qc_notification_warning"),
+		"qc_eligible_qty": flt(row.get("eligible_qty")),
+		"qc_accepted_qty": flt(row.get("accepted_qty")),
+		"qc_rejected_qty": flt(row.get("rejected_qty")),
+		"qc_rework_qty": flt(row.get("rework_qty")),
+		"qc_can_review": bool(row.get("can_review")),
+		"qc_blocked": bool(row.get("qc_blocked")),
 		"downtime_start": str(row.get("downtime_start")) if row.get("downtime_start") else None,
 		"downtime_reason": row.get("downtime_reason"),
 		"downtime_remarks": row.get("downtime_remarks"),
 		"downtime_employee": row.get("downtime_employee"),
 		"downtime_elapsed_seconds": cint(row.get("downtime_elapsed_seconds") or 0),
 	}
+	if row.get("plan_type") != MATERIAL_PLAN_TYPE:
+		card["machine_capacity"] = row.get("machine_capacity") or {"applicable": 0}
 	start_eligibility = get_scheduled_start_eligibility(row)
 	card["start_allowed"] = start_eligibility["allowed"]
 	card["start_block_reason"] = start_eligibility["message"]
+	if row.get("qc_blocked"):
+		card["start_allowed"] = False
+		card["start_block_reason"] = row.get("qc_block_reason")
 	if row.get("plan_type") == "Required Material":
 		card.update(
 			{
@@ -704,12 +756,33 @@ def group_operations(operations):
 		workstations = []
 		for workstation in sorted(grouped[category]):
 			cards = grouped[category][workstation]
+			daily_summary = next(
+				(
+					card.get("machine_capacity", {}).get("daily_summary")
+					for card in cards
+					if card.get("machine_capacity", {}).get("daily_summary")
+				),
+				None,
+			)
+			capacity = get_workstation_capacity_payload(workstation, cards[0]["planned_date"]) if cards else {}
+			if daily_summary:
+				capacity.update(
+					{
+						"capacity_hours": daily_summary.get("net_available_hours", 0),
+						"planned_hours": daily_summary.get("allocated_hours", 0),
+						"remaining_hours": daily_summary.get("remaining_hours", 0),
+						"overallocated_hours": daily_summary.get("overallocated_hours", 0),
+						"utilization": daily_summary.get("utilization"),
+						"configured": daily_summary.get("configured", 0),
+						"message": daily_summary.get("message"),
+					}
+				)
 			workstations.append(
 				{
 					"workstation": workstation,
 					"cards": cards,
 					"planned_hours": sum(flt(card["duration_hours"]) for card in cards),
-					"capacity": get_workstation_capacity_payload(workstation, cards[0]["planned_date"]) if cards else {},
+					"capacity": capacity,
 				}
 			)
 		groups.append(
@@ -828,6 +901,104 @@ def add_unique(values, value):
 
 
 @frappe.whitelist()
+def check_schedule_capacity(
+	plan_entry,
+	planned_date,
+	workstation,
+	planned_start="09:00",
+	duration_hours=None,
+):
+	"""Return a read-only projection and a scoped token when overload confirmation is allowed."""
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	entry.check_permission("write")
+	validate_plan_entry(entry)
+	validate_selected_workstation(entry, workstation)
+	planned_start = normalize_schedule_time(planned_start)
+	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
+	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
+	projection["can_confirm"] = cint(can_confirm_capacity_overload())
+	if projection.get("requires_confirmation") and projection["can_confirm"]:
+		fingerprint = make_capacity_move_fingerprint(
+			entry.name, workstation, planned_date, planned_start, duration_hours
+		)
+		token = frappe.generate_hash(length=32)
+		frappe.cache.set_value(
+			f"{CAPACITY_CONFIRMATION_CACHE_PREFIX}{token}",
+			{
+				"user": frappe.session.user,
+				"fingerprint": fingerprint,
+				"projection_signature": get_capacity_projection_signature(projection),
+			},
+			expires_in_sec=CAPACITY_CONFIRMATION_TTL_SECONDS,
+		)
+		projection["confirmation_token"] = token
+	return projection
+
+
+def can_confirm_capacity_overload():
+	roles = set(frappe.get_roles(frappe.session.user))
+	return frappe.session.user == "Administrator" or bool(roles & {"Manufacturing Manager", "System Manager"})
+
+
+def make_capacity_move_fingerprint(plan_entry, workstation, planned_date, planned_start, duration_hours):
+	return {
+		"plan_entry": plan_entry,
+		"workstation": workstation,
+		"planned_date": str(getdate(planned_date)),
+		"planned_start": normalize_schedule_time(planned_start),
+		"duration_hours": round(flt(duration_hours), 6),
+	}
+
+
+def get_capacity_projection_signature(projection):
+	values = {
+		fieldname: (round(flt(projection.get(fieldname)), 6) if projection.get(fieldname) is not None else None)
+		for fieldname in (
+			"available_hours",
+			"already_planned_hours",
+			"new_operation_hours",
+			"projected_total_hours",
+			"overload_hours",
+		)
+	}
+	values.update(
+		{
+			"workstation": projection.get("workstation"),
+			"planned_date": projection.get("planned_date"),
+			"shift": projection.get("shift"),
+			"status": projection.get("status"),
+		}
+	)
+	return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def validate_capacity_confirmation(token, fingerprint, projection):
+	if not token:
+		frappe.throw(
+			_("This move overloads the Workstation. Review the latest capacity and confirm it again."),
+			title=_("Capacity Confirmation Required"),
+		)
+	if not can_confirm_capacity_overload():
+		frappe.throw(
+			_("Only an authorized Manufacturing Manager can confirm a capacity overload."),
+			title=_("Capacity Confirmation Not Allowed"),
+		)
+	cache_key = f"{CAPACITY_CONFIRMATION_CACHE_PREFIX}{token}"
+	confirmation = frappe.cache.get_value(cache_key)
+	if (
+		not confirmation
+		or confirmation.get("user") != frappe.session.user
+		or confirmation.get("fingerprint") != fingerprint
+		or confirmation.get("projection_signature") != get_capacity_projection_signature(projection)
+	):
+		frappe.throw(
+			_("Capacity has changed or the confirmation expired. Review and confirm the fresh calculation."),
+			title=_("Fresh Capacity Confirmation Required"),
+		)
+	return cache_key
+
+
+@frappe.whitelist()
 def schedule_operation(
 	plan_entry,
 	planned_date,
@@ -837,6 +1008,7 @@ def schedule_operation(
 	priority=None,
 	override_capacity=0,
 	override_sequence=0,
+	capacity_confirmation_token=None,
 ):
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
@@ -844,6 +1016,7 @@ def schedule_operation(
 	validate_material_plan_released(entry)
 	validate_material_scheduling_context(entry)
 	validate_selected_workstation(entry, workstation)
+	lock_workstation(workstation)
 
 	planned_start = normalize_schedule_time(planned_start)
 	start_dt = combine_date_time(planned_date, planned_start)
@@ -852,8 +1025,22 @@ def schedule_operation(
 	validate_future_schedule(start_dt, end_dt)
 
 	validate_sequence(entry, start_dt, bool(int(override_sequence or 0)))
+	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
+	confirmation_cache_key = None
+	if projection.get("requires_confirmation"):
+		fingerprint = make_capacity_move_fingerprint(
+			entry.name, workstation, planned_date, planned_start, duration_hours
+		)
+		confirmation_cache_key = validate_capacity_confirmation(
+			capacity_confirmation_token, fingerprint, projection
+		)
 	capacity_warning = validate_capacity(
-		workstation, entry.name, start_dt, end_dt, bool(int(override_capacity or 0))
+		workstation,
+		entry.name,
+		start_dt,
+		end_dt,
+		bool(int(override_capacity or 0)),
+		confirmed_machine_overload=bool(confirmation_cache_key),
 	)
 
 	entry.workstation = workstation
@@ -864,8 +1051,15 @@ def schedule_operation(
 	if priority:
 		entry.priority = priority
 	entry.save()
+	if confirmation_cache_key:
+		frappe.cache.delete_value(confirmation_cache_key)
 	update_generator_planning_status(entry.final_eb_bom_generator)
-	return {"message": _("Operation scheduled."), "warning": capacity_warning}
+	return {
+		"message": _("Operation scheduled."),
+		"warning": capacity_warning,
+		"capacity_status": projection.get("status"),
+		"capacity_message": projection.get("message"),
+	}
 
 
 @frappe.whitelist()
@@ -1072,7 +1266,14 @@ def get_sequence_predecessors(entry):
 	)
 
 
-def validate_capacity(workstation, plan_entry, start_dt, end_dt, override=False):
+def validate_capacity(
+	workstation,
+	plan_entry,
+	start_dt,
+	end_dt,
+	override=False,
+	confirmed_machine_overload=False,
+):
 	lock_workstation(workstation)
 	capacity_hours = get_workstation_capacity_hours(workstation, getdate(start_dt))
 	planned = get_workstation_planned_minutes(workstation, getdate(start_dt), plan_entry)
@@ -1100,7 +1301,12 @@ def validate_capacity(workstation, plan_entry, start_dt, end_dt, override=False)
 				),
 				title=_("Workstation Job Capacity Exceeded"),
 			)
-	if capacity_hours and planned + new_minutes > capacity_hours * 60 and not override:
+	if (
+		capacity_hours
+		and planned + new_minutes > capacity_hours * 60
+		and not override
+		and not confirmed_machine_overload
+	):
 		over_by = (planned + new_minutes - capacity_hours * 60) / 60
 		frappe.throw(_("Capacity exceeded by {0} hours.").format(flt(over_by, 2)))
 	if overlaps:
@@ -1330,15 +1536,25 @@ def create_final_manufacturing_stock_entry(doc):
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
 
-	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled
-	if physical_stock_enabled():
+	from smart_edge_custom.manufacturing.physical_operation_stock import production_uses_physical_stock
+	uses_physical_stock = production_uses_physical_stock(doc.name)
+	if uses_physical_stock:
 		from smart_edge_custom.manufacturing.physical_operation_stock import final_wip_components
 		components, component_batch_nos = final_wip_components(doc, final_jobs)
 	else:
 		components = get_final_stock_components(doc, finished_qty, source_warehouse)
 		component_batch_nos = get_final_component_batch_nos(doc, components)
+	from smart_edge_custom.manufacturing.scrap_recovery import get_recovered_components
+	recovered_components, recovered_batches, recovered_allocations = get_recovered_components(production=doc.name)
+	components.extend(recovered_components)
+	component_batch_nos.extend(recovered_batches)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
 	validate_batch_control([finished_row])
+	unusable_lots = frappe.get_all(
+		"SmartEdge Unusable Scrap Lot",
+		filters={"production_job": ["in", [job.name for job in final_jobs]], "status": "Pending Storage"},
+		pluck="name",
+	)
 
 	stock_entry = frappe.new_doc("Stock Entry")
 	stock_entry.purpose = "Manufacture"
@@ -1349,16 +1565,29 @@ def create_final_manufacturing_stock_entry(doc):
 	stock_entry.to_warehouse = target_warehouse
 	stock_entry.posting_date = nowdate()
 	stock_entry.remarks = _("Final manufacturing Stock Entry for Final EB BOM Generator {0}").format(doc.name)
+	if unusable_lots:
+		from smart_edge_custom.manufacturing.unusable_scrap import set_storage_metadata
+		set_storage_metadata(stock_entry, unusable_lots)
 	for component in components:
 		stock_entry.append("items", component)
 	stock_entry.append("items", finished_row)
+	from smart_edge_custom.manufacturing.unusable_scrap import append_storage_output
+	unusable_pairs = [append_storage_output(stock_entry, name) for name in unusable_lots]
 	stock_entry.insert()
-	if physical_stock_enabled():
+	if uses_physical_stock:
 		from smart_edge_custom.manufacturing.physical_operation_stock import validate_posted_precision
 		validate_posted_precision(stock_entry)
 	set_final_component_batch_bundles(stock_entry, component_batch_nos)
+	from smart_edge_custom.manufacturing.unusable_scrap import attach_storage_bundle
+	for pair in unusable_pairs:
+		attach_storage_bundle(stock_entry, pair)
 	stock_entry.save()
 	stock_entry.submit()
+	if unusable_lots:
+		from smart_edge_custom.manufacturing.unusable_scrap import mark_stored
+		mark_stored(unusable_lots, stock_entry.name)
+	from smart_edge_custom.manufacturing.scrap_recovery import mark_recovered_components_consumed
+	mark_recovered_components_consumed(recovered_allocations, stock_entry.name)
 	link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry.name, finished_qty)
 	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
 
@@ -1563,14 +1792,19 @@ def validate_final_completion_stock_entry_setup(job, completion_type):
 	finished_qty = get_final_finished_quantity(doc.name) + (flt(job.good_qty) or flt(job.actual_qty_meter))
 	if finished_qty <= 0:
 		frappe.throw(_("Actual accepted Finished Goods quantity is required before creating Stock Entry."))
-	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled, final_wip_components
-	if physical_stock_enabled():
+	from smart_edge_custom.manufacturing.quality_control import validate_final_qc_eligibility
+
+	validate_final_qc_eligibility(doc.name, finished_qty)
+	from smart_edge_custom.manufacturing.physical_operation_stock import production_uses_physical_stock, final_wip_components
+	if production_uses_physical_stock(doc.name):
 		candidate = frappe._dict(job.as_dict())
 		candidate.stock_posting_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
 		final_wip_components(doc, [candidate])
 	else:
 		components = get_final_stock_components(doc, finished_qty, source_warehouse)
 		get_final_component_batch_nos(doc, components)
+	from smart_edge_custom.manufacturing.scrap_recovery import get_recovered_components
+	get_recovered_components(production=doc.name)
 	finished_row = get_finished_stock_row(doc, finished_qty, target_warehouse)
 	validate_batch_control([finished_row])
 
@@ -2011,24 +2245,35 @@ def plan_full_production(production, start_date, start_time="09:00"):
 def get_workstation_capacity(workstation, planned_date):
 	frappe.has_permission("Workstation", "read", throw=True)
 	planned_date = getdate(planned_date)
-	capacity = get_workstation_capacity_hours(workstation, planned_date)
-	planned = get_workstation_planned_minutes(workstation, planned_date)
-	return get_workstation_capacity_payload(workstation, planned_date, capacity, planned)
+	return get_workstation_capacity_payload(workstation, planned_date)
 
 
 def get_workstation_capacity_payload(workstation, planned_date, capacity=None, planned=None):
 	if not workstation or workstation == _("Unassigned") or not planned_date:
-		return {"capacity_hours": 0, "planned_hours": 0, "utilization": 0, "configured": 0}
+		return {
+			"capacity_hours": 0,
+			"planned_hours": 0,
+			"remaining_hours": 0,
+			"overallocated_hours": 0,
+			"utilization": 0,
+			"configured": 0,
+		}
 	planned_date = getdate(planned_date)
-	capacity = get_workstation_capacity_hours(workstation, planned_date) if capacity is None else capacity
-	planned = get_workstation_planned_minutes(workstation, planned_date) if planned is None else planned
+	availability = get_capacity_availability(workstation, planned_date)
+	capacity = availability.get("net_hours", 0)
+	planned_hours = availability.get("reserved_hours", 0)
 	return {
 		"workstation": workstation,
 		"date": str(planned_date),
 		"capacity_hours": capacity,
-		"planned_hours": planned / 60,
-		"utilization": (planned / 60 / capacity * 100) if capacity else 0,
-		"configured": 1 if capacity else 0,
+		"scheduled_hours": availability.get("scheduled_hours", 0),
+		"downtime_hours": availability.get("downtime_hours", 0),
+		"planned_hours": planned_hours,
+		"remaining_hours": availability.get("remaining_hours", 0),
+		"overallocated_hours": availability.get("overallocated_hours", 0),
+		"utilization": (planned_hours / capacity * 100) if capacity else 0,
+		"configured": availability.get("configured", 0),
+		"message": availability.get("message"),
 	}
 
 
@@ -2129,6 +2374,10 @@ def get_complete_job_context(plan_entry):
 		"remarks": job.remarks,
 		"status": job.status,
 	}
+	from smart_edge_custom.manufacturing.scrap_recovery import get_recovery_uom, get_unusable_scrap_uom
+
+	context["scrap_uom"] = get_recovery_uom(production.finished_item if production else None)
+	context["unusable_scrap_uom"] = get_unusable_scrap_uom(production.finished_item if production else None)
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	if entry.get("plan_type") == "Required Material":
 		context.update(
@@ -2145,6 +2394,8 @@ def get_complete_job_context(plan_entry):
 				"total_planned_quantity": flt(job.planned_qty_kg),
 			}
 		)
+		context["scrap_uom"] = get_recovery_uom(entry.material_item)
+		context["unusable_scrap_uom"] = get_unusable_scrap_uom(entry.material_item)
 	elif is_final_stock_posting_entry(entry):
 		preview_qty = flt(job.good_qty) or flt(job.actual_qty_meter) or flt(job.planned_qty_meter)
 		context["batch_consumption_preview"] = get_final_batch_consumption_preview(
@@ -2238,6 +2489,10 @@ def release_completed_quantity_to_next_operation(job):
 	if job.get("released_to_plan_entry"):
 		return
 	source_entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
+	from smart_edge_custom.manufacturing.quality_control import is_qc_entry
+
+	if is_qc_entry(source_entry):
+		return
 	next_entry = get_next_mandatory_entry(source_entry)
 	if not next_entry:
 		return
@@ -2273,6 +2528,18 @@ def release_completed_quantity_to_next_operation(job):
 def start_production_job(plan_entry, operator_employee=None, workstation=None, shift=None):
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
+	from smart_edge_custom.manufacturing.quality_control import (
+		begin_review,
+		ensure_pending_inspection,
+		get_current_employee,
+		is_qc_entry,
+		require_qc_authority,
+	)
+
+	qc_entry = is_qc_entry(entry)
+	if qc_entry:
+		require_qc_authority()
+		operator_employee = operator_employee or get_current_employee()
 	validate_employee(operator_employee, frappe.db.get_value("Final EB BOM Generator", entry.final_eb_bom_generator, "company"))
 	workstation = workstation or entry.workstation
 	validate_selected_workstation(entry, workstation)
@@ -2335,6 +2602,10 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 		from smart_edge_custom.manufacturing.production_lot import record_qc_hold
 
 		record_qc_hold(job, entry)
+		if qc_entry:
+			inspection = ensure_pending_inspection(entry)
+			if inspection:
+				begin_review(inspection.name, operator_employee)
 		return {"production_job": existing, "existing": 1, "requires_operator": 0}
 	job = frappe.new_doc("SmartEdge Production Job")
 	job.plan_entry = entry.name
@@ -2362,6 +2633,10 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	from smart_edge_custom.manufacturing.production_lot import record_qc_hold
 
 	record_qc_hold(job, entry)
+	if qc_entry:
+		inspection = ensure_pending_inspection(entry)
+		if inspection:
+			begin_review(inspection.name, operator_employee)
 	if frappe.get_meta("SmartEdge Production Plan Entry", cached=True).has_field("production_job"):
 		entry.production_job = job.name
 	entry.status = "In Progress"
@@ -2388,9 +2663,11 @@ def apply_released_quantity_to_job(job, entry):
 	# The plan entry is the release gate; never seed values from an unreleased job.
 	if not flt(entry.get("released_qty_meter")) and not flt(entry.get("released_qty_kg")):
 		return
-	job.actual_qty_meter = source_job.actual_qty_meter if flt(entry.get("released_qty_meter")) else 0
-	job.actual_qty_kg = source_job.actual_qty_kg if flt(entry.get("released_qty_kg")) else 0
-	job.good_qty = source_job.good_qty if flt(entry.get("released_qty_kg")) else 0
+	released_meter = flt(entry.get("released_qty_meter"))
+	released_kg = flt(entry.get("released_qty_kg"))
+	job.actual_qty_meter = released_meter
+	job.actual_qty_kg = released_kg
+	job.good_qty = released_meter
 
 
 def validate_start_eligible(entry):
@@ -2506,6 +2783,12 @@ def pause_production_job(plan_entry, downtime_reason=None, downtime_remarks=None
 @frappe.whitelist()
 def resume_production_job(plan_entry):
 	job = get_open_job(plan_entry)
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
+
+	if is_qc_entry(entry):
+		require_qc_authority()
+	validate_predecessor_release(entry)
 	lock_production_job(job.name)
 	job.reload()
 	job.resume_job()
@@ -2525,10 +2808,19 @@ def complete_production_job(
 	unusable_scrap=None,
 	remarks=None,
 ):
+	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import (
+		OUTPUT_QUANTITY_FIELDS,
+		parse_output_quantity,
+	)
+
 	job = get_open_job(plan_entry, include_completed=True)
 	lock_production_job(job.name)
 	job.reload()
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	from smart_edge_custom.manufacturing.quality_control import is_qc_entry, validate_downstream_quantity
+
+	if is_qc_entry(entry) and not getattr(frappe.flags, "smartedge_qc_decision", False):
+		frappe.throw(_("Use Submit QC Decision to complete a mandatory QC checkpoint."))
 	if job.status == "Completed" and entry.get("plan_type") != MATERIAL_PLAN_TYPE:
 		return {"production_job": job.name, **job.complete_job(completion_type or "Full Completion")}
 	material_result = None
@@ -2548,8 +2840,14 @@ def complete_production_job(
 			frappe.throw(_("Partial Completion must leave at least one batch remaining."))
 		previous_completion_flag = getattr(frappe.flags, "smartedge_board_completion", False)
 		frappe.flags.smartedge_board_completion = True
+		if unusable_scrap is not None:
+			field = job.meta.get_field("unusable_scrap")
+			job.unusable_scrap = parse_output_quantity(
+				unusable_scrap, field.label if field else _("Unusable Scrap"),
+				job.precision("unusable_scrap") if field else 6,
+			)
 		try:
-			material_result = complete_material_production(entry, completed_batches)
+			material_result = complete_material_production(entry, completed_batches, production_job=job)
 		finally:
 			frappe.flags.smartedge_board_completion = previous_completion_flag
 		actual_qty_meter = completed_batches
@@ -2567,7 +2865,16 @@ def complete_production_job(
 		"remarks": remarks,
 	}.items():
 		if value is not None:
+			if fieldname in OUTPUT_QUANTITY_FIELDS:
+				field = job.meta.get_field(fieldname)
+				value = parse_output_quantity(
+					value,
+					field.label if field else fieldname,
+					job.precision(fieldname) if field else 6,
+				)
 			job.set(fieldname, flt(value) if fieldname != "remarks" else value)
+	if entry.get("plan_type") != MATERIAL_PLAN_TYPE:
+		validate_downstream_quantity(entry, max(flt(job.actual_qty_meter), flt(job.good_qty)))
 	completion_type = completion_type or "Full Completion"
 	if material_result:
 		job.manufacturing_stock_entry = material_result["stock_entry"]

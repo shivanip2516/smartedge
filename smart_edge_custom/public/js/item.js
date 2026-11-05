@@ -7,6 +7,7 @@ frappe.ui.form.on("Item", {
 		configure_customer_order_code_field(frm);
 		set_dynamic_mandatory_fields(frm);
 		update_customer_order_code(frm, { silent: true });
+		setup_item_scrap_recovery_actions(frm);
 	},
 
 	item_group(frm) {
@@ -36,6 +37,38 @@ frappe.ui.form.on("Item", {
 		update_customer_order_code(frm);
 	},
 });
+
+const SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE = "SmartEdge Recovery Material";
+
+function setup_item_scrap_recovery_actions(frm) {
+	if (frm.is_new() || !frappe.model.can_read(SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE)) {
+		return;
+	}
+
+	frm.dashboard.add_transactions([
+		{
+			label: __("Scrap & Recovery Configuration"),
+			items: [SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE],
+		},
+	]);
+
+	frm.add_custom_button(
+		__("View Scrap Mapping"),
+		() => {
+			frappe.route_options = { source_item: frm.doc.name };
+			frappe.set_route("List", SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE);
+		},
+		__("Scrap & Recovery Configuration")
+	);
+
+	if (frappe.model.can_create(SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE)) {
+		frm.add_custom_button(
+			__("Add Scrap Mapping"),
+			() => frappe.new_doc(SMARTEDGE_RECOVERY_MATERIAL_DOCTYPE, { source_item: frm.doc.name }),
+			__("Scrap & Recovery Configuration")
+		);
+	}
+}
 
 function configure_customer_order_code_field(frm) {
 	frm.set_df_property("product_code", "label", __("Customer Order Code"));
@@ -115,4 +148,8 @@ async function set_customer_order_code(frm, order_code) {
 	}
 
 	await frm.set_value("product_code", order_code);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = { setup_item_scrap_recovery_actions };
 }

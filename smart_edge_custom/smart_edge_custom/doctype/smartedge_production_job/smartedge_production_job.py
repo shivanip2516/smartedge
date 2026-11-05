@@ -1,16 +1,58 @@
+import math
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, get_datetime, getdate, now_datetime, nowdate
 
 
+OUTPUT_QUANTITY_FIELDS = (
+	"good_qty",
+	"rejected_qty",
+	"rework_qty",
+	"usable_scrap",
+	"unusable_scrap",
+)
+
+
+def parse_output_quantity(value, label, precision=6):
+	"""Return a finite, non-negative output quantity without silently coercing invalid text."""
+	if value in (None, ""):
+		return 0.0
+	try:
+		number = float(value.replace(",", "") if isinstance(value, str) else value)
+	except (TypeError, ValueError, OverflowError):
+		frappe.throw(_("{0} must be a valid number.").format(label))
+	if not math.isfinite(number):
+		frappe.throw(_("{0} must be a valid number.").format(label))
+	if number < 0:
+		frappe.throw(_("{0} cannot be negative.").format(label))
+	return flt(number, precision)
+
+
 class SmartEdgeProductionJob(Document):
 	def validate(self):
 		self.set_company()
+		self.validate_qc_transition()
+		self.validate_output_quantities()
 		self.map_legacy_operator()
 		self.set_operator_details()
 		self.validate_actual_end()
 		self.set_durations()
+
+	def validate_qc_transition(self):
+		if not self.plan_entry:
+			return
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		from smart_edge_custom.manufacturing.quality_control import is_qc_entry
+
+		if (
+			is_qc_entry(entry)
+			and self.status == "Completed"
+			and (self.is_new() or self.has_value_changed("status"))
+			and not getattr(frappe.flags, "smartedge_qc_decision", False)
+		):
+			frappe.throw(_("Mandatory QC jobs can be completed only through Submit QC Decision."))
 
 	def set_company(self):
 		if self.company or not self.final_eb_bom_generator:
@@ -51,6 +93,13 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def start_job(self):
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
+		from smart_edge_custom.manufacturing.planning import validate_predecessor_release
+
+		if is_qc_entry(entry):
+			require_qc_authority()
+		validate_predecessor_release(entry)
 		if self.status not in {"Draft", "On Hold", "Paused"}:
 			frappe.throw(_("Only Draft, Paused, or On Hold jobs can be started."))
 		if not self.operator_employee:
@@ -96,6 +145,13 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def resume_job(self):
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
+		from smart_edge_custom.manufacturing.planning import validate_predecessor_release
+
+		if is_qc_entry(entry):
+			require_qc_authority()
+		validate_predecessor_release(entry)
 		if self.status != "Paused":
 			frappe.throw(_("Only paused jobs can be resumed."))
 		resume_time = now_datetime()
@@ -130,6 +186,16 @@ class SmartEdgeProductionJob(Document):
 			if current_status == "Completed":
 				self.reload()
 		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		from smart_edge_custom.manufacturing.quality_control import (
+			is_qc_entry,
+			validate_downstream_quantity,
+		)
+
+		if is_qc_entry(entry) and not getattr(frappe.flags, "smartedge_qc_decision", False):
+			frappe.throw(_("Use Submit QC Decision to complete a mandatory QC checkpoint."))
+		if plan_type != "Required Material":
+			validate_downstream_quantity(entry, max(flt(self.actual_qty_meter), flt(self.good_qty)))
 		if self.status == "Completed" and plan_type != "Required Material":
 			from smart_edge_custom.manufacturing.production_lot import record_completed_job
 
@@ -162,7 +228,11 @@ class SmartEdgeProductionJob(Document):
 		if plan_type != "Required Material":
 			from smart_edge_custom.manufacturing.production_lot import record_completed_job
 
-			return {"status": self.status, **record_completed_job(self)}
+			result = {"status": self.status, **record_completed_job(self)}
+			from smart_edge_custom.manufacturing.quality_control import activate_qc_after_completion
+
+			activate_qc_after_completion(self)
+			return result
 		return {"status": self.status}
 
 	def accumulate_productive_time(self, end_time=None):
@@ -206,12 +276,23 @@ class SmartEdgeProductionJob(Document):
 			if flt(self.get(fieldname)) < 0:
 				field = self.meta.get_field(fieldname)
 				frappe.throw(_("{0} cannot be negative.").format(field.label if field else fieldname))
+		self.validate_output_quantities(default_missing=True)
 		if not flt(self.actual_qty_meter):
 			frappe.throw(_("Actual Completed Qty is required."))
 		if flt(self.planned_qty_kg) and not flt(self.actual_qty_kg):
 			frappe.throw(_("Actual Kg is required."))
 		if completion_type == "Partial Completion" and not self.has_remaining_quantity():
 			frappe.throw(_("Partial Completion requires a remaining planned quantity."))
+
+	def validate_output_quantities(self, default_missing=False):
+		for fieldname in OUTPUT_QUANTITY_FIELDS:
+			value = self.get(fieldname)
+			if value in (None, "") and not default_missing:
+				continue
+			field = self.meta.get_field(fieldname)
+			label = field.label if field else fieldname
+			precision = self.precision(fieldname) if field else 6
+			self.set(fieldname, parse_output_quantity(value, label, precision))
 
 	def has_remaining_quantity(self):
 		return (flt(self.planned_qty_meter) and flt(self.actual_qty_meter) < flt(self.planned_qty_meter)) or (

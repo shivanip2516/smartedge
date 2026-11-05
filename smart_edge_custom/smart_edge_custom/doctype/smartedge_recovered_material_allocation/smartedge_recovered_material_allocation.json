@@ -1,0 +1,38 @@
+{
+ "actions": [],
+ "autoname": "format:RMA-.#####",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["status", "company", "production_job", "production_operation", "target_item", "rule", "material_section", "recovery", "recovered_material_item", "recovered_material_batch", "source_warehouse", "available_quantity", "allocated_quantity", "uom", "consumption_stock_entry"],
+ "fields": [
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Reserved\nConsumed\nCancelled","default":"Reserved","read_only":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","read_only":1,"in_standard_filter":1},
+  {"fieldname":"production_job","fieldtype":"Link","label":"Reuse Production Job","options":"SmartEdge Production Job","reqd":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"production_operation","fieldtype":"Link","label":"Permitted Operation","options":"Operation","read_only":1,"in_list_view":1},
+  {"fieldname":"target_item","fieldtype":"Link","label":"Target Finished / Intermediate Item","options":"Item","read_only":1},
+  {"fieldname":"rule","fieldtype":"Link","label":"Reuse Permission Rule","options":"SmartEdge Recovery Reuse Rule","read_only":1},
+  {"fieldname":"material_section","fieldtype":"Section Break","label":"Recovered Material Selection"},
+  {"fieldname":"recovery","fieldtype":"Link","label":"Scrap Recovery","options":"SmartEdge Scrap Recovery","reqd":1,"in_standard_filter":1},
+  {"fieldname":"recovered_material_item","fieldtype":"Link","label":"Recovered Material Item","options":"Item","read_only":1,"in_list_view":1},
+  {"fieldname":"recovered_material_batch","fieldtype":"Link","label":"Recovered Material Batch","options":"Batch","read_only":1,"in_list_view":1},
+  {"fieldname":"source_warehouse","fieldtype":"Link","label":"Recovered Material Warehouse","options":"Warehouse","read_only":1},
+  {"fieldname":"available_quantity","fieldtype":"Float","label":"Available Quantity","precision":"6","read_only":1},
+  {"fieldname":"allocated_quantity","fieldtype":"Float","label":"Quantity to Reuse","precision":"6","reqd":1,"in_list_view":1},
+  {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","read_only":1},
+  {"fieldname":"consumption_stock_entry","fieldtype":"Link","label":"Manufacturing Stock Entry","options":"Stock Entry","read_only":1}
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Recovered Material Allocation",
+ "naming_rule": "Expression",
+ "permissions": [
+  {"role":"Manufacturing Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Manufacturing User","read":1,"write":1,"create":1,"report":1,"export":1,"print":1},
+  {"role":"Stock Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Stock User","read":1,"report":1,"export":1,"print":1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

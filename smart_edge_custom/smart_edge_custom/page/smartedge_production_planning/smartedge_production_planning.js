@@ -334,6 +334,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const quantity = get_parent_quantity_label(card);
 		const active_operation = group.column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) || card;
 		const workstation = active_operation.workstation || __("Not Assigned");
+		const group_qc_badge = get_qc_badge_html({
+			qc_required: group.column_operations.some((operation) => operation.qc_required),
+			qc_display_status: get_group_qc_status(group.column_operations),
+		});
 		const expanded = this.expanded_item_cards.has(group.card_key) || this.should_auto_expand_group();
 		const $card = $(
 			`<div class="se-item-card ${category_class} se-${status_class}" data-execution-key="${frappe.utils.escape_html(group.key)}">
@@ -343,6 +347,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						${item_code ? `<div class="se-item-code">${frappe.utils.escape_html(item_code)}</div>` : ""}
 					</div>
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(group.status))}</span>
+					${group_qc_badge}
 				</div>
 				<div class="se-item-reference"><span>${reference_label}:</span> ${frappe.utils.escape_html(reference || "-")}</div>
 				${sales_order_reference}
@@ -430,7 +435,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const lot_uom = card.lot_uom || card.uom || "";
 		const lot_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(lot_uom)}`.trim();
 		const operation_quantity = (value) => `${se_format_number(value, 6)} m`;
+		const output_uom = card.plan_type === "Required Material" ? (card.uom || "") : "m";
+		const output_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(output_uom)}`.trim();
+		const usable_scrap_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(card.scrap_uom || output_uom)}`.trim();
+		const unusable_scrap_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(card.unusable_scrap_uom || card.scrap_uom || output_uom)}`.trim();
 		const trace_link = (doctype, name) => `<a href="/app/${doctype}/${encodeURIComponent(name)}">${frappe.utils.escape_html(name)}</a>`;
+		const qc_badge = get_qc_badge_html(card);
 		const fg_details = card.plan_type !== "Required Material" ? `
 			<div><span>${__("Finished Goods Item")}</span><strong>${frappe.utils.escape_html(card.finished_item || "")}</strong></div>
 			<div><span>${__("Item Name")}</span><strong>${frappe.utils.escape_html(card.item_name || "")}</strong></div>
@@ -439,15 +449,38 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			<div><span>${__("Operation Sequence")}</span><strong>${frappe.utils.escape_html(String(card.actual_operation_sequence ?? ""))}</strong></div>` : "";
 		const work_order_warning = card.work_order_warning
 			? `<div class="alert alert-warning" role="alert">${frappe.utils.escape_html(card.work_order_warning)}</div>` : "";
+		const completion_output_details = card.job_status === "Completed" ? `
+			<div><span>${__("Good Output")}</span><strong>${output_quantity(card.job_good_qty)}</strong></div>
+			<div><span>${__("Rejected Output")}</span><strong>${output_quantity(card.job_rejected_qty)}</strong></div>
+			<div><span>${__("Rework")}</span><strong>${output_quantity(card.job_rework_qty)}</strong></div>
+			<div><span>${__("Usable Scrap")}</span><strong>${usable_scrap_quantity(card.job_usable_scrap)}</strong></div>
+			<div><span>${__("Unusable Scrap")}</span><strong>${unusable_scrap_quantity(card.job_unusable_scrap)}</strong></div>` : "";
+		const physical_details = card.physical_stock_entry ? `
+			<div><span>${__("Physical Batch")}</span><strong>${card.physical_batch ? trace_link("batch", card.physical_batch) : "—"}</strong></div>
+			<div><span>${__("WIP Warehouse")}</span><strong>${frappe.utils.escape_html(card.physical_wip_warehouse || "")}</strong></div>
+			<div><span>${__("Posted Stock")}</span><strong>${lot_quantity(card.physical_posted_quantity)}</strong></div>
+			<div><span>${__("Physically Transferred")}</span><strong>${lot_quantity(card.physical_transferred_quantity)}</strong></div>
+			<div><span>${__("Physical Available WIP")}</span><strong>${lot_quantity(card.physical_available_quantity)}</strong></div>
+			<div><span>${__("Stock Entry")}</span><strong>${trace_link("stock-entry", card.physical_stock_entry)}</strong></div>` : "";
+		const qc_details = card.qc_required ? `
+			<div><span>${__("QC Checkpoint")}</span><strong>${frappe.utils.escape_html(card.qc_checkpoint_operation || card.operation || "")}</strong></div>
+			<div><span>${__("QC Status")}</span><strong>${frappe.utils.escape_html(card.qc_display_status || "QC Pending")}</strong></div>
+			<div><span>${__("Quality Inspection")}</span><strong>${card.quality_inspection ? trace_link("quality-inspection", card.quality_inspection) : "—"}</strong></div>
+			<div><span>${__("Completed Quantity")}</span><strong>${operation_quantity(card.job_good_qty || card.job_actual_qty_meter || card.lot_actual_output_quantity)}</strong></div>
+			<div><span>${__("QC Accepted")}</span><strong>${operation_quantity(card.qc_accepted_qty)}</strong></div>
+			<div><span>${__("QC Rejected")}</span><strong>${operation_quantity(card.qc_rejected_qty)}</strong></div>
+			<div><span>${__("QC Rework")}</span><strong>${operation_quantity(card.qc_rework_qty)}</strong></div>
+			${card.qc_notification_warning ? `<div class="alert alert-warning"><span>${__("QC Notification")}</span><strong>${frappe.utils.escape_html(card.qc_notification_warning)}</strong></div>` : ""}` : "";
 		const lot_details = card.production_lot ? `
-			<div><span>${__("Operation Batch (non-stock)")}</span><strong><a href="/app/smartedge-production-lot/${encodeURIComponent(card.production_lot)}">${frappe.utils.escape_html(card.production_lot)}</a></strong></div>
+			<div><span>${__("Production Lot")}</span><strong><a href="/app/smartedge-production-lot/${encodeURIComponent(card.production_lot)}">${frappe.utils.escape_html(card.production_lot)}</a></strong></div>
 			<div><span>${__("Planned Quantity")}</span><strong>${operation_quantity(card.planned_quantity)}</strong></div>
 			<div><span>${__("Actual Output")}</span><strong>${operation_quantity(card.lot_actual_output_quantity)}</strong></div>
 			<div><span>${__("Previous Operation Lot")}</span><strong>${card.previous_operation_lot ? trace_link("smartedge-production-lot", card.previous_operation_lot) : "—"}</strong></div>
 			<div><span>${__("Finished Goods Batch")}</span><strong>${(card.related_finished_goods_batches || []).map((batch) => trace_link("batch", batch)).join(", ") || "—"}</strong></div>
 			<div><span>${__("Available WIP")}</span><strong>${lot_quantity(card.lot_available_quantity)}</strong></div>
 			<div><span>${__("Transferred")}</span><strong>${lot_quantity(card.lot_transferred_quantity)}</strong></div>
-			<div><span>${__("Remaining WIP")}</span><strong>${lot_quantity(card.lot_remaining_quantity)}</strong></div>` : "";
+			<div><span>${__("Remaining WIP")}</span><strong>${lot_quantity(card.lot_remaining_quantity)}</strong></div>
+			${physical_details}` : "";
 		const saved_lot_link = card.production_lot
 			? `<small class="se-operation-lot-id">${trace_link("smartedge-production-lot", card.production_lot)}</small>` : "";
 		const match_class = card._matches_filters && has_active_filters(this.state.filters) ? "is-filter-match" : "";
@@ -456,6 +489,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				<div class="se-operation-strip">
 					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(operation_label)} ${saved_lot_link}</div>
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
+					${qc_badge}
 					<button class="btn btn-xs btn-default se-toggle-operation-details" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? __("Collapse operation") : __("Expand operation")}">${expanded ? "−" : "+"}</button>
 				</div>
 				<div class="se-operation-details-panel" ${expanded ? "" : "hidden"}>
@@ -466,10 +500,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						<div><span>${__("Employee")}</span><strong>${frappe.utils.escape_html(employee)}</strong></div>
 						${card.planned_date ? `<div><span>${__("Planned")}</span><strong>${frappe.datetime.str_to_user(card.planned_date)}${planned_time ? ` • ${frappe.utils.escape_html(planned_time)}` : ""}</strong></div>` : ""}
 						${quantity ? `<div><span>${__("Quantity")}</span><strong>${frappe.utils.escape_html(quantity)}</strong></div>` : ""}
+						${completion_output_details}
 						${card.work_order ? `<div><span>${__("Work Order")}</span><strong>${frappe.utils.escape_html(card.work_order)}</strong></div>` : ""}
 						${card.bom_no ? `<div><span>${__("BOM")}</span><strong>${frappe.utils.escape_html(card.bom_no)}</strong></div>` : ""}
 						${card.shift ? `<div><span>${__("Shift")}</span><strong>${frappe.utils.escape_html(card.shift)}</strong></div>` : ""}
 						${lot_details}
+						${qc_details}
 					</div>
 					<div class="se-operation-state">${this.get_status_line_html(card, planned_time, status_class)}</div>
 					<div class="se-operation-actions">
@@ -528,6 +564,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$row.find(".se-pause").on("click", () => this.pause_production_job(card));
 		$row.find(".se-resume").on("click", () => this.resume_production_job(card));
 		$row.find(".se-complete").on("click", () => this.open_complete_dialog(card));
+		$row.find(".se-qc-decision").on("click", () => this.open_qc_decision_dialog(card));
+		$row.find(".se-qc-resubmit").on("click", () => this.resubmit_qc_rework(card));
+		$row.find(".se-qc-view").on("click", () => this.view_qc(card));
 		return $row;
 	}
 
@@ -579,14 +618,18 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			`);
 			for (const workstation of group.workstations || []) {
 				const capacity = workstation.capacity || {};
+				const utilization = capacity.utilization === null || capacity.utilization === undefined
+					? __("Utilization N/A")
+					: `${se_format_number(capacity.utilization, 1)}% ${__("utilization")}`;
+				const utilization_status = get_utilization_status(capacity.utilization);
 				const capacity_label = capacity.configured
-					? `${se_format_number(capacity.planned_hours, 1)}h / ${se_format_number(capacity.capacity_hours, 1)}h ${__("planned")}`
-					: "";
+					? `${se_format_number(capacity.planned_hours, 1)}h / ${se_format_number(capacity.capacity_hours, 1)}h ${__("planned")} • ${se_format_number(capacity.remaining_hours, 1)}h ${__("remaining")} • ${utilization}`
+					: capacity.message || "";
 				const $workstation = $(`
 					<div class="se-workstation-group" data-workstation="${frappe.utils.escape_html(workstation.workstation)}">
 						<div class="se-workstation" title="${frappe.utils.escape_html(workstation.workstation)}">
 							<span>${frappe.utils.escape_html(workstation.workstation)}</span>
-							${capacity_label ? `<small>${frappe.utils.escape_html(capacity_label)}</small>` : ""}
+							${capacity_label ? `<small class="se-capacity-${utilization_status}">${frappe.utils.escape_html(capacity_label)}</small>` : ""}
 						</div>
 					</div>
 				`);
@@ -659,22 +702,91 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	async handle_workstation_drop(card, date_key, workstation) {
 		if (card.planned_date && card.planned_start) {
-			await frappe.call({
-				method: `${this.method}.schedule_operation`,
-				args: {
+			const scheduled = await this.schedule_with_capacity_check({
 					plan_entry: card.id,
 					planned_date: date_key,
 					workstation,
 					planned_start: normalize_schedule_time(get_time_from_datetime(card.planned_start) || "09:00"),
 					duration_hours: card.duration_hours || 1,
 					priority: card.priority,
-				},
-				error_handlers: get_planning_error_handlers(),
 			});
-			await this.refresh();
+			if (scheduled) await this.refresh();
 			return;
 		}
 		await this.open_schedule_dialog(card, date_key, workstation);
+	}
+
+	async schedule_with_capacity_check(args) {
+		const response = await frappe.call({
+			method: `${this.method}.check_schedule_capacity`,
+			args: {
+				plan_entry: args.plan_entry,
+				planned_date: args.planned_date,
+				workstation: args.workstation,
+				planned_start: args.planned_start,
+				duration_hours: args.duration_hours,
+			},
+			error_handlers: get_planning_error_handlers(),
+		});
+		const projection = response.message || {};
+		if (projection.status === "not_configured") {
+			const proceed = await this.show_capacity_decision(
+				__("Machine Capacity Not Configured"),
+				`<p>${frappe.utils.escape_html(projection.message || __("Capacity cannot be verified for this Workstation, product size and selected date/shift."))}</p>`,
+				true
+			);
+			if (!proceed) return false;
+		}
+		if (projection.requires_confirmation) {
+			if (!projection.can_confirm || !projection.confirmation_token) {
+				frappe.msgprint({
+					title: __("Workstation Capacity Overload"),
+					indicator: "red",
+					message: `${capacity_projection_html(projection)}<p>${__("Only an authorized Manufacturing Manager can continue with this overload.")}</p>`,
+				});
+				return false;
+			}
+			const proceed = await this.show_capacity_decision(
+				__("Workstation Capacity Overload"),
+				capacity_projection_html(projection),
+				true
+			);
+			if (!proceed) return false;
+			args.capacity_confirmation_token = projection.confirmation_token;
+		}
+		await frappe.call({
+			method: `${this.method}.schedule_operation`,
+			args,
+			error_handlers: get_planning_error_handlers(),
+		});
+		return true;
+	}
+
+	show_capacity_decision(title, message, allow_continue) {
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = (result) => {
+				if (settled) return;
+				settled = true;
+				dialog.hide();
+				resolve(result);
+			};
+			const dialog = new frappe.ui.Dialog({
+				title,
+				fields: [{ fieldtype: "HTML", options: message }],
+				primary_action_label: allow_continue ? __("Continue Anyway") : __("Close"),
+				primary_action: () => finish(Boolean(allow_continue)),
+				secondary_action_label: __("Cancel"),
+				secondary_action: () => finish(false),
+			});
+			dialog.$wrapper.on("hidden.bs.modal", () => {
+				if (!settled) {
+					settled = true;
+					resolve(false);
+				}
+			});
+			dialog.show();
+		});
 	}
 
 	make_card(card) {
@@ -691,10 +803,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const effective_status = get_card_status(card);
 		const status_class = `status-${String(effective_status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
 		const status_label = get_status_label(effective_status);
+		const qc_badge = get_qc_badge_html(card);
 		const product_line = [is_material ? card.material_type : card.size, card.item_name || card.finished_item].filter(Boolean).join(" • ");
 		const qty_line = [qty, weight, released_qty].filter(Boolean).join(" • ");
 		const planned_time = get_planned_time_label(card);
 		const workstation_label = card.workstation || __("Not Assigned");
+		const capacity = card.machine_capacity || {};
+		const capacity_details = get_machine_capacity_labels(capacity);
 		const material_trace = is_material
 			? `<div class="se-card-time">${__("WO")}: ${frappe.utils.escape_html(card.work_order || "-")} • ${__("BOM")}: ${frappe.utils.escape_html(card.bom_no || "-")}</div>
 				<div class="se-card-time">${__("Employee")}: ${frappe.utils.escape_html(card.operator_name || "-")} • ${__("Shift")}: ${frappe.utils.escape_html(card.shift || "-")}</div>`
@@ -707,6 +822,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			card.operator_name && `${__("Operator")}: ${card.operator_name}`,
 			card.planned_start && `${__("Start")}: ${card.planned_start}`,
 			card.duration_hours && `${__("Hours")}: ${se_format_number(card.duration_hours, 2)}`,
+			...capacity_details.tooltip,
 		]
 			.filter(Boolean)
 			.join("\n");
@@ -718,6 +834,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				</div>
 				<div class="se-card-status-row">
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(status_label)}</span>
+					${qc_badge}
 				</div>
 				<div class="se-card-main">
 					<div class="se-card-workstation" title="${frappe.utils.escape_html(workstation_label)}">
@@ -725,6 +842,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					</div>
 					<div class="se-product-name" title="${frappe.utils.escape_html(product_line)}">${frappe.utils.escape_html(product_line)}</div>
 					<div class="se-card-qty">${frappe.utils.escape_html(qty_line)}</div>
+					${capacity_details.html}
 					${material_trace}
 					${this.get_status_line_html(card, planned_time, status_class)}
 				</div>
@@ -778,6 +896,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$card.find(".se-pause").on("click", () => this.pause_production_job(card));
 		$card.find(".se-resume").on("click", () => this.resume_production_job(card));
 		$card.find(".se-complete").on("click", () => this.open_complete_dialog(card));
+		$card.find(".se-qc-decision").on("click", () => this.open_qc_decision_dialog(card));
+		$card.find(".se-qc-resubmit").on("click", () => this.resubmit_qc_rework(card));
+		$card.find(".se-qc-view").on("click", () => this.view_qc(card));
 		return $card;
 	}
 
@@ -811,6 +932,24 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	get_primary_action_html(card, is_pending, status_class) {
 		const status = get_card_status(card);
+		const qc_status = card.qc_status;
+		if (card.is_qc && !is_pending) {
+			if (!card.qc_can_review) {
+				return `<button class="btn btn-xs btn-default" disabled>${__("QC Action Restricted")}</button>`;
+			}
+			if (qc_status === "Under Review") {
+				return `<button class="btn btn-xs btn-primary se-qc-decision">${__("Submit QC Decision")}</button>`;
+			}
+			if (qc_status === "Rework Required") {
+				return `<button class="btn btn-xs btn-primary se-qc-resubmit">${__("Resubmit Rework")}</button>`;
+			}
+			if (["Accepted", "Rejected"].includes(qc_status)) {
+				return `<button class="btn btn-xs btn-default se-qc-view">${__("View QC Details")}</button>`;
+			}
+			if (qc_status === "Pending") {
+				return `<button class="btn btn-xs btn-primary se-start">▶ ${__("Start QC Review")}</button>`;
+			}
+		}
 		if (status === "Completed") {
 			return `<span class="se-state-pill ${status_class}">✓</span>`;
 		}
@@ -839,7 +978,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			const reason = frappe.utils.escape_html(card.start_block_reason || __("Schedule the operation before starting production."));
 			return `<button class="btn btn-xs btn-primary se-start" disabled title="${reason}" aria-label="${reason}">▶ ${__("Start")}</button>`;
 		}
-		return `<button class="btn btn-xs btn-primary se-start" title="${__("Start Production")}" aria-label="${__("Start Production")}">▶ ${__("Start")}</button>`;
+		const start_label = card.is_qc ? __("Start QC Review") : __("Start");
+		return `<button class="btn btn-xs btn-primary se-start" title="${frappe.utils.escape_html(start_label)}" aria-label="${frappe.utils.escape_html(start_label)}">▶ ${frappe.utils.escape_html(start_label)}</button>`;
 	}
 
 	get_status_line_html(card, planned_time, status_class) {
@@ -950,14 +1090,11 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					read_only: 1,
 				},
 				{ fieldtype: "Check", fieldname: "override_sequence", label: __("Override sequence warning") },
-				{ fieldtype: "Check", fieldname: "override_capacity", label: __("Override capacity warning") },
 			],
 			primary_action_label: __("Schedule"),
 			primary_action: async (values) => {
 				if (!validate_schedule_in_browser(values.planned_date, values.planned_start)) return;
-				await frappe.call({
-						method: `${this.method}.schedule_operation`,
-						args: {
+				const scheduled = await this.schedule_with_capacity_check({
 							plan_entry: card.id,
 							planned_date: values.planned_date,
 							workstation: values.workstation,
@@ -965,10 +1102,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							duration_hours: values.duration_hours,
 							priority: card.priority,
 							override_sequence: values.override_sequence,
-							override_capacity: values.override_capacity,
-						},
-						error_handlers: get_planning_error_handlers(),
 				});
+				if (!scheduled) return;
 				dialog.hide();
 				await this.refresh();
 			},
@@ -1035,7 +1170,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const compatible_workstations = context.compatible_workstations || [];
 		let starting = false;
 		const dialog = new frappe.ui.Dialog({
-			title: __("Start Production"),
+			title: card.is_qc ? __("Start QC Review") : __("Start Production"),
 			fields: [
 				{
 					fieldtype: "Data",
@@ -1063,7 +1198,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
 				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
 				{ fieldtype: "Link", fieldname: "target_warehouse", label: __("Target Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.target_warehouse },
-				{ fieldtype: "Section Break", label: __("Operation and Operator") },
+				{ fieldtype: "Section Break", label: card.is_qc ? __("Operation and QC Employee") : __("Operation and Operator") },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Link",
@@ -1084,7 +1219,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{
 					fieldtype: "Link",
 					fieldname: "operator_employee",
-					label: __("Employee"),
+					label: card.is_qc ? __("QC Employee") : __("Employee"),
 					options: "Employee",
 					reqd: 1,
 					default: context.operator_employee,
@@ -1130,7 +1265,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					default: context.planned_start,
 				},
 			],
-			primary_action_label: __("Start Production"),
+			primary_action_label: card.is_qc ? __("Start QC Review") : __("Start Production"),
 			primary_action: async (values) => {
 				if (starting) {
 					return;
@@ -1229,6 +1364,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const context = response.message || {};
 		const is_material = Boolean(context.is_material_production);
 		const meter_label = is_material ? __("Completed Batches") : __("Actual Completed Qty") + " (m)";
+		const output_uom = is_material ? (context.quantity_uom || "") : "m";
+		const output_label = (label) => `${__(label)}${output_uom ? ` (${frappe.utils.escape_html(output_uom)})` : ""}`;
+		const scrap_uom = context.scrap_uom || output_uom;
+		const scrap_label = (label) => `${__(label)}${scrap_uom ? ` (${frappe.utils.escape_html(scrap_uom)})` : ""}`;
+		const unusable_scrap_uom = context.unusable_scrap_uom || scrap_uom;
+		const unusable_scrap_label = (label) => `${__(label)}${unusable_scrap_uom ? ` (${frappe.utils.escape_html(unusable_scrap_uom)})` : ""}`;
 		const kg_required = flt(context.planned_qty_kg) > 0;
 		let completing = false;
 		const dialog = new frappe.ui.Dialog({
@@ -1274,16 +1415,25 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || context.planned_qty_meter || card.qty || 0 },
 				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, read_only: is_material, default: context.actual_qty_kg || context.planned_qty_kg || card.planned_weight_kg || 0 },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "good_qty", label: __("Good Qty"), precision: 6, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
-				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Qty"), precision: 6, default: context.rejected_qty || 0 },
-				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Qty"), precision: 6, default: context.rework_qty || 0 },
+				{ fieldtype: "Float", fieldname: "good_qty", label: output_label("Good Output"), precision: 6, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: output_label("Rejected Output"), precision: 6, default: context.rejected_qty || 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: output_label("Rework"), precision: 6, default: context.rework_qty || 0 },
 				{ fieldtype: "Section Break" },
-				{ fieldtype: "Float", fieldname: "usable_scrap", label: __("Usable Scrap"), precision: 6, default: context.usable_scrap || 0 },
-				{ fieldtype: "Float", fieldname: "unusable_scrap", label: __("Unusable Scrap"), precision: 6, default: context.unusable_scrap || 0 },
+				{ fieldtype: "Float", fieldname: "usable_scrap", label: scrap_label("Usable Scrap"), precision: 6, default: context.usable_scrap || 0 },
+				{ fieldtype: "Float", fieldname: "unusable_scrap", label: unusable_scrap_label("Unusable Scrap"), precision: 6, default: context.unusable_scrap || 0 },
 				{ fieldtype: "Small Text", fieldname: "remarks", label: __("Remarks"), default: context.remarks || "" },
 			],
 			primary_action_label: __("Confirm Completion"),
 			primary_action: async (values) => {
+				const invalid_output = get_invalid_completion_output(values);
+				if (invalid_output) {
+					frappe.msgprint({
+						title: __("Invalid Output Quantity"),
+						message: __("{0} must be a valid number greater than or equal to zero.", [__(invalid_output)]),
+						indicator: "red",
+					});
+					return;
+				}
 				if (completing) {
 					return;
 				}
@@ -1351,6 +1501,102 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
 			dialog.set_secondary_action_label(__("Cancel"));
 			dialog.set_secondary_action(() => dialog.hide());
+		}
+	}
+
+	async open_qc_decision_dialog(card) {
+		const response = await frappe.call({
+			method: "smart_edge_custom.manufacturing.quality_control.get_qc_context",
+			args: { plan_entry: card.id },
+		});
+		const context = response.message || {};
+		if (!context.quality_inspection) {
+			frappe.throw(__("No pending Quality Inspection is available."));
+		}
+		let submitting = false;
+		const result_options = "\nPass\nFail\nNot Applicable";
+		const dialog = new frappe.ui.Dialog({
+			title: __("Submit QC Decision"),
+			fields: [
+				{ fieldtype: "Link", fieldname: "production", label: __("Final EB BOM Generator"), options: "Final EB BOM Generator", read_only: 1, default: context.production },
+				{ fieldtype: "Link", fieldname: "finished_item", label: __("Finished Item"), options: "Item", read_only: 1, default: context.finished_item },
+				{ fieldtype: "Data", fieldname: "finished_item_name", label: __("Finished Item Name"), read_only: 1, default: context.finished_item_name },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Data", fieldname: "quality_inspection", label: __("Quality Inspection"), read_only: 1, default: context.quality_inspection },
+				{ fieldtype: "Link", fieldname: "production_job", label: __("Source Production Job"), options: "SmartEdge Production Job", read_only: 1, default: context.production_job },
+				{ fieldtype: "Section Break", label: __("QC Checkpoint") },
+				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: context.operation || card.operation },
+				{ fieldtype: "Link", fieldname: "workstation", label: __("Workstation"), options: "Workstation", read_only: 1, default: context.workstation || card.workstation },
+				{ fieldtype: "Link", fieldname: "production_lot", label: __("Production Lot"), options: "SmartEdge Production Lot", read_only: 1, default: context.production_lot },
+				{ fieldtype: "Link", fieldname: "batch", label: __("Batch"), options: "Batch", read_only: 1, default: context.batch },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Link", fieldname: "qc_employee", label: __("QC Employee"), options: "Employee", read_only: 1, default: context.qc_employee },
+				{ fieldtype: "Datetime", fieldname: "inspection_datetime", label: __("Inspection Date and Time"), read_only: 1, default: context.inspection_datetime },
+				{ fieldtype: "Section Break", label: __("Measurements") },
+				{ fieldtype: "Float", fieldname: "width", label: __("Width"), precision: 6 },
+				{ fieldtype: "Float", fieldname: "thickness", label: __("Thickness"), precision: 6 },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Select", fieldname: "color_match", label: __("Color Match"), options: result_options },
+				{ fieldtype: "Select", fieldname: "design_match", label: __("Design Match"), options: result_options },
+				{ fieldtype: "Select", fieldname: "surface_appearance", label: __("Surface / Appearance"), options: result_options },
+				{ fieldtype: "Select", fieldname: "print_quality", label: __("Print Quality"), options: result_options },
+				{ fieldtype: "Section Break", label: __("Quantity Decision") },
+				{ fieldtype: "Float", fieldname: "eligible_qty", label: __("Eligible Quantity"), precision: 6, read_only: 1, default: context.eligible_qty },
+				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: 6, reqd: 1, default: context.eligible_qty },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: 6, default: context.eligible_qty },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Quantity"), precision: 6, default: 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Quantity"), precision: 6, default: 0 },
+				{ fieldtype: "Section Break" },
+				{ fieldtype: "Small Text", fieldname: "reason", label: __("Rejection / Rework Reason") },
+				{ fieldtype: "Small Text", fieldname: "remarks", label: __("QC Remarks") },
+			],
+			primary_action_label: __("Submit QC Decision"),
+			primary_action: async (values) => {
+				if (submitting) return;
+				submitting = true;
+				try {
+					await frappe.call({
+						method: "smart_edge_custom.manufacturing.quality_control.submit_decision",
+						args: {
+							quality_inspection: values.quality_inspection,
+							inspected_qty: values.inspected_qty,
+							accepted_qty: values.accepted_qty,
+							rejected_qty: values.rejected_qty,
+							rework_qty: values.rework_qty,
+							width: values.width,
+							thickness: values.thickness,
+							color_match: values.color_match,
+							design_match: values.design_match,
+							surface_appearance: values.surface_appearance,
+							print_quality: values.print_quality,
+							reason: values.reason,
+							remarks: values.remarks,
+							qc_employee: values.qc_employee,
+						},
+					});
+					dialog.hide();
+					await this.refresh();
+				} finally {
+					submitting = false;
+				}
+			},
+		});
+		dialog.show();
+	}
+
+	async resubmit_qc_rework(card) {
+		if (!card.quality_inspection) return;
+		await frappe.call({
+			method: "smart_edge_custom.manufacturing.quality_control.resubmit_rework",
+			args: { quality_inspection: card.quality_inspection },
+		});
+		await this.refresh();
+	}
+
+	view_qc(card) {
+		if (card.quality_inspection) {
+			frappe.set_route("Form", "Quality Inspection", card.quality_inspection);
 		}
 	}
 
@@ -1578,6 +1824,21 @@ function se_format_number(value, precision) {
 	});
 }
 
+function get_invalid_completion_output(values = {}) {
+	const fields = {
+		good_qty: "Good Output",
+		rejected_qty: "Rejected Output",
+		rework_qty: "Rework",
+		usable_scrap: "Usable Scrap",
+		unusable_scrap: "Unusable Scrap",
+	};
+	for (const [fieldname, label] of Object.entries(fields)) {
+		const value = values[fieldname] === "" || values[fieldname] == null ? 0 : Number(values[fieldname]);
+		if (!Number.isFinite(value) || value < 0) return label;
+	}
+	return null;
+}
+
 function get_time_from_datetime(value) {
 	if (!value) return "";
 	const parts = String(value).split(" ");
@@ -1613,6 +1874,24 @@ function get_card_status(card) {
 		return card.status;
 	}
 	return card.job_status || card.status;
+}
+
+function get_qc_badge_html(card) {
+	if (!card?.qc_required || !card.qc_display_status) return "";
+	const state = {
+		"QC Pending": "pending",
+		"QC Approved": "approved",
+		"QC Rejected": "rejected",
+	}[card.qc_display_status] || "pending";
+	return `<span class="se-qc-badge se-qc-${state}">${frappe.utils.escape_html(__(card.qc_display_status))}</span>`;
+}
+
+function get_group_qc_status(operations) {
+	const statuses = operations.filter((operation) => operation.qc_required).map((operation) => operation.qc_display_status);
+	if (statuses.includes("QC Pending")) return "QC Pending";
+	if (statuses.includes("QC Rejected")) return "QC Rejected";
+	if (statuses.includes("QC Approved")) return "QC Approved";
+	return null;
 }
 
 function get_status_label(status) {
@@ -1651,6 +1930,94 @@ function get_released_qty_label(card) {
 		parts.push(`${se_format_number(card.released_qty_kg, 3)} Kg ${__("eligible")}`);
 	}
 	return parts.join(" • ");
+}
+
+function get_machine_capacity_labels(capacity) {
+	if (!capacity.applicable) return { html: "", tooltip: [] };
+	const rate_configured = Boolean(capacity.rate_configured ?? capacity.configured);
+	const planned_kg = flt(capacity.planned_kg) > 0
+		? `${se_format_number(capacity.planned_kg, 3)} Kg`
+		: capacity.quantity_uom === "Kg" ? __("Not Available") : null;
+	const planned_meter = flt(capacity.planned_meter) > 0
+		? `${se_format_number(capacity.planned_meter, 2)} Meter`
+		: capacity.quantity_uom === "Meter" ? __("Not Available") : null;
+	const planned_hours = !rate_configured
+		? __("Not Configured")
+		: capacity.required_hours === null || capacity.required_hours === undefined
+			? __("Not Available")
+			: `${se_format_number(capacity.required_hours, 2)} Hours`;
+	const available_capacity = !rate_configured
+		? __("Not Configured")
+		: !capacity.availability_configured || capacity.available_capacity === null || capacity.available_capacity === undefined
+			? __("Not Available")
+			: `${se_format_number(capacity.available_capacity, 2)} ${capacity.quantity_uom}`;
+	const utilization_value = capacity.workstation_utilization;
+	const utilization = utilization_value === null || utilization_value === undefined
+		? "N/A"
+		: `${se_format_number(utilization_value, 1)}%`;
+	const utilization_status = get_utilization_status(utilization_value);
+	const rate = rate_configured
+		? `${se_format_number(capacity.capacity_rate, 2)} ${capacity.capacity_uom}`
+		: __("Not Configured");
+	const quantities = [
+		planned_kg !== null ? `${__("Planned Kg")}: ${planned_kg}` : null,
+		planned_meter !== null ? `${__("Planned Meter")}: ${planned_meter}` : null,
+	].filter(Boolean).join(" • ");
+	const overload = flt(capacity.overallocated_hours) > 0
+		? ` • ${__("Overallocated")}: ${se_format_number(capacity.overallocated_hours, 2)} Hours`
+		: "";
+	const availability = `${__("Available Capacity")}: ${available_capacity}${overload}`;
+	const utilization_explanation = utilization_value === null || utilization_value === undefined
+		? capacity.message || capacity.calculation_message || __("Workstation utilization is unavailable because net available hours are zero or not configured.")
+		: `${__("Workstation Utilization")}: ${se_format_number(capacity.total_allocated_hours, 2)} ${__("allocated hours")} / ${se_format_number(capacity.net_available_hours, 2)} ${__("net available hours")}`;
+	return {
+		html: `<div class="se-card-capacity se-capacity-${utilization_status}" title="${frappe.utils.escape_html(utilization_explanation)}">
+			${quantities ? `<div>${frappe.utils.escape_html(quantities)}</div>` : ""}
+			<div>${frappe.utils.escape_html(`${__("Planned Hours")}: ${planned_hours} • ${__("Rate")}: ${rate}`)}</div>
+			<div>${frappe.utils.escape_html(`${availability} • ${__("Utilization")}: ${utilization}`)}</div>
+		</div>`,
+		tooltip: [
+			`${__("Capacity")}: ${rate}`,
+			quantities,
+			`${__("Planned Hours")}: ${planned_hours}`,
+			availability,
+			utilization_explanation,
+		],
+	};
+}
+
+function capacity_projection_html(projection = {}) {
+	const hours = (value) => `${se_format_number(value, 2)} ${__("Hours")}`;
+	const display_date = projection.planned_date && frappe.datetime?.str_to_user
+		? frappe.datetime.str_to_user(projection.planned_date)
+		: projection.planned_date;
+	const utilization = projection.utilization === null || projection.utilization === undefined
+		? "N/A"
+		: `${se_format_number(projection.utilization, 1)}%`;
+	const rows = [
+		[__("Workstation"), projection.workstation || "—"],
+		[__("Date / Shift"), [display_date, projection.shift || __("All Day")].filter(Boolean).join(" / ")],
+		[__("Available Capacity"), hours(projection.available_hours)],
+		[__("Already Planned"), hours(projection.already_planned_hours)],
+		[__("New Operation"), hours(projection.new_operation_hours)],
+		[__("Total Planned"), hours(projection.projected_total_hours)],
+		[__("Projected Utilization"), utilization],
+		[__("Overload"), hours(projection.overload_hours)],
+	];
+	const unavailable = projection.availability_status === "unavailable"
+		? `<p class="text-danger">${__("No working capacity is configured or available for this date and shift.")}</p>`
+		: "";
+	return `<p>${__("The selected Workstation does not have sufficient available capacity for this date and shift.")}</p>
+	${unavailable}<div class="table-responsive"><table class="table table-bordered table-sm">
+		<tbody>${rows.map(([label, value]) => `<tr><th>${frappe.utils.escape_html(label)}</th><td>${frappe.utils.escape_html(value)}</td></tr>`).join("")}</tbody>
+	</table></div><p>${__("Do you want to continue scheduling this operation despite the overload?")}</p>`;
+}
+
+function get_utilization_status(utilization) {
+	if (utilization === null || utilization === undefined) return "unknown";
+	if (flt(utilization) > 100) return "overloaded";
+	if (flt(utilization) >= 80) return "high";
+	return "normal";
 }
 
 function get_timer_html(card, running) {
@@ -1820,5 +2187,14 @@ const CATEGORY_COLOR_CLASSES = {
 };
 
 if (typeof module !== "undefined" && module.exports) {
-	module.exports = { get_operation_display_label, resolve_item_group_placement };
+	module.exports = {
+		get_card_status,
+		get_group_qc_status,
+		get_machine_capacity_labels,
+		capacity_projection_html,
+		get_utilization_status,
+		get_invalid_completion_output,
+		get_operation_display_label,
+		resolve_item_group_placement,
+	};
 }

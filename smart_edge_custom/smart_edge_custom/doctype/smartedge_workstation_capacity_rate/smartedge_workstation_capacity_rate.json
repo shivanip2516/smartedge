@@ -1,0 +1,158 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-11-04 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "capacity_definition_section",
+  "workstation",
+  "operation",
+  "company",
+  "capacity_definition_col_2",
+  "capacity_rate",
+  "capacity_uom",
+  "enabled",
+  "matching_section",
+  "product_size",
+  "product_item",
+  "matching_col_2",
+  "process_route"
+ ],
+ "fields": [
+  {
+   "default": "SE-CAP-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Series",
+   "options": "SE-CAP-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "capacity_definition_section",
+   "fieldtype": "Section Break",
+   "label": "Existing Workstation Capacity"
+  },
+  {
+   "fieldname": "workstation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Workstation",
+   "options": "Workstation",
+   "reqd": 1
+  },
+  {
+   "description": "Leave blank only for a Workstation-wide default. Product, size, and route-specific rows require an Operation.",
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Operation",
+   "options": "Operation"
+  },
+  {
+   "description": "Optional company scope. A blank company is a shared fallback.",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "capacity_definition_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "capacity_rate",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Capacity Rate",
+   "non_negative": 1,
+   "precision": "6",
+   "reqd": 1
+  },
+  {
+   "fieldname": "capacity_uom",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Capacity Unit",
+   "options": "Kg/Hour\nMeter/Hour",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "matching_section",
+   "fieldtype": "Section Break",
+   "label": "Optional Product / Size / Route Matching"
+  },
+  {
+   "fieldname": "product_size",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Product Size",
+   "options": "Size Weight"
+  },
+  {
+   "fieldname": "product_item",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Finished Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "matching_col_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "process_route",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Process Route",
+   "options": "SmartEdge Process Route"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-11-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Workstation Capacity Rate",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "workstation",
+ "track_changes": 1
+}

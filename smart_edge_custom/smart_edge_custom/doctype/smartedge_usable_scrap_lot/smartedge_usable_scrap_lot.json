@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "autoname": "format:USL-.#####",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["status", "company", "production_job", "production_lot", "operation", "source_workstation", "source_employee", "source_section", "source_item", "source_batch", "scrap_section", "scrap_item", "scrap_batch", "warehouse", "quantity", "uom", "stock_entry"],
+ "fields": [
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Active\nConsumed\nCancelled","default":"Active","read_only":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","read_only":1,"in_standard_filter":1},
+  {"fieldname":"production_job","fieldtype":"Link","label":"Originating Production Job","options":"SmartEdge Production Job","read_only":1,"unique":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"production_lot","fieldtype":"Link","label":"Originating Production Lot","options":"SmartEdge Production Lot","read_only":1},
+  {"fieldname":"operation","fieldtype":"Link","label":"Originating Operation","options":"Operation","read_only":1,"in_list_view":1},
+  {"fieldname":"source_workstation","fieldtype":"Link","label":"Originating Workstation","options":"Workstation","read_only":1},
+  {"fieldname":"source_employee","fieldtype":"Link","label":"Originating Employee","options":"Employee","read_only":1},
+  {"fieldname":"source_section","fieldtype":"Section Break","label":"Source Traceability"},
+  {"fieldname":"source_item","fieldtype":"Link","label":"Source Production Item","options":"Item","read_only":1},
+  {"fieldname":"source_batch","fieldtype":"Link","label":"Source Production Batch","options":"Batch","read_only":1},
+  {"fieldname":"scrap_section","fieldtype":"Section Break","label":"Physical Usable Scrap Stock"},
+  {"fieldname":"scrap_item","fieldtype":"Link","label":"Usable Scrap Item","options":"Item","read_only":1,"in_list_view":1},
+  {"fieldname":"scrap_batch","fieldtype":"Link","label":"Usable Scrap Batch","options":"Batch","read_only":1,"in_list_view":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Usable Scrap Warehouse","options":"Warehouse","read_only":1},
+  {"fieldname":"quantity","fieldtype":"Float","label":"Posted Usable Scrap Quantity","precision":"6","read_only":1,"in_list_view":1},
+  {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","read_only":1,"in_list_view":1},
+  {"fieldname":"stock_entry","fieldtype":"Link","label":"Scrap Receipt Stock Entry","options":"Stock Entry","read_only":1}
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Usable Scrap Lot",
+ "naming_rule": "Expression",
+ "permissions": [
+  {"role":"Manufacturing Manager","read":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Manufacturing User","read":1,"report":1,"export":1,"print":1},
+  {"role":"Stock Manager","read":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Stock User","read":1,"report":1,"export":1,"print":1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

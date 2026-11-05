@@ -30,6 +30,9 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		# Exercise non-stock completion without invoking live final stock posting.
 		self.stack.enter_context(patch("smart_edge_custom.manufacturing.planning.update_generator_planning_status"))
 		self.stack.enter_context(patch("smart_edge_custom.manufacturing.planning.validate_final_completion_stock_entry_setup"))
+		# Scrap recovery inventory posting has its own focused suite; these tests
+		# remain isolated to operation-lot persistence and genealogy.
+		self.stack.enter_context(patch("smart_edge_custom.manufacturing.scrap_recovery.register_usable_scrap"))
 		self.workstation = frappe.db.get_value("Workstation", {"disabled": 0}, "name")
 		self.employee = frappe.db.get_value("Employee", {"company": self.company, "status": "Active"}, "name")
 		if not self.employee:
@@ -101,11 +104,15 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		self.assertEqual(self.chain(backward["roots"][0]), list(reversed(lots)))
 
 	def test_actual_output_and_quality_are_not_replaced_by_planned_quantity(self):
-		job, lot = self.complete(0, 490, good=480, usable_scrap=2, unusable_scrap=8)
+		job, lot = self.complete(
+			0, 490, good=480, rejected_qty=4, rework_qty=6, usable_scrap=2, unusable_scrap=8
+		)
 		self.assertEqual(lot.planned_quantity, 500)
 		self.assertEqual(lot.actual_output_quantity, 490)
 		self.assertEqual(lot.good_quantity, 480)
 		self.assertEqual(lot.produced_quantity, 480)
+		self.assertEqual(lot.rejected_quantity, 4)
+		self.assertEqual(lot.rework_quantity, 6)
 		self.assertEqual(lot.usable_scrap, 2)
 		self.assertEqual(lot.unusable_scrap, 8)
 

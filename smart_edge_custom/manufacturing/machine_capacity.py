@@ -1,0 +1,961 @@
+from __future__ import annotations
+
+from datetime import datetime, time, timedelta
+
+import frappe
+from frappe import _
+from frappe.utils import cint, flt, get_datetime, get_time, getdate
+
+
+CAPACITY_DOCTYPE = "SmartEdge Workstation Capacity Rate"
+CAPACITY_BY_CATEGORY = {
+	"Extrusion": ("Kg/Hour", "planned_kg", "Kg"),
+	"Printing": ("Meter/Hour", "planned_meter", "Meter"),
+	"Slitting": ("Meter/Hour", "planned_meter", "Meter"),
+}
+ACTIVE_PLAN_STATUSES = ("Ready", "Planned", "In Progress", "On Hold")
+ACTIVE_WORK_ORDER_STATUSES = ("Not Started", "In Process")
+
+
+def _value(row, fieldname):
+	if isinstance(row, dict):
+		return row.get(fieldname)
+	return getattr(row, fieldname, None)
+
+
+def _request_cache():
+	cache = getattr(frappe.local, "smartedge_machine_capacity", None)
+	if cache is None:
+		cache = frappe.local.smartedge_machine_capacity = {}
+	return cache
+
+
+def clear_capacity_request_cache():
+	"""Discard only request-local capacity lookups after a configuration write."""
+	try:
+		frappe.local.smartedge_machine_capacity = {}
+	except AttributeError:
+		pass
+
+
+def capacity_table_exists():
+	cache = _request_cache()
+	if "table_exists" not in cache:
+		cache["table_exists"] = bool(frappe.db.table_exists(CAPACITY_DOCTYPE))
+	return cache["table_exists"]
+
+
+def get_expected_capacity(category):
+	return CAPACITY_BY_CATEGORY.get(category)
+
+
+def _match_rank(row):
+	operation = _value(row, "operation")
+	product_size = _value(row, "product_size")
+	product_item = _value(row, "product_item")
+	process_route = _value(row, "process_route")
+	if not operation:
+		return 5
+	if process_route and (product_size or product_item):
+		return 1
+	if product_size:
+		return 2
+	if product_item:
+		return 3
+	return 4
+
+
+def select_capacity_rate(rows, operation=None, product_size=None, product_item=None, process_route=None, company=None):
+	"""Select one rate using the Phase 7 specificity order.
+
+	Rows supplied here are already scoped to one Workstation and one capacity unit.
+	A tie at the same priority/specificity is deliberately rejected instead of
+	choosing by creation order.
+	"""
+	eligible = []
+	context = {
+		"operation": operation,
+		"product_size": product_size,
+		"product_item": product_item,
+		"process_route": process_route,
+	}
+	for row in rows:
+		row_company = _value(row, "company")
+		if row_company and row_company != company:
+			continue
+		if not _value(row, "operation") and any(
+			_value(row, fieldname) for fieldname in ("product_size", "product_item", "process_route")
+		):
+			continue
+		if any(_value(row, fieldname) and _value(row, fieldname) != value for fieldname, value in context.items()):
+			continue
+		specificity = sum(bool(_value(row, fieldname)) for fieldname in context)
+		company_specificity = 1 if row_company else 0
+		eligible.append(((_match_rank(row), -specificity, -company_specificity), row))
+
+	if not eligible:
+		return None
+	eligible.sort(key=lambda candidate: candidate[0])
+	best_key = eligible[0][0]
+	winners = [row for key, row in eligible if key == best_key]
+	if len(winners) > 1:
+		frappe.throw(
+			_("Conflicting equally specific capacity rates found: {0}.").format(
+				", ".join(str(_value(row, "name") or _value(row, "capacity_rate")) for row in winners)
+			)
+		)
+	return winners[0]
+
+
+def get_capacity_rate(
+	workstation,
+	capacity_uom,
+	operation=None,
+	product_size=None,
+	product_item=None,
+	process_route=None,
+	company=None,
+):
+	if not workstation or not capacity_table_exists():
+		return None
+	cache_key = (
+		"rate",
+		workstation,
+		capacity_uom,
+		operation,
+		product_size,
+		product_item,
+		process_route,
+		company,
+	)
+	cache = _request_cache()
+	if cache_key in cache:
+		return cache[cache_key]
+	rows = frappe.get_all(
+		CAPACITY_DOCTYPE,
+		filters={"workstation": workstation, "capacity_uom": capacity_uom, "enabled": 1},
+		fields=[
+			"name",
+			"workstation",
+			"operation",
+			"company",
+			"product_size",
+			"product_item",
+			"process_route",
+			"capacity_rate",
+			"capacity_uom",
+		],
+		limit_page_length=500,
+	)
+	match = select_capacity_rate(rows, operation, product_size, product_item, process_route, company)
+	cache[cache_key] = match
+	return match
+
+
+def get_capacity_rate_rows(workstations):
+	workstations = sorted({workstation for workstation in workstations if workstation})
+	if not workstations or not capacity_table_exists():
+		return []
+	cache_key = ("rate_rows", *workstations)
+	cache = _request_cache()
+	if cache_key not in cache:
+		cache[cache_key] = frappe.get_all(
+			CAPACITY_DOCTYPE,
+			filters={"workstation": ["in", workstations], "enabled": 1},
+			fields=[
+				"name",
+				"workstation",
+				"operation",
+				"company",
+				"product_size",
+				"product_item",
+				"process_route",
+				"capacity_rate",
+				"capacity_uom",
+			],
+			limit_page_length=5000,
+		)
+	return cache[cache_key]
+
+
+def select_capacity_rate_for_row(rows, row, workstation, capacity_uom):
+	return select_capacity_rate(
+		[
+			candidate
+			for candidate in rows
+			if _value(candidate, "workstation") == workstation
+			and _value(candidate, "capacity_uom") == capacity_uom
+		],
+		operation=_value(row, "operation"),
+		product_size=_value(row, "custom_size"),
+		product_item=_value(row, "finished_item"),
+		process_route=_value(row, "selected_route"),
+		company=_value(row, "company"),
+	)
+
+
+def merge_intervals(intervals):
+	valid = sorted(
+		(get_datetime(start), get_datetime(end))
+		for start, end in intervals
+		if start and end and get_datetime(end) > get_datetime(start)
+	)
+	merged = []
+	for start, end in valid:
+		if not merged or start > merged[-1][1]:
+			merged.append([start, end])
+		else:
+			merged[-1][1] = max(merged[-1][1], end)
+	return [(start, end) for start, end in merged]
+
+
+def intersect_intervals(left, right):
+	intersections = []
+	for left_start, left_end in merge_intervals(left):
+		for right_start, right_end in merge_intervals(right):
+			start = max(left_start, right_start)
+			end = min(left_end, right_end)
+			if end > start:
+				intersections.append((start, end))
+	return merge_intervals(intersections)
+
+
+def subtract_intervals(source, blocked):
+	result = []
+	blocked = merge_intervals(blocked)
+	for source_start, source_end in merge_intervals(source):
+		cursor = source_start
+		for blocked_start, blocked_end in blocked:
+			if blocked_end <= cursor or blocked_start >= source_end:
+				continue
+			if blocked_start > cursor:
+				result.append((cursor, min(blocked_start, source_end)))
+			cursor = max(cursor, blocked_end)
+			if cursor >= source_end:
+				break
+		if cursor < source_end:
+			result.append((cursor, source_end))
+	return merge_intervals(result)
+
+
+def interval_hours(intervals):
+	return sum((end - start).total_seconds() for start, end in merge_intervals(intervals)) / 3600
+
+
+def is_holiday(holiday_list, date_value):
+	if not holiday_list:
+		return False
+	return bool(frappe.db.exists("Holiday", {"parent": holiday_list, "holiday_date": getdate(date_value)}))
+
+
+def get_workstation_schedule(workstation, date_value):
+	date_value = getdate(date_value)
+	doc = frappe.get_doc("Workstation", workstation)
+	configured = bool(doc.get("working_hours"))
+	if cint(doc.disabled):
+		return [], configured, _("Workstation is disabled."), False
+	if not configured:
+		return [], False, _("Workstation working hours are not configured."), False
+	if is_holiday(doc.holiday_list, date_value):
+		return [], True, _("Workstation holiday."), True
+	intervals = []
+	for row in doc.working_hours:
+		if not cint(row.enabled) or not row.start_time or not row.end_time:
+			continue
+		start = datetime.combine(date_value, get_time(row.start_time))
+		end = datetime.combine(date_value, get_time(row.end_time))
+		if end <= start:
+			end += timedelta(days=1)
+		intervals.append((start, end))
+	if not intervals:
+		return [], False, _("Workstation has no enabled working-hour intervals."), False
+	return merge_intervals(intervals), True, None, False
+
+
+def get_shift_schedule(shift, date_value, workstation_holiday_list=None):
+	if not shift:
+		return [], False, _("Shift is not configured."), False
+	values = frappe.db.get_value("Shift Type", shift, ["start_time", "end_time", "holiday_list"], as_dict=True)
+	if not values or not values.start_time or not values.end_time:
+		return [], False, _("Shift {0} has invalid or missing start/end times.").format(shift), False
+	date_value = getdate(date_value)
+	holiday_list = values.holiday_list or workstation_holiday_list
+	if is_holiday(holiday_list, date_value):
+		return [], True, _("Shift holiday."), True
+	intervals, message = make_shift_intervals(date_value, values.start_time, values.end_time)
+	if message:
+		return [], False, message, False
+	return intervals, True, None, False
+
+
+def make_shift_intervals(date_value, start_time, end_time):
+	"""Build a site-local shift window; an end before start means overnight."""
+	date_value = getdate(date_value)
+	start = datetime.combine(date_value, get_time(start_time))
+	end = datetime.combine(date_value, get_time(end_time))
+	if end == start:
+		return [], _("Shift duration must be greater than zero.")
+	if end < start:
+		end += timedelta(days=1)
+	return [(start, end)], None
+
+
+def get_downtime_intervals(workstation, window_start, window_end):
+	rows = frappe.get_all(
+		"Downtime Entry",
+		filters={"workstation": workstation},
+		fields=["name", "from_time", "to_time"],
+		limit_page_length=5000,
+	)
+	return merge_intervals(
+		(max(get_datetime(row.from_time), window_start), min(get_datetime(row.to_time), window_end))
+		for row in rows
+		if row.from_time
+		and row.to_time
+		and get_datetime(row.from_time) < window_end
+		and get_datetime(row.to_time) > window_start
+	)
+
+
+def get_reservation_intervals(workstation, window_start, window_end):
+	"""Return distinct active allocations without adding Production Job time twice.
+
+	SmartEdge Production Jobs reference their plan entry, so the plan interval is
+	the reservation. ERPNext Work Order operations are added only when no matching
+	SmartEdge entry already represents the same Work Order operation.
+	"""
+	plan_rows = frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters={"workstation": workstation, "status": ["in", ACTIVE_PLAN_STATUSES]},
+		fields=["name", "work_order", "operation", "planned_start_datetime", "planned_end_datetime"],
+		limit_page_length=5000,
+	)
+	reservations = []
+	represented_work_order_operations = set()
+	for row in plan_rows:
+		if row.work_order and row.operation:
+			represented_work_order_operations.add((row.work_order, row.operation))
+		if not row.planned_start_datetime or not row.planned_end_datetime:
+			continue
+		start = get_datetime(row.planned_start_datetime)
+		end = get_datetime(row.planned_end_datetime)
+		if start < window_end and end > window_start:
+			reservations.append((max(start, window_start), min(end, window_end), f"plan:{row.name}"))
+
+	operation_rows = frappe.get_all(
+		"Work Order Operation",
+		filters={"workstation": workstation, "status": ["!=", "Completed"]},
+		fields=["name", "parent", "operation", "planned_start_time", "planned_end_time"],
+		limit_page_length=5000,
+	)
+	parents = list({row.parent for row in operation_rows if row.parent})
+	active_parents = set()
+	if parents:
+		active_parents = {
+			row.name
+			for row in frappe.get_all(
+				"Work Order",
+				filters={"name": ["in", parents], "docstatus": 1, "status": ["in", ACTIVE_WORK_ORDER_STATUSES]},
+				fields=["name"],
+				limit_page_length=len(parents),
+			)
+		}
+	for row in operation_rows:
+		if row.parent not in active_parents or (row.parent, row.operation) in represented_work_order_operations:
+			continue
+		if not row.planned_start_time or not row.planned_end_time:
+			continue
+		start = get_datetime(row.planned_start_time)
+		end = get_datetime(row.planned_end_time)
+		if start < window_end and end > window_start:
+			reservations.append((max(start, window_start), min(end, window_end), f"work-order-operation:{row.name}"))
+	return reservations
+
+
+def _reservation_hours(reservations, available_intervals):
+	# Each distinct allocation consumes its own machine time. Only duplicate
+	# representations of the same allocation are removed by the source query.
+	result = {}
+	for start, end, reference in reservations:
+		result[reference] = result.get(reference, 0) + interval_hours(
+			intersect_intervals([(start, end)], available_intervals)
+		)
+	return result
+
+
+def get_capacity_availability(workstation, date_value, shift=None, rate=None):
+	if not workstation or not date_value:
+		return {
+			"configured": 0,
+			"message": _("Workstation and planned date are required for availability."),
+		}
+	date_value = getdate(date_value)
+	cache_key = ("availability", workstation, str(date_value), shift)
+	cache = _request_cache()
+	if cache_key in cache:
+		return add_rate_capacity(cache[cache_key], rate)
+
+	workstation_doc = frappe.get_doc("Workstation", workstation)
+	daily_schedule, daily_configured, daily_message, daily_holiday = get_workstation_schedule(workstation, date_value)
+	day_start = datetime.combine(date_value, time.min)
+	day_end = day_start + timedelta(days=1)
+	window_end = max([day_end, *(end for _start, end in daily_schedule)], default=day_end)
+	downtime = get_downtime_intervals(workstation, day_start, window_end)
+	reservations = get_reservation_intervals(workstation, day_start, window_end)
+
+	daily_blocked = intersect_intervals(daily_schedule, downtime)
+	daily_net_intervals = subtract_intervals(daily_schedule, daily_blocked)
+	daily_scheduled = interval_hours(daily_schedule)
+	daily_downtime = interval_hours(daily_blocked)
+	daily_net = interval_hours(daily_net_intervals)
+	daily_reservation_hours = _reservation_hours(reservations, daily_net_intervals)
+	daily_reserved = sum(daily_reservation_hours.values())
+	daily_over = max(daily_reserved - daily_net, 0)
+	daily_remaining = max(daily_net - daily_reserved, 0)
+
+	shift_schedule, shift_configured, shift_message, shift_holiday = get_shift_schedule(
+		shift, date_value, workstation_doc.holiday_list
+	)
+	if shift_configured and daily_configured:
+		shift_schedule = intersect_intervals(shift_schedule, daily_schedule)
+	shift_blocked = intersect_intervals(shift_schedule, downtime)
+	shift_net_intervals = subtract_intervals(shift_schedule, shift_blocked)
+	shift_scheduled = interval_hours(shift_schedule)
+	shift_downtime = interval_hours(shift_blocked)
+	shift_net = interval_hours(shift_net_intervals)
+	shift_reservation_hours = _reservation_hours(reservations, shift_net_intervals)
+	shift_reserved = sum(shift_reservation_hours.values())
+	shift_over = max(shift_reserved - shift_net, 0)
+	shift_remaining = max(shift_net - shift_reserved, 0)
+
+	result = {
+		"configured": cint(daily_configured),
+		"message": daily_message,
+		"holiday": cint(daily_holiday),
+		"scheduled_hours": daily_scheduled,
+		"downtime_hours": daily_downtime,
+		"net_hours": daily_net,
+		"reserved_hours": daily_reserved,
+		"remaining_hours": daily_remaining,
+		"overallocated_hours": daily_over,
+		"reservation_hours_by_reference": daily_reservation_hours,
+		"shift": shift,
+		"shift_configured": cint(shift_configured),
+		"shift_message": shift_message,
+		"shift_holiday": cint(shift_holiday),
+		"shift_scheduled_hours": shift_scheduled,
+		"shift_downtime_hours": shift_downtime,
+		"shift_net_hours": shift_net,
+		"shift_reserved_hours": shift_reserved,
+		"shift_remaining_hours": shift_remaining,
+		"shift_overallocated_hours": shift_over,
+		"shift_reservation_hours_by_reference": shift_reservation_hours,
+	}
+	cache[cache_key] = dict(result)
+	return add_rate_capacity(result, rate)
+
+
+def add_rate_capacity(availability, rate):
+	result = dict(availability)
+	rate = flt(rate)
+	result.update(
+		{
+			"production_capacity": result.get("net_hours", 0) * rate if rate else None,
+			"remaining_production_capacity": result.get("remaining_hours", 0) * rate if rate else None,
+			"shift_production_capacity": result.get("shift_net_hours", 0) * rate if rate else None,
+			"shift_remaining_production_capacity": (
+				result.get("shift_remaining_hours", 0) * rate if rate else None
+			),
+		}
+	)
+	return result
+
+
+def get_rate_payload(row, workstation=None, rate_rows=None):
+	category = _value(row, "planning_category")
+	expected = get_expected_capacity(category)
+	workstation = workstation or _value(row, "workstation")
+	if not expected or not workstation or workstation == _("Unassigned"):
+		return {"applicable": 0}
+	capacity_uom, quantity_field, quantity_uom = expected
+	if rate_rows is None:
+		match = get_capacity_rate(
+			workstation,
+			capacity_uom,
+			operation=_value(row, "operation"),
+			product_size=_value(row, "custom_size"),
+			product_item=_value(row, "finished_item"),
+			process_route=_value(row, "selected_route"),
+			company=_value(row, "company"),
+		)
+	else:
+		match = select_capacity_rate_for_row(rate_rows, row, workstation, capacity_uom)
+	planned_quantity_value = _value(row, quantity_field)
+	planned_quantity = flt(planned_quantity_value)
+	base = {
+		"applicable": 1,
+		"capacity_uom": capacity_uom,
+		"quantity_uom": quantity_uom,
+		"planned_quantity": planned_quantity,
+		"planned_quantity_available": cint(planned_quantity_value is not None and planned_quantity > 0),
+		"planned_kg": flt(_value(row, "planned_kg")) if _value(row, "planned_kg") is not None else None,
+		"planned_meter": (
+			flt(_value(row, "planned_meter")) if _value(row, "planned_meter") is not None else None
+		),
+	}
+	if not match:
+		base.update(
+			{
+				"configured": 0,
+				"configuration_status": "Not Configured",
+				"message": _("Capacity not configured for this Workstation and production specification."),
+			}
+		)
+		return base
+	rate = flt(_value(match, "capacity_rate"))
+	if rate <= 0:
+		base.update(
+			{
+				"configured": 0,
+				"configuration_status": "Not Configured",
+				"message": _("Capacity not configured for this Workstation and production specification."),
+			}
+		)
+		return base
+	base.update(
+		{
+			"configured": 1,
+			"configuration_status": "Configured",
+			"configuration": _value(match, "name"),
+			"capacity_rate": rate,
+			"required_hours": planned_quantity / rate if planned_quantity > 0 else None,
+			"planned_hours_status": "Available" if planned_quantity > 0 else "Not Available",
+		}
+	)
+	return base
+
+
+def get_scheduled_duration_hours(row):
+	start = _value(row, "planned_start_datetime")
+	end = _value(row, "planned_end_datetime")
+	if not start or not end:
+		return 0
+	return max((get_datetime(end) - get_datetime(start)).total_seconds() / 3600, 0)
+
+
+def get_operation_capacity_payload(row, workstation=None, rate_rows=None):
+	workstation = workstation or _value(row, "workstation")
+	payload = get_rate_payload(row, workstation, rate_rows)
+	if not payload.get("configured"):
+		return payload
+	rate = payload["capacity_rate"]
+	payload.update(
+		get_capacity_availability(
+			workstation,
+			_value(row, "planned_date"),
+			_value(row, "shift") or _value(row, "planned_shift"),
+			rate,
+		)
+		if _value(row, "planned_date")
+		else {
+			"configured": 0,
+			"message": _("Schedule the operation to calculate availability."),
+			"shift_configured": 0,
+			"shift_message": _("Shift is not configured."),
+		}
+	)
+	# Preserve the fact that the rate is configured even when the calendar is not.
+	payload["rate_configured"] = 1
+	payload["availability_configured"] = payload.pop("configured", 0)
+	payload["configured"] = 1
+	return payload
+
+
+def attach_board_capacity_details(rows):
+	"""Attach Point 3 metrics with batched rates and shared context totals."""
+	eligible = [
+		row
+		for row in rows
+		if _value(row, "plan_type") != "Required Material"
+		and get_expected_capacity(_value(row, "planning_category"))
+		and (_value(row, "job_workstation") or _value(row, "workstation"))
+	]
+	if not eligible:
+		return
+	workstations = {_value(row, "job_workstation") or _value(row, "workstation") for row in eligible}
+	rate_rows = get_capacity_rate_rows(workstations)
+	visible_contexts = set()
+	for row in eligible:
+		workstation = _value(row, "job_workstation") or _value(row, "workstation")
+		row.machine_capacity = get_rate_payload(row, workstation, rate_rows)
+		if _value(row, "planned_date"):
+			date_key = str(getdate(_value(row, "planned_date")))
+			shift = _value(row, "shift") or _value(row, "planned_shift") or None
+			visible_contexts.add((workstation, date_key, shift))
+			visible_contexts.add((workstation, date_key, None))
+
+	if not visible_contexts:
+		return
+	dates = [getdate(context[1]) for context in visible_contexts]
+	allocation_rows = get_capacity_allocation_rows(workstations, min(dates), max(dates))
+	allocation_by_name = prepare_capacity_allocations(allocation_rows, rate_rows)
+	context_metrics = {
+		context: get_context_capacity_metrics(context, allocation_by_name)
+		for context in visible_contexts
+	}
+
+	for row in eligible:
+		if not _value(row, "planned_date"):
+			continue
+		workstation = _value(row, "job_workstation") or _value(row, "workstation")
+		date_key = str(getdate(_value(row, "planned_date")))
+		shift = _value(row, "shift") or _value(row, "planned_shift") or None
+		metrics = context_metrics[(workstation, date_key, shift)]
+		daily_metrics = context_metrics[(workstation, date_key, None)]
+		own_hours = flt(_value(allocation_by_name.get(_value(row, "name"), {}), "allocation_hours"))
+		calculation_configured = cint(metrics["allocation_configured"])
+		other_hours = (
+			max(metrics["total_allocated_hours"] - own_hours, 0)
+			if calculation_configured
+			else None
+		)
+		remaining_hours = (
+			max(metrics["net_available_hours"] - other_hours, 0)
+			if calculation_configured
+			else None
+		)
+		payload = row.machine_capacity
+		rate_configured = cint(payload.get("configured"))
+		rate_message = payload.get("message")
+		payload.update(metrics["availability"])
+		payload["configured"] = rate_configured
+		payload["rate_configured"] = rate_configured
+		if not rate_configured:
+			payload["message"] = rate_message
+		payload["availability_configured"] = cint(
+			metrics["availability_configured"] and calculation_configured
+		)
+		payload.update(
+			{
+				"workstation": workstation,
+				"operation": _value(row, "operation"),
+				"product_size": _value(row, "custom_size"),
+				"scheduled_date": date_key,
+				"shift": shift,
+				"net_available_hours": metrics["net_available_hours"],
+				"other_allocated_hours": other_hours,
+				"total_allocated_hours": metrics["total_allocated_hours"],
+				"remaining_available_hours": remaining_hours,
+				"overallocated_hours": metrics["overallocated_hours"],
+				"workstation_utilization": metrics["utilization"],
+				"capacity_calculation_configured": calculation_configured,
+				"calculation_message": metrics["calculation_message"],
+				"operation_capacity_share": (
+					own_hours / metrics["net_available_hours"] * 100
+					if calculation_configured and metrics["net_available_hours"] > 0
+					else None
+				),
+				"available_capacity": (
+					remaining_hours * flt(payload.get("capacity_rate"))
+					if rate_configured and metrics["availability_configured"] and calculation_configured
+					else None
+				),
+				"daily_summary": {
+					"net_available_hours": daily_metrics["net_available_hours"],
+					"allocated_hours": daily_metrics["total_allocated_hours"],
+					"remaining_hours": (
+						max(
+							daily_metrics["net_available_hours"] - daily_metrics["total_allocated_hours"], 0
+						)
+						if daily_metrics["allocation_configured"]
+						else None
+					),
+					"overallocated_hours": daily_metrics["overallocated_hours"],
+					"utilization": daily_metrics["utilization"],
+					"configured": cint(
+						daily_metrics["availability"].get("configured", 0)
+						and daily_metrics["allocation_configured"]
+					),
+					"message": (
+						daily_metrics["calculation_message"]
+						or daily_metrics["availability"].get("message")
+					),
+				},
+			}
+		)
+		payload.pop("reservation_hours_by_reference", None)
+		payload.pop("shift_reservation_hours_by_reference", None)
+
+
+def get_capacity_allocation_rows(workstations, date_from, date_to):
+	rows = frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters=[
+			["workstation", "in", list(workstations)],
+			["planned_date", "between", [date_from, date_to]],
+			["status", "in", ACTIVE_PLAN_STATUSES],
+		],
+		fields=[
+			"name",
+			"creation",
+			"final_eb_bom_generator",
+			"operation_row",
+			"operation",
+			"sequence",
+			"workstation",
+			"planning_category",
+			"planned_date",
+			"planned_start_datetime",
+			"planned_end_datetime",
+			"planned_meter",
+			"planned_kg",
+			"planned_shift",
+		],
+		limit_page_length=5000,
+	)
+	rows = remove_superseded_allocation_rows(rows)
+	generator_names = list({_value(row, "final_eb_bom_generator") for row in rows if row.final_eb_bom_generator})
+	if not generator_names:
+		return rows
+	generators = {
+		row.name: row
+		for row in frappe.get_all(
+			"Final EB BOM Generator",
+			filters={"name": ["in", generator_names]},
+			fields=["name", "company", "finished_item", "custom_size", "selected_route"],
+			limit_page_length=len(generator_names),
+		)
+	}
+	for row in rows:
+		generator = generators.get(row.final_eb_bom_generator)
+		if generator:
+			for fieldname in ("company", "finished_item", "custom_size", "selected_route"):
+				row[fieldname] = generator.get(fieldname)
+	return rows
+
+
+def remove_superseded_allocation_rows(rows):
+	"""Keep the newest active representation of one production operation."""
+	by_operation = {}
+	for row in rows:
+		operation_identity = _value(row, "operation_row") or (
+			_value(row, "operation"),
+			cint(_value(row, "sequence")),
+		)
+		key = (_value(row, "final_eb_bom_generator"), operation_identity)
+		current = by_operation.get(key)
+		candidate_order = (get_datetime(_value(row, "creation")), str(_value(row, "name") or ""))
+		current_order = (
+			(get_datetime(_value(current, "creation")), str(_value(current, "name") or ""))
+			if current
+			else None
+		)
+		if not current or candidate_order > current_order:
+			by_operation[key] = row
+	return list(by_operation.values())
+
+
+def prepare_capacity_allocations(rows, rate_rows):
+	result = {}
+	for row in rows:
+		payload = get_rate_payload(row, row.workstation, rate_rows)
+		applicable = cint(payload.get("applicable"))
+		required_hours = payload.get("required_hours") if payload.get("configured") else None
+		capacity_configured = cint(not applicable or required_hours is not None)
+		result[row.name] = frappe._dict(
+			name=row.name,
+			workstation=row.workstation,
+			planned_date=str(getdate(row.planned_date)),
+			shift=row.planned_shift or None,
+			capacity_applicable=applicable,
+			capacity_configured=capacity_configured,
+			allocation_hours=(
+				flt(required_hours)
+				if required_hours is not None
+				else (get_scheduled_duration_hours(row) if not applicable else None)
+			),
+		)
+	return result
+
+
+def get_context_capacity_metrics(context, allocation_by_name, excluded_plan_entries=None):
+	workstation, date_key, shift = context
+	excluded_plan_entries = set(excluded_plan_entries or ())
+	availability = get_capacity_availability(workstation, getdate(date_key), shift)
+	reservation_hours = (
+		availability.get("shift_reservation_hours_by_reference", {})
+		if shift
+		else availability.get("reservation_hours_by_reference", {})
+	)
+	included = {
+		name
+		for name, allocation in allocation_by_name.items()
+		if name not in excluded_plan_entries
+		and allocation.workstation == workstation
+		and allocation.planned_date == date_key
+		and (not shift or allocation.shift == shift)
+	}
+	unconfigured = {
+		name
+		for name in included
+		if _value(allocation_by_name[name], "capacity_configured") is not None
+		and not cint(_value(allocation_by_name[name], "capacity_configured"))
+	}
+	total = sum(flt(allocation_by_name[name].allocation_hours) for name in included)
+	for reference, hours in reservation_hours.items():
+		if reference.startswith("plan:") and reference.removeprefix("plan:") in excluded_plan_entries:
+			continue
+		if reference.startswith("plan:") and reference.removeprefix("plan:") in included:
+			continue
+		total += flt(hours)
+	if shift:
+		net_hours = flt(availability.get("shift_net_hours"))
+		availability_configured = cint(availability.get("shift_configured"))
+	else:
+		net_hours = flt(availability.get("net_hours"))
+		availability_configured = cint(availability.get("configured"))
+	allocation_configured = not unconfigured
+	return {
+		"net_available_hours": net_hours,
+		"known_allocated_hours": total,
+		"total_allocated_hours": total if allocation_configured else None,
+		"overallocated_hours": max(total - net_hours, 0) if allocation_configured else None,
+		"utilization": total / net_hours * 100 if allocation_configured and net_hours > 0 else None,
+		"allocation_configured": cint(allocation_configured),
+		"unconfigured_plan_entries": sorted(unconfigured),
+		"calculation_message": (
+			None
+			if allocation_configured
+			else _("Capacity not configured for one or more planned operations in this Workstation schedule.")
+		),
+		"availability_configured": availability_configured,
+		"availability": dict(availability),
+	}
+
+
+def get_schedule_capacity_projection(entry, workstation, planned_date, shift=None):
+	"""Calculate the destination impact of moving one planning operation.
+
+	The current entry is removed from the destination totals before its proposed
+	allocation is added. This makes moves within the same bucket neutral while
+	moves into another bucket show their actual incremental impact.
+	"""
+	planned_date = getdate(planned_date)
+	shift = shift or _value(entry, "planned_shift") or None
+	if _value(entry, "plan_type") == "Required Material":
+		return {"status": "not_applicable", "requires_confirmation": 0}
+
+	as_dict = getattr(entry, "as_dict", None)
+	row = frappe._dict(as_dict() if callable(as_dict) else dict(entry))
+	generator_name = _value(row, "final_eb_bom_generator")
+	if generator_name:
+		generator = frappe.db.get_value(
+			"Final EB BOM Generator",
+			generator_name,
+			["company", "finished_item", "custom_size", "selected_route"],
+			as_dict=True,
+		)
+		if generator:
+			for fieldname in ("company", "finished_item", "custom_size", "selected_route"):
+				row[fieldname] = generator.get(fieldname)
+
+	rate_rows = get_capacity_rate_rows([workstation])
+	rate_payload = get_rate_payload(row, workstation, rate_rows)
+	if not rate_payload.get("applicable"):
+		return {"status": "not_applicable", "requires_confirmation": 0}
+	if not rate_payload.get("configured") or rate_payload.get("required_hours") is None:
+		return _unverified_projection(workstation, planned_date, shift, rate_payload)
+
+	allocation_rows = get_capacity_allocation_rows([workstation], planned_date, planned_date)
+	allocations = prepare_capacity_allocations(allocation_rows, rate_rows)
+	context = (workstation, str(planned_date), shift)
+	entry_name = _value(entry, "name")
+	metrics = get_context_capacity_metrics(context, allocations, excluded_plan_entries={entry_name})
+	if not metrics["availability_configured"]:
+		return _unverified_projection(workstation, planned_date, shift, rate_payload, metrics["availability"])
+	if not metrics["allocation_configured"]:
+		return _unverified_projection(
+			workstation,
+			planned_date,
+			shift,
+			rate_payload,
+			configuration_message=metrics["calculation_message"],
+		)
+
+	other_hours = 0
+	for name, allocation in allocations.items():
+		if name == entry_name:
+			continue
+		if allocation.workstation != workstation or allocation.planned_date != str(planned_date):
+			continue
+		if shift and allocation.shift != shift:
+			continue
+		other_hours += flt(allocation.allocation_hours)
+
+	# Account for reservations not represented by a SmartEdge allocation.
+	reservation_key = "shift_reservation_hours_by_reference" if shift else "reservation_hours_by_reference"
+	for reference, hours in metrics["availability"].get(reservation_key, {}).items():
+		if reference == f"plan:{entry_name}":
+			continue
+		if reference.startswith("plan:") and reference.removeprefix("plan:") in allocations:
+			continue
+		other_hours += flt(hours)
+
+	new_hours = flt(rate_payload["required_hours"])
+	net_hours = flt(metrics["net_available_hours"])
+	projected_hours = other_hours + new_hours
+	current_same_context = (
+		_value(entry, "workstation") == workstation
+		and _value(entry, "planned_date")
+		and getdate(_value(entry, "planned_date")) == planned_date
+		and ((_value(entry, "planned_shift") or None) == shift)
+	)
+	baseline_hours = projected_hours if current_same_context else other_hours
+	baseline_overload = max(baseline_hours - net_hours, 0)
+	projected_overload = max(projected_hours - net_hours, 0)
+	requires_confirmation = projected_overload > baseline_overload + 0.000001
+	return {
+		"status": "overload" if requires_confirmation else "ok",
+		"availability_status": "unavailable" if net_hours <= 0 and new_hours > 0 else (
+			"overloaded" if projected_overload > 0 else "available"
+		),
+		"requires_confirmation": cint(requires_confirmation),
+		"workstation": workstation,
+		"planned_date": str(planned_date),
+		"shift": shift,
+		"capacity_uom": rate_payload.get("capacity_uom"),
+		"capacity_rate": flt(rate_payload.get("capacity_rate")),
+		"available_hours": net_hours,
+		"already_planned_hours": other_hours,
+		"new_operation_hours": new_hours,
+		"projected_total_hours": projected_hours,
+		"utilization": projected_hours / net_hours * 100 if net_hours > 0 else None,
+		"overload_hours": projected_overload,
+	}
+
+
+def _unverified_projection(
+	workstation,
+	planned_date,
+	shift,
+	rate_payload=None,
+	availability=None,
+	configuration_message=None,
+):
+	return {
+		"status": "not_configured",
+		"availability_status": "not_configured",
+		"requires_confirmation": 0,
+		"workstation": workstation,
+		"planned_date": str(planned_date),
+		"shift": shift,
+		"capacity_uom": (rate_payload or {}).get("capacity_uom"),
+		"message": _(
+			"Capacity cannot be verified for this Workstation, product size and selected date/shift."
+		),
+		"configuration_message": (
+			configuration_message
+			or (rate_payload or {}).get("message")
+			or (availability or {}).get("message")
+		),
+	}

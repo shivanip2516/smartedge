@@ -51,8 +51,8 @@ def ensure_operation_batch(lot, allow_create=False):
 		if allow_create:
 			frappe.throw(_("Operation Batch metadata is not installed. Run the smart_edge_custom operation Batch setup patch."))
 		return []
-	from smart_edge_custom.manufacturing.physical_operation_stock import enabled as physical_stock_enabled, post_operation
-	if physical_stock_enabled():
+	from smart_edge_custom.manufacturing.physical_operation_stock import post_operation, should_post_operation
+	if should_post_operation(entry):
 		if allow_create:
 			post_operation(lot, job, entry, None, _batch_id)
 		else:

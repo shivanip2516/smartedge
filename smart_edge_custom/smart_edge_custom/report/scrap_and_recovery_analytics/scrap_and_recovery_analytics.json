@@ -1,0 +1,22 @@
+{
+ "add_total_row": 0,
+ "apply_user_permissions": 1,
+ "creation": "2026-11-04 00:00:00.000000",
+ "disabled": 0,
+ "docstatus": 0,
+ "doctype": "Report",
+ "is_standard": "Yes",
+ "module": "smart_edge_custom",
+ "name": "Scrap & Recovery Analytics",
+ "prepared_report": 0,
+ "ref_doctype": "SmartEdge Production Job",
+ "report_name": "Scrap & Recovery Analytics",
+ "report_type": "Script Report",
+ "modified": "2026-11-04 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "roles": [
+  {"role": "Manufacturing User"},
+  {"role": "Manufacturing Manager"}
+ ]
+}

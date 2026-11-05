@@ -29,6 +29,17 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			self.assertIsNone(physical_operation_stock.post_operation(None, None, None, None, lambda *_: "X"))
 			warehouse.assert_not_called()
 
+	def test_only_explicit_non_final_route_stage_posts(self):
+		from smart_edge_custom.manufacturing import planning
+		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+			patch.object(planning, "is_final_stock_posting_entry", return_value=False):
+			self.assertFalse(physical_operation_stock.should_post_operation(frappe._dict()))
+			self.assertFalse(physical_operation_stock.should_post_operation(frappe._dict(stock_movement_type="Non-Stock Operation")))
+			self.assertTrue(physical_operation_stock.should_post_operation(frappe._dict(stock_movement_type="Stockable WIP Output")))
+		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+			patch.object(planning, "is_final_stock_posting_entry", return_value=True):
+			self.assertFalse(physical_operation_stock.should_post_operation(frappe._dict(stock_movement_type="Stockable WIP Output")))
+
 	def test_output_conversion_uses_existing_item_conversion(self):
 		from smart_edge_custom.manufacturing import planning
 		with patch.object(planning, "validate_stock_item", return_value=frappe._dict(stock_uom="Kg")), \
@@ -46,10 +57,29 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 		with patch.object(physical_operation_stock.frappe, "get_doc", return_value=frappe._dict()), \
 			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="QC-BATCH"), \
+			patch.object(physical_operation_stock, "_batch_source", return_value="WIP"), \
 			patch.object(physical_operation_stock, "stock_row", return_value={"item_code": "FG", "qty": 30, "conversion_factor": 4.356}):
 			rows, bundles = physical_operation_stock.final_wip_components(generator, [job])
 		self.assertEqual([r["item_code"] for r in rows], ["FG"])
 		self.assertAlmostEqual(bundles[0]["QC-BATCH"], 130.68)
+
+	def test_final_posting_validates_aggregate_batch_availability(self):
+		generator = frappe._dict(finished_item="FG", company="Company")
+		jobs = [frappe._dict(name=f"JOB-{index}", plan_entry="PLAN", input_production_lot="QC", stock_posting_qty=30)
+			for index in range(2)]
+		with patch.object(physical_operation_stock.frappe, "get_doc", return_value=frappe._dict()), \
+			patch.object(physical_operation_stock, "physical_input_batch", return_value="QC-BATCH"), \
+			patch.object(physical_operation_stock, "stock_row", return_value={"item_code": "FG", "qty": 30, "conversion_factor": 2}), \
+			patch.object(physical_operation_stock, "_batch_source", return_value="WIP") as source:
+			rows, bundles = physical_operation_stock.final_wip_components(generator, jobs)
+			self.assertEqual(len(rows), 2)
+			self.assertEqual(bundles, [{"QC-BATCH": 60}, {"QC-BATCH": 60}])
+			source.assert_called_once_with("QC-BATCH", "FG", 120, "Company")
+
+	def test_physical_input_skips_nonstock_qc_lot(self):
+		with patch.object(physical_operation_stock, "_physical_batch_for_lot", side_effect=[None, "EXT-BATCH"]), \
+			patch.object(frappe, "db", Mock(get_value=Mock(return_value="EXT-LOT"))):
+			self.assertEqual(physical_operation_stock.find_physical_input_lot("QC-LOT"), "EXT-LOT")
 
 	def test_precision_loss_is_rejected_before_submission(self):
 		row = frappe._dict(qty=39.784206, conversion_factor=1, transfer_qty=39.784, uom="Meter", stock_uom="Meter")
@@ -62,7 +92,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 	def test_submitted_retry_does_not_create_batch_or_stock_entry(self):
 		from smart_edge_custom.manufacturing import planning
 		job = frappe._dict(name="JOB", company="Company")
-		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+		with patch.object(physical_operation_stock, "should_post_operation", return_value=True), \
 			patch.object(planning, "get_previous_mandatory_entry", return_value=None), \
 			patch.object(frappe, "db", Mock()), \
 			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
@@ -74,12 +104,29 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 	def test_scrap_requires_explicit_inventory_disposition(self):
 		from smart_edge_custom.manufacturing import planning
 		job = frappe._dict(name="JOB", rejected_qty=1)
-		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+		with patch.object(physical_operation_stock, "should_post_operation", return_value=True), \
 			patch.object(planning, "get_previous_mandatory_entry", return_value=None), \
 			patch.object(frappe, "db", Mock()), \
 			patch.object(frappe, "throw", side_effect=frappe.ValidationError("disposition")):
 			with self.assertRaisesRegex(frappe.ValidationError, "disposition"):
 				physical_operation_stock.post_operation(frappe._dict(), job, frappe._dict(), None, Mock())
+
+	def test_unrecorded_process_loss_is_not_silently_written_off(self):
+		from smart_edge_custom.manufacturing import planning
+		job = frappe._dict(name="JOB", company="Company", actual_qty_meter=100, good_qty=95)
+		lot = frappe._dict(name="LOT", finished_item="FG", input_production_lot="INPUT")
+		with patch.object(physical_operation_stock, "should_post_operation", return_value=True), \
+			patch.object(planning, "get_previous_mandatory_entry", return_value=frappe._dict()), \
+			patch.object(frappe, "db", Mock(exists=Mock(return_value=False))), \
+			patch.object(frappe, "get_all", return_value=[]), \
+			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
+			patch.object(physical_operation_stock, "_batch", return_value="OUT"), \
+			patch.object(physical_operation_stock, "find_physical_input_lot", return_value="INPUT"), \
+			patch.object(physical_operation_stock, "physical_input_batch", return_value="IN"), \
+			patch.object(frappe, "new_doc", return_value=Mock()), \
+			patch.object(frappe, "throw", side_effect=frappe.ValidationError("disposition")):
+			with self.assertRaisesRegex(frappe.ValidationError, "disposition"):
+				physical_operation_stock.post_operation(lot, job, frappe._dict(), None, Mock())
 
 	def test_manufacture_and_partial_repack_submit_distinct_batches(self):
 		"""Exercise posting orchestration with an in-memory transaction adapter.
@@ -120,7 +167,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			self.assertEqual(entries[-1].docstatus, 1)
 		batch = SimpleNamespace(save=Mock(side_effect=save_batch))
 		generator = frappe._dict(source_warehouse="Stores")
-		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+		with patch.object(physical_operation_stock, "should_post_operation", return_value=True), \
 			patch.object(planning, "get_previous_mandatory_entry", return_value=None), \
 			patch.object(planning, "validate_stock_item", return_value=frappe._dict(stock_uom="Meter")), \
 			patch.object(planning, "get_required_conversion_factor", return_value=1), \
@@ -131,6 +178,8 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
 			patch.object(physical_operation_stock, "_batch", side_effect=["EXT", "QC"]), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="EXT"), \
+			patch.object(physical_operation_stock, "find_physical_input_lot", side_effect=[None, "EXT-LOT"]), \
+			patch.object(physical_operation_stock, "_batch_source", return_value="WIP"), \
 			patch.object(physical_operation_stock, "_bundle", side_effect=bundle), \
 			patch.object(planning, "get_final_stock_components", return_value=[
 				{"item_code": "COMPOUND", "qty": 173, "conversion_factor": 1, "s_warehouse": "Stores"},
@@ -146,7 +195,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			self.assertEqual(batch.custom_batch_purpose, "Physical Stock")
 			self.assertEqual((balances["CMP"], balances["BASE"]), (0, 0))
 			lot.input_production_lot = "EXT-LOT"
-			job.name, job.good_qty = "QC-JOB", 30
+			job.name, job.good_qty, job.actual_qty_meter = "QC-JOB", 30, 30
 			physical_operation_stock.post_operation(lot, job, frappe._dict(), None, Mock())
 			self.assertAlmostEqual(balances["EXT"], 9.784206)
 			self.assertEqual(balances["QC"], 30)

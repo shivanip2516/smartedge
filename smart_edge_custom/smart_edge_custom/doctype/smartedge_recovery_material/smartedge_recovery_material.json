@@ -1,0 +1,37 @@
+{
+ "actions": [],
+ "autoname": "field:source_item",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["source_item", "company", "disabled", "items_section", "usable_scrap_item", "ground_material_item", "recovered_material_item", "unusable_scrap_item", "warehouses_section", "usable_scrap_warehouse", "ground_material_warehouse", "recovered_material_warehouse", "unusable_scrap_warehouse", "quality_section", "qc_required"],
+ "fields": [
+  {"fieldname":"source_item","fieldtype":"Link","label":"Source Production Item","options":"Item","reqd":1,"unique":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1,"in_standard_filter":1},
+  {"default":"0","fieldname":"disabled","fieldtype":"Check","label":"Disabled","in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"items_section","fieldtype":"Section Break","label":"Recovery Items"},
+  {"fieldname":"usable_scrap_item","fieldtype":"Link","label":"Usable Scrap Item","options":"Item","reqd":1,"in_list_view":1},
+  {"fieldname":"ground_material_item","fieldtype":"Link","label":"Ground Material Item","options":"Item","reqd":1,"in_list_view":1},
+  {"fieldname":"recovered_material_item","fieldtype":"Link","label":"Recovered Material Item","options":"Item","reqd":1,"in_list_view":1},
+  {"fieldname":"unusable_scrap_item","fieldtype":"Link","label":"Unusable Scrap Item","options":"Item","description":"Required only when this production Item can generate physically stored unusable scrap."},
+  {"fieldname":"warehouses_section","fieldtype":"Section Break","label":"Controlled Warehouses"},
+  {"fieldname":"usable_scrap_warehouse","fieldtype":"Link","label":"Usable Scrap Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"ground_material_warehouse","fieldtype":"Link","label":"Ground Material Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"recovered_material_warehouse","fieldtype":"Link","label":"Recovered Material Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"unusable_scrap_warehouse","fieldtype":"Link","label":"Authorized Unusable Scrap Warehouse","options":"Warehouse","description":"Controlled storage used only for unusable scrap."},
+  {"fieldname":"quality_section","fieldtype":"Section Break","label":"Quality Release"},
+  {"default":"0","fieldname":"qc_required","fieldtype":"Check","label":"QC Approval Required Before Reuse","in_list_view":1}
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Recovery Material",
+ "naming_rule": "By fieldname",
+ "permissions": [
+  {"role":"Manufacturing Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Stock Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Manufacturing User","read":1,"report":1,"export":1,"print":1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

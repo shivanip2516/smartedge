@@ -72,6 +72,7 @@ doctype_js = {
 	"Compound": "public/js/compound.js",
 	"Item": "public/js/item.js",
 	"Sales Order": "public/js/sales_order.js",
+	"Workstation": "public/js/workstation.js",
 	"Work Order": "public/js/work_order.js",
 }
 doctype_list_js = {
@@ -86,6 +87,10 @@ doctype_list_js = {
 override_whitelisted_methods = {
 	"erpnext.controllers.queries.get_batch_no": "smart_edge_custom.manufacturing.operation_batch.get_batch_no",
 	"erpnext.controllers.queries.get_batch_numbers": "smart_edge_custom.manufacturing.operation_batch.get_batch_numbers",
+}
+
+override_doctype_class = {
+	"Quality Inspection": "smart_edge_custom.manufacturing.quality_control.SmartEdgeQualityInspection",
 }
 
 # Svg Icons
@@ -160,7 +165,7 @@ after_install = "smart_edge_custom.setup.setup_smartedge_manufacturing"
 # ------------------
 # See frappe.core.notifications.get_notification_config
 
-# notification_config = "smart_edge_custom.notifications.get_notification_config"
+notification_config = "smart_edge_custom.notifications.get_notification_config"
 
 # Permissions
 # -----------
@@ -187,6 +192,9 @@ after_install = "smart_edge_custom.setup.setup_smartedge_manufacturing"
 # }
 
 doc_events = {
+	"Quality Inspection": {
+		"validate": "smart_edge_custom.manufacturing.quality_control.validate_quality_inspection",
+	},
 	"Batch": {"validate": "smart_edge_custom.manufacturing.operation_batch.validate_batch"},
 	"Serial and Batch Bundle": {"before_validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Stock Ledger Entry": {"before_insert": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
@@ -208,9 +216,14 @@ doc_events = {
 		"validate": "smart_edge_custom.item.validate_pvc_edge_band_item",
 	},
 	"Stock Entry": {
-		"before_cancel": "smart_edge_custom.manufacturing.physical_operation_stock.prevent_upstream_cancellation",
+		"before_cancel": [
+			"smart_edge_custom.manufacturing.physical_operation_stock.prevent_upstream_cancellation",
+			"smart_edge_custom.manufacturing.scrap_recovery.prevent_recovery_cancellation",
+			"smart_edge_custom.manufacturing.unusable_scrap.prevent_unusable_scrap_cancellation",
+		],
 		"before_validate": [
 			"smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock",
+			"smart_edge_custom.manufacturing.unusable_scrap.reject_unusable_scrap_consumption",
 			"smart_edge_custom.manufacturing.batch_manufacturing.validate_batch_stock_entry_quantity",
 		],
 		"before_submit": "smart_edge_custom.manufacturing.batch_manufacturing.allocate_finished_batches",
@@ -221,6 +234,8 @@ doc_events = {
 		"on_cancel": [
 			"smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_stock_entry",
 			"smart_edge_custom.manufacturing.batch_genealogy.sync_genealogy_from_stock_entry",
+			"smart_edge_custom.manufacturing.scrap_recovery.sync_recovery_cancellation",
+			"smart_edge_custom.manufacturing.unusable_scrap.sync_unusable_scrap_cancellation",
 		],
 	},
 	"SmartEdge Production Job": {

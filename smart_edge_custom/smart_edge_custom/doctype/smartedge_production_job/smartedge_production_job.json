@@ -69,6 +69,7 @@
   "references_section",
   "input_production_lot",
   "output_production_lot",
+  "quality_inspection",
   "released_to_plan_entry",
   "manufacturing_stock_entry",
   "material_transfer_stock_entry",
@@ -402,6 +403,13 @@
    "fieldtype": "Link",
    "label": "Output Production Lot",
    "options": "SmartEdge Production Lot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quality_inspection",
+   "fieldtype": "Link",
+   "label": "Quality Inspection",
+   "options": "Quality Inspection",
    "read_only": 1
   },
   {

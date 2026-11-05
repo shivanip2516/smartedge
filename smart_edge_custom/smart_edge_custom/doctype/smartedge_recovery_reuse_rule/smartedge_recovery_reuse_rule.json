@@ -1,0 +1,33 @@
+{
+ "actions": [],
+ "autoname": "format:RR-.#####",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["recovered_material_item", "recovered_item_group", "operation", "disabled", "target_section", "target_item", "target_item_group", "limits_section", "maximum_reuse_percentage", "maximum_reuse_quantity", "qc_required"],
+ "fields": [
+  {"fieldname":"recovered_material_item","fieldtype":"Link","label":"Recovered Material Item","options":"Item","in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"recovered_item_group","fieldtype":"Link","label":"Recovered Material Item Group","options":"Item Group","in_standard_filter":1},
+  {"fieldname":"operation","fieldtype":"Link","label":"Permitted Manufacturing Operation","options":"Operation","reqd":1,"in_list_view":1,"in_standard_filter":1},
+  {"default":"0","fieldname":"disabled","fieldtype":"Check","label":"Disabled","in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"target_section","fieldtype":"Section Break","label":"Permitted Output"},
+  {"fieldname":"target_item","fieldtype":"Link","label":"Permitted Finished / Intermediate Item","options":"Item","in_list_view":1},
+  {"fieldname":"target_item_group","fieldtype":"Link","label":"Permitted Finished / Intermediate Item Group","options":"Item Group"},
+  {"fieldname":"limits_section","fieldtype":"Section Break","label":"Reuse Limits"},
+  {"fieldname":"maximum_reuse_percentage","fieldtype":"Percent","label":"Maximum Reuse Percentage","precision":"6"},
+  {"fieldname":"maximum_reuse_quantity","fieldtype":"Float","label":"Maximum Reuse Quantity","precision":"6"},
+  {"default":"0","fieldname":"qc_required","fieldtype":"Check","label":"QC Approval Required"}
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Recovery Reuse Rule",
+ "naming_rule": "Expression",
+ "permissions": [
+  {"role":"Manufacturing Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Stock Manager","read":1,"write":1,"create":1,"delete":1,"report":1,"export":1,"print":1,"email":1,"share":1},
+  {"role":"Manufacturing User","read":1,"report":1,"export":1,"print":1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

@@ -18,7 +18,9 @@
   "is_qc",
   "is_printing",
   "is_slitting",
-  "is_extrusion"
+  "is_extrusion",
+  "stock_movement_type",
+  "wip_warehouse"
  ],
  "fields": [
   {
@@ -113,6 +115,21 @@
    "fieldname": "is_extrusion",
    "fieldtype": "Check",
    "label": "Extrusion"
+  },
+  {
+   "default": "Non-Stock Operation",
+   "fieldname": "stock_movement_type",
+   "fieldtype": "Select",
+   "label": "Stock Movement",
+   "options": "Non-Stock Operation\nStockable WIP Output\nWIP Transfer / Processing",
+   "read_only": 1
+  },
+  {
+   "fieldname": "wip_warehouse",
+   "fieldtype": "Link",
+   "label": "Output WIP Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
   }
  ],
  "istable": 1,

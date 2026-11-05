@@ -8,9 +8,35 @@ global.frappe = {
 };
 
 const {
+	get_card_status,
+	get_group_qc_status,
+	get_invalid_completion_output,
 	get_operation_display_label,
 	resolve_item_group_placement,
 } = require("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js");
+
+assert.equal(get_invalid_completion_output({
+	good_qty: 950,
+	rejected_qty: 20,
+	rework_qty: 10,
+	usable_scrap: 15,
+	unusable_scrap: 5,
+}), null);
+assert.equal(get_invalid_completion_output({ rejected_qty: -5 }), "Rejected Output");
+assert.equal(get_invalid_completion_output({ usable_scrap: "not-a-number" }), "Usable Scrap");
+
+assert.equal(
+	get_card_status({ status: "Completed", job_status: "Completed", qc_display_status: "QC Pending" }),
+	"Completed",
+	"QC visibility must not replace the production status"
+);
+assert.equal(
+	get_group_qc_status([
+		{ qc_required: true, qc_display_status: "QC Approved" },
+		{ qc_required: true, qc_display_status: "QC Pending" },
+	]),
+	"QC Pending"
+);
 
 function operation(id, sequence, status = "Pending", planned_date = null) {
 	return { id, operation_sequence: sequence, status, planned_date };

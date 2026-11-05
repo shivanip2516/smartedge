@@ -623,6 +623,7 @@ def get_route_operations(doc, route_doc):
 		operation_name = route_operation.operation
 		workstation = route_operation.workstation
 		planning_category = route_operation.get("planning_category") or get_operation_planning_category(operation_name)
+		stock_movement_type = route_operation.get("stock_movement_type") or "Non-Stock Operation"
 		if not frappe.db.exists("Operation", operation_name):
 			warnings.append(_("Missing Operation: {0}").format(operation_name))
 			rows.append(
@@ -631,6 +632,8 @@ def get_route_operations(doc, route_doc):
 					"operation": operation_name,
 					"planning_category": planning_category or "Other",
 					"mandatory": route_operation.mandatory,
+					"stock_movement_type": stock_movement_type,
+					"wip_warehouse": route_operation.get("wip_warehouse"),
 				}
 			)
 			continue
@@ -662,6 +665,8 @@ def get_route_operations(doc, route_doc):
 				"machine_cost": machine_cost,
 				"labour_cost": labour_cost,
 				"mandatory": route_operation.mandatory,
+				"stock_movement_type": stock_movement_type,
+				"wip_warehouse": route_operation.get("wip_warehouse"),
 				"is_qc": 1 if planning_category == "QC" else 0,
 				"is_printing": 1 if planning_category == "Printing" else 0,
 				"is_slitting": 1 if planning_category == "Slitting" else 0,
@@ -1137,6 +1142,8 @@ def create_planning_entries(doc):
 		entry.operation = operation.operation
 		entry.workstation = operation.workstation
 		entry.planning_category = operation.planning_category or "Other"
+		entry.stock_movement_type = operation.get("stock_movement_type") or "Non-Stock Operation"
+		entry.wip_warehouse = operation.get("wip_warehouse")
 		entry.sequence = operation.sequence
 		entry.production_quantity = doc.production_quantity
 		entry.planned_meter = doc.production_quantity

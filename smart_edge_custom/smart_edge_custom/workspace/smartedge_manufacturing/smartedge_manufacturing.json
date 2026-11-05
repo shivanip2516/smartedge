@@ -1,7 +1,7 @@
 {
  "app": "smart_edge_custom",
  "charts": [],
- "content": "[{\"id\":\"se_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>SmartEdge Manufacturing</b></span>\",\"col\":12}},{\"id\":\"se_definition\",\"type\":\"card\",\"data\":{\"card_name\":\"Production Definition\",\"col\":4}},{\"id\":\"se_formulation\",\"type\":\"card\",\"data\":{\"card_name\":\"Formulation Masters\",\"col\":4}},{\"id\":\"se_process\",\"type\":\"card\",\"data\":{\"card_name\":\"Process Configuration\",\"col\":4}},{\"id\":\"se_execution\",\"type\":\"card\",\"data\":{\"card_name\":\"Manufacturing Execution\",\"col\":4}},{\"id\":\"se_quality\",\"type\":\"card\",\"data\":{\"card_name\":\"Quality\",\"col\":4}},{\"id\":\"se_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports / Utilities\",\"col\":4}}]",
+ "content": "[{\"id\":\"se_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>SmartEdge Manufacturing</b></span>\",\"col\":12}},{\"id\":\"se_definition\",\"type\":\"card\",\"data\":{\"card_name\":\"Production Definition\",\"col\":4}},{\"id\":\"se_formulation\",\"type\":\"card\",\"data\":{\"card_name\":\"Formulation Masters\",\"col\":4}},{\"id\":\"se_process\",\"type\":\"card\",\"data\":{\"card_name\":\"Process Configuration\",\"col\":4}},{\"id\":\"se_execution\",\"type\":\"card\",\"data\":{\"card_name\":\"Manufacturing Execution\",\"col\":4}},{\"id\":\"se_quality\",\"type\":\"card\",\"data\":{\"card_name\":\"Quality\",\"col\":4}},{\"id\":\"se_recovery\",\"type\":\"card\",\"data\":{\"card_name\":\"Scrap Recovery\",\"col\":4}},{\"id\":\"se_reports\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports / Utilities\",\"col\":4}}]",
  "creation": "2026-10-07 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -55,7 +55,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Formulation Masters",
-   "link_count": 2,
+   "link_count": 3,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -83,7 +83,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Process Configuration",
-   "link_count": 4,
+   "link_count": 5,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -113,6 +113,16 @@
    "label": "Workstation",
    "link_count": 0,
    "link_to": "Workstation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Workstation Capacity Rates",
+   "link_count": 0,
+   "link_to": "SmartEdge Workstation Capacity Rate",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
@@ -196,10 +206,88 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "Scrap Recovery",
+   "link_count": 6,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Usable Scrap Lots",
+   "link_count": 0,
+   "link_to": "SmartEdge Usable Scrap Lot",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Unusable Scrap Storage / Disposal",
+   "link_count": 0,
+   "link_to": "SmartEdge Unusable Scrap Lot",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Grinder / Pulverizer Recovery",
+   "link_count": 0,
+   "link_to": "SmartEdge Scrap Recovery",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Recovery Material Mapping",
+   "link_count": 0,
+   "link_to": "SmartEdge Recovery Material",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Recovered Material Reuse Rules",
+   "link_count": 0,
+   "link_to": "SmartEdge Recovery Reuse Rule",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Recovered Material Allocations",
+   "link_count": 0,
+   "link_to": "SmartEdge Recovered Material Allocation",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Reports / Utilities",
    "link_count": 2,
    "onboard": 0,
    "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Scrap & Recovery Analytics",
+   "link_count": 0,
+   "link_to": "Scrap & Recovery Analytics",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
   },
   {
    "hidden": 0,

@@ -13,6 +13,7 @@ from smart_edge_custom.manufacturing.batch_manufacturing import (
 )
 from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_availability
 from smart_edge_custom.manufacturing.final_bom_generator import (
+	convert_stock_qty_to_kg,
 	get_prepared_component_batch_weight,
 )
 
@@ -153,12 +154,24 @@ def build_material_requirement(doc, material_type, include_planning_details=True
 	config = MATERIAL_CONFIG[material_type]
 	item_code = doc.get(config["item_field"])
 	required_batches = cint(doc.get(config["batch_field"]))
+	item_details = get_item_batch_details(item_code)
 	batch_weight_kg = (
-		get_prepared_component_batch_weight(item_code, material_type)
+		(
+			get_prepared_component_batch_weight(item_code, material_type)
+			if include_planning_details
+			else (
+				convert_stock_qty_to_kg(
+					item_code,
+					item_details.get("stock_uom"),
+					item_details.get("output_qty"),
+				)
+				if flt(item_details.get("output_qty")) > 0
+				else 0
+			)
+		)
 		if item_code and required_batches
 		else 0
 	)
-	item_details = get_item_batch_details(item_code)
 	stock_uom = item_details.get("stock_uom")
 	weight_per_batch = flt(item_details.get("output_qty"))
 	availability = {"available_batches": 0}
@@ -782,10 +795,11 @@ def ensure_material_transfer(entry):
 	return ensure_work_order_stock_entry(entry, "Material Transfer for Manufacture", flt(entry.production_quantity))
 
 
-def complete_material_production(entry, completed_batches):
+def complete_material_production(entry, completed_batches, production_job=None):
 	completed_batches = validate_number_of_batches(completed_batches, _("Completed Batches"))
 	weight = flt(entry.weight_per_batch)
 	work_order = frappe.get_doc("Work Order", entry.work_order)
+	validate_material_completion_bom(entry, work_order)
 	remaining_qty = max(flt(work_order.qty) - flt(work_order.produced_qty), 0)
 	if remaining_qty <= 0:
 		frappe.throw(_("Work Order {0} has no remaining quantity to manufacture.").format(work_order.name))
@@ -793,11 +807,20 @@ def complete_material_production(entry, completed_batches):
 	if completed_batches > remaining_batches:
 		frappe.throw(_("Completed Batches cannot exceed the {0} remaining batches.").format(remaining_batches))
 	quantity = flt(Decimal(str(completed_batches)) * Decimal(str(weight)))
-	stock_entry = ensure_work_order_stock_entry(entry, "Manufacture", quantity)
+	stock_entry = ensure_work_order_stock_entry(entry, "Manufacture", quantity, production_job=production_job)
 	return {"stock_entry": stock_entry, "quantity": quantity, "completed_batches": completed_batches}
 
 
-def ensure_work_order_stock_entry(entry, purpose, quantity):
+def validate_material_completion_bom(entry, work_order):
+	"""Validate only the prepared material represented by this completion."""
+	material_type = entry.get("material_type") or work_order.get("custom_material_type")
+	item_code = entry.get("material_item") or work_order.get("production_item")
+	if material_type not in MATERIAL_CONFIG or not item_code:
+		return
+	get_prepared_component_batch_weight(item_code, material_type)
+
+
+def ensure_work_order_stock_entry(entry, purpose, quantity, production_job=None):
 	existing = frappe.get_all(
 		"Stock Entry",
 		filters={"work_order": entry.work_order, "purpose": purpose, "docstatus": ["<", 2]},
@@ -832,18 +855,105 @@ def ensure_work_order_stock_entry(entry, purpose, quantity):
 						stock_entry.name
 					)
 				)
+			production_job_name = production_job.name if production_job else frappe.db.get_value(
+				"SmartEdge Production Job",
+				{"plan_entry": entry.name, "status": ["in", ["In Progress", "Paused"]]},
+				"name",
+				order_by="creation desc",
+			)
+			recovered_pairs, recovered_allocations = [], []
+			if production_job_name:
+				from smart_edge_custom.manufacturing.scrap_recovery import append_recovered_components
+
+				recovered_pairs, recovered_allocations = append_recovered_components(stock_entry, production_job_name)
+			unusable_lot, unusable_pair = _append_material_unusable_scrap(stock_entry, entry, production_job)
+			if recovered_pairs:
+				stock_entry.save()
+				from smart_edge_custom.manufacturing.scrap_recovery import attach_recovered_batch_bundles
+
+				attach_recovered_batch_bundles(stock_entry, recovered_pairs)
+				stock_entry.save()
+			if unusable_pair:
+				from smart_edge_custom.manufacturing.unusable_scrap import attach_storage_bundle
+				stock_entry.save()
+				attach_storage_bundle(stock_entry, unusable_pair)
+				stock_entry.save()
 			stock_entry.submit()
+			_finish_material_unusable_scrap(unusable_lot, stock_entry, entry.material_item)
+			if recovered_allocations:
+				from smart_edge_custom.manufacturing.scrap_recovery import mark_recovered_components_consumed
+
+				mark_recovered_components_consumed(recovered_allocations, stock_entry.name)
 			entry.db_set("manufacture_stock_entry", stock_entry.name, update_modified=False)
 			return stock_entry.name
 
 	from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
 
 	stock_entry = frappe.get_doc(make_stock_entry(entry.work_order, purpose, quantity))
+	recovered_pairs, recovered_allocations = [], []
+	if purpose == "Manufacture":
+		production_job_name = production_job.name if production_job else frappe.db.get_value(
+			"SmartEdge Production Job",
+			{"plan_entry": entry.name, "status": ["in", ["In Progress", "Paused"]]},
+			"name",
+			order_by="creation desc",
+		)
+		if production_job_name:
+			from smart_edge_custom.manufacturing.scrap_recovery import append_recovered_components
+
+			recovered_pairs, recovered_allocations = append_recovered_components(stock_entry, production_job_name)
+	unusable_lot, unusable_pair = (None, None)
+	if purpose == "Manufacture":
+		unusable_lot, unusable_pair = _append_material_unusable_scrap(stock_entry, entry, production_job)
 	stock_entry.insert()
+	if recovered_pairs:
+		from smart_edge_custom.manufacturing.scrap_recovery import attach_recovered_batch_bundles
+
+		attach_recovered_batch_bundles(stock_entry, recovered_pairs)
+		stock_entry.save()
+	if unusable_pair:
+		from smart_edge_custom.manufacturing.unusable_scrap import attach_storage_bundle
+		attach_storage_bundle(stock_entry, unusable_pair)
+		stock_entry.save()
 	stock_entry.submit()
+	_finish_material_unusable_scrap(unusable_lot, stock_entry, entry.material_item)
+	if recovered_allocations:
+		from smart_edge_custom.manufacturing.scrap_recovery import mark_recovered_components_consumed
+
+		mark_recovered_components_consumed(recovered_allocations, stock_entry.name)
 	fieldname = "material_transfer_stock_entry" if purpose == "Material Transfer for Manufacture" else "manufacture_stock_entry"
 	entry.db_set(fieldname, stock_entry.name, update_modified=False)
 	return stock_entry.name
+
+
+def _append_material_unusable_scrap(stock_entry, entry, production_job):
+	if not production_job or flt(production_job.get("unusable_scrap")) <= 0:
+		return None, None
+	from smart_edge_custom.manufacturing.unusable_scrap import (
+		append_storage_output,
+		prepare_unusable_scrap,
+		set_storage_metadata,
+	)
+
+	source = frappe._dict(name=None, finished_item=entry.material_item)
+	lot = prepare_unusable_scrap(production_job, source)
+	set_storage_metadata(stock_entry, [lot])
+	return lot, append_storage_output(stock_entry, lot)
+
+
+def _finish_material_unusable_scrap(lot, stock_entry, output_item):
+	if not lot:
+		return
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+	from smart_edge_custom.manufacturing.unusable_scrap import mark_stored
+
+	mark_stored([lot], stock_entry.name)
+	output_batches = list(dict.fromkeys(
+		row["batch_no"] for row in extract_batch_movements(stock_entry)
+		if row["direction"] == "Output" and row["item_code"] == output_item
+	))
+	if len(output_batches) == 1:
+		frappe.db.set_value("SmartEdge Unusable Scrap Lot", lot, "source_batch", output_batches[0], update_modified=False)
 
 
 def refresh_material_readiness(production):

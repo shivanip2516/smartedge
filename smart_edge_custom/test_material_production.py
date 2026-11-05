@@ -5,6 +5,7 @@ from frappe.tests import IntegrationTestCase
 
 from smart_edge_custom.manufacturing.final_bom_generator import apply_item_configuration_defaults
 from smart_edge_custom.manufacturing.material_production import (
+	build_material_requirement,
 	build_material_planning_context,
 	complete_material_production,
 	create_material_plan,
@@ -19,6 +20,7 @@ from smart_edge_custom.manufacturing.material_production import (
 	get_material_status,
 	get_overall_material_status,
 	reconcile_work_order_plan,
+	validate_material_completion_bom,
 )
 
 
@@ -476,18 +478,79 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 		)
 
 	@patch("smart_edge_custom.manufacturing.material_production.ensure_work_order_stock_entry")
+	@patch("smart_edge_custom.manufacturing.material_production.get_prepared_component_batch_weight")
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_doc")
-	def test_base_colour_completion_uses_stock_uom_quantity(self, get_doc, ensure_entry):
+	def test_base_colour_completion_uses_stock_uom_quantity(self, get_doc, get_batch_weight, ensure_entry):
 		get_doc.return_value = frappe._dict(
-			{"name": "WO-BASE-1", "qty": 1.5, "produced_qty": 0}
+			{"name": "WO-BASE-1", "production_item": "BASE-COLOUR-1", "qty": 1.5, "produced_qty": 0}
 		)
 		ensure_entry.return_value = "STE-MANUFACTURE-1"
-		entry = frappe._dict({"work_order": "WO-BASE-1", "weight_per_batch": 0.3})
+		entry = frappe._dict({
+			"work_order": "WO-BASE-1",
+			"material_type": "Base Colour",
+			"material_item": "BASE-COLOUR-1",
+			"weight_per_batch": 0.3,
+		})
 
 		result = complete_material_production(entry, 3)
 
 		self.assertEqual(result["quantity"], 0.9)
-		ensure_entry.assert_called_once_with(entry, "Manufacture", 0.9)
+		get_batch_weight.assert_called_once_with("BASE-COLOUR-1", "Base Colour")
+		ensure_entry.assert_called_once_with(entry, "Manufacture", 0.9, production_job=None)
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_prepared_component_batch_weight")
+	def test_material_completion_validates_only_its_own_material_bom(self, get_batch_weight):
+		work_order = frappe._dict(
+			production_item="BASE-COLOUR-1",
+			custom_material_type="Base Colour",
+		)
+		entry = frappe._dict(
+			material_type="Base Colour",
+			material_item="BASE-COLOUR-1",
+		)
+
+		validate_material_completion_bom(entry, work_order)
+
+		get_batch_weight.assert_called_once_with("BASE-COLOUR-1", "Base Colour")
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_prepared_component_batch_weight")
+	def test_compound_completion_keeps_compound_bom_validation(self, get_batch_weight):
+		validate_material_completion_bom(
+			frappe._dict(material_type="Compound", material_item="COMPOUND-1"),
+			frappe._dict(),
+		)
+
+		get_batch_weight.assert_called_once_with("COMPOUND-1", "Compound")
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_linked_material_plans", return_value=[])
+	@patch("smart_edge_custom.manufacturing.material_production.get_item_batch_details")
+	@patch("smart_edge_custom.manufacturing.material_production.get_prepared_component_batch_weight")
+	def test_passive_readiness_does_not_validate_unrelated_material_bom(
+		self, get_batch_weight, get_item_details, _get_plans
+	):
+		get_item_details.return_value = {"stock_uom": "Kg", "output_qty": 0}
+		doc = frappe._dict(
+			name="FEBG-1",
+			source_warehouse="Stores - SE",
+			compound_item="IT-000018",
+			compound_consumption_batches=1,
+		)
+
+		requirement = build_material_requirement(doc, "Compound", include_planning_details=False)
+
+		get_batch_weight.assert_not_called()
+		self.assertEqual(requirement["material_type"], "Compound")
+		self.assertEqual(requirement["status"], "Shortage")
+
+	@patch("smart_edge_custom.manufacturing.material_production.get_prepared_component_batch_weight")
+	def test_missing_current_base_colour_bom_still_blocks_completion(self, get_batch_weight):
+		get_batch_weight.side_effect = frappe.ValidationError("missing Base Colour BOM")
+
+		with self.assertRaisesRegex(frappe.ValidationError, "missing Base Colour BOM"):
+			validate_material_completion_bom(
+				frappe._dict(material_type="Base Colour", material_item="BASE-COLOUR-1"),
+				frappe._dict(),
+			)
 
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_doc")
 	@patch("smart_edge_custom.manufacturing.material_production.frappe.get_all")
