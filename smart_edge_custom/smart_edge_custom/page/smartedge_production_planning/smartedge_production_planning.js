@@ -729,6 +729,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			error_handlers: get_planning_error_handlers(),
 		});
 		const projection = response.message || {};
+		if (flt(projection.planned_hours) > 0) {
+			args.duration_hours = flt(projection.planned_hours);
+		}
 		if (projection.status === "not_configured") {
 			const proceed = await this.show_capacity_decision(
 				__("Machine Capacity Not Configured"),
@@ -854,6 +857,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							<li><a class="dropdown-item se-view" href="#">${__("View Details")}</a></li>
 							${is_material ? `<li><a class="dropdown-item se-open-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
 							<li><a class="dropdown-item se-edit" href="#">${__("Edit")}</a></li>
+							${card.workstation && can_change_workstation(card) ? `<li><a class="dropdown-item se-change-workstation" href="#">${__("Change Workstation")}</a></li>` : ""}
 							${!is_material ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
 							${!is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
 							<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>
@@ -889,6 +893,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		);
 		$card.find(".se-open-work-order").on("click", () => frappe.set_route("Form", "Work Order", card.work_order));
 		$card.find(".se-edit, .se-plan").on("click", () => this.open_schedule_dialog(card, card.planned_date || this.state.week_start));
+		$card.find(".se-change-workstation").on("click", () =>
+			this.open_schedule_dialog(card, card.planned_date || this.state.week_start, card.workstation, true)
+		);
 		$card.find(".se-plan-all").on("click", () => this.plan_full_production(card));
 		$card.find(".se-unplan").on("click", () => this.unplan(card));
 		$card.find(".se-open-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
@@ -1045,7 +1052,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		`);
 	}
 
-	async open_schedule_dialog(card, date_key, default_workstation = null) {
+	async open_schedule_dialog(card, date_key, default_workstation = null, changing_workstation = false) {
 		const response = await frappe.call({
 			method: `${this.method}.get_compatible_workstations`,
 			args: {
@@ -1062,8 +1069,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		}
 		const default_start = get_time_from_datetime(card.planned_start) || "09:00";
 		const default_duration = card.duration_hours || 1;
+		const workstation_editable = !card.workstation || can_change_workstation(card);
 		const dialog = new frappe.ui.Dialog({
-			title: __("Plan Operation"),
+			title: changing_workstation ? __("Change Workstation") : __("Plan Operation"),
 			fields: [
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{ fieldtype: "Date", fieldname: "planned_date", label: __("Date"), reqd: 1, default: date_key },
@@ -1074,6 +1082,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					reqd: 1,
 					options: workstations.join("\n"),
 					default: default_workstation || card.workstation || workstations[0],
+					read_only: !workstation_editable,
 				},
 				{ fieldtype: "Time", fieldname: "planned_start", label: __("Planned Start"), reqd: 1, default: default_start },
 				{
@@ -2114,6 +2123,13 @@ function set_schedule_date_limits(dialog, date_field, time_field) {
 	update_time_min();
 }
 
+function can_change_workstation(card) {
+	const status = get_card_status(card);
+	if (!["Pending", "Planned", "Ready"].includes(status)) return false;
+	if (card.job_actual_start) return false;
+	return !["In Progress", "Paused", "Completed", "Cancelled", "On Hold"].includes(card.job_status);
+}
+
 function validate_schedule_in_browser(date_value, time_value) {
 	if (!date_value || !time_value) return;
 	const parts = String(time_value).split(":").map((part) => cint(part));
@@ -2196,5 +2212,6 @@ if (typeof module !== "undefined" && module.exports) {
 		get_invalid_completion_output,
 		get_operation_display_label,
 		resolve_item_group_placement,
+		can_change_workstation,
 	};
 }

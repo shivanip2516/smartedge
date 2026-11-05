@@ -912,10 +912,14 @@ def check_schedule_capacity(
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
 	validate_plan_entry(entry)
+	validate_workstation_reassignment_allowed(entry, workstation)
 	validate_selected_workstation(entry, workstation)
 	planned_start = normalize_schedule_time(planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
 	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
+	if flt(projection.get("new_operation_hours")) > 0:
+		duration_hours = flt(projection.get("new_operation_hours"))
+	projection["planned_hours"] = duration_hours
 	projection["can_confirm"] = cint(can_confirm_capacity_overload())
 	if projection.get("requires_confirmation") and projection["can_confirm"]:
 		fingerprint = make_capacity_move_fingerprint(
@@ -1012,20 +1016,27 @@ def schedule_operation(
 ):
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
+	lock_plan_entry(plan_entry)
+	entry.reload()
+	workstation_changed = bool(entry.workstation and entry.workstation != workstation)
 	validate_plan_entry(entry)
+	validate_workstation_reassignment_allowed(entry, workstation)
 	validate_material_plan_released(entry)
 	validate_material_scheduling_context(entry)
 	validate_selected_workstation(entry, workstation)
-	lock_workstation(workstation)
+	for workstation_name in sorted({value for value in (entry.workstation, workstation) if value}):
+		lock_workstation(workstation_name)
 
 	planned_start = normalize_schedule_time(planned_start)
 	start_dt = combine_date_time(planned_date, planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
+	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
+	if flt(projection.get("new_operation_hours")) > 0:
+		duration_hours = flt(projection.get("new_operation_hours"))
 	end_dt = start_dt + timedelta(hours=duration_hours)
 	validate_future_schedule(start_dt, end_dt)
 
 	validate_sequence(entry, start_dt, bool(int(override_sequence or 0)))
-	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
 	confirmation_cache_key = None
 	if projection.get("requires_confirmation"):
 		fingerprint = make_capacity_move_fingerprint(
@@ -1051,6 +1062,7 @@ def schedule_operation(
 	if priority:
 		entry.priority = priority
 	entry.save()
+	update_unstarted_production_jobs_for_schedule(entry, workstation_changed=workstation_changed)
 	if confirmation_cache_key:
 		frappe.cache.delete_value(confirmation_cache_key)
 	update_generator_planning_status(entry.final_eb_bom_generator)
@@ -1083,6 +1095,61 @@ def unplan_operation(plan_entry):
 def validate_plan_entry(entry):
 	if entry.status in {"Completed", "Cancelled"}:
 		frappe.throw(_("Completed or cancelled entries cannot be planned."))
+
+
+def validate_workstation_reassignment_allowed(entry, workstation):
+	"""Reject workstation moves after execution has started, including stale plan states."""
+	if not entry.get("workstation") or entry.workstation == workstation:
+		return
+	if entry.status not in {"Pending", "Planned", "Ready"}:
+		frappe.throw(
+			_("Workstation can only be changed while the operation is Pending, Planned, or Ready and has not started."),
+			title=_("Workstation Reassignment Not Allowed"),
+		)
+	jobs = frappe.get_all(
+		"SmartEdge Production Job",
+		filters={"plan_entry": entry.name},
+		fields=["name", "status", "actual_start"],
+		limit_page_length=20,
+	)
+	started = [
+		job
+		for job in jobs
+		if job.actual_start or job.status in {"In Progress", "Paused", "Completed", "Cancelled", "On Hold"}
+	]
+	if started:
+		frappe.throw(
+			_("Workstation cannot be changed because production execution has already started for this operation."),
+			title=_("Workstation Reassignment Not Allowed"),
+		)
+
+
+def update_unstarted_production_jobs_for_schedule(entry, workstation_changed=False):
+	"""Keep any pre-created draft job aligned without changing its identity or execution history."""
+	jobs = frappe.get_all(
+		"SmartEdge Production Job",
+		filters={"plan_entry": entry.name},
+		pluck="name",
+		limit_page_length=20,
+	)
+	for job_name in jobs:
+		lock_production_job(job_name)
+		job = frappe.get_doc("SmartEdge Production Job", job_name)
+		job.reload()
+		if workstation_changed and (
+			job.actual_start or job.status in {"In Progress", "Paused", "Completed", "Cancelled", "On Hold"}
+		):
+			frappe.throw(
+				_("Workstation cannot be changed because production execution has already started for this operation."),
+				title=_("Workstation Reassignment Not Allowed"),
+			)
+		if job.status != "Draft" or job.actual_start:
+			continue
+		job.check_permission("write")
+		job.workstation = entry.workstation
+		job.planned_start = entry.planned_start_datetime
+		job.planned_end = entry.planned_end_datetime
+		job.save()
 
 
 def validate_material_plan_released(entry):

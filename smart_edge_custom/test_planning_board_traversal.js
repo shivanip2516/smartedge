@@ -13,7 +13,17 @@ const {
 	get_invalid_completion_output,
 	get_operation_display_label,
 	resolve_item_group_placement,
+	can_change_workstation,
 } = require("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js");
+
+assert.equal(can_change_workstation({ status: "Pending" }), true);
+assert.equal(can_change_workstation({ status: "Planned", workstation: "Extruder-1" }), true);
+assert.equal(can_change_workstation({ status: "Ready", job_status: "Draft" }), true);
+assert.equal(can_change_workstation({ status: "In Progress" }), false);
+assert.equal(can_change_workstation({ status: "Paused" }), false);
+assert.equal(can_change_workstation({ status: "Completed" }), false);
+assert.equal(can_change_workstation({ status: "Cancelled" }), false);
+assert.equal(can_change_workstation({ status: "Planned", job_actual_start: "2026-11-05 09:00:00" }), false);
 
 assert.equal(get_invalid_completion_output({
 	good_qty: 950,
