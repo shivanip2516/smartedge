@@ -75,11 +75,26 @@ class TestUnusableScrap(unittest.TestCase):
 
 	def test_unusable_warehouse_is_blocked_from_normal_consumption(self):
 		doc = frappe._dict(custom_smartedge_scrap_movement_type=None)
-		doc.items = [frappe._dict(s_warehouse="UNUSABLE-WH", batch_no=None)]
+		doc.items = [frappe._dict(s_warehouse="UNUSABLE-WH", item_code="UNUSABLE", batch_no=None)]
 		doc.get = lambda key, default=None: doc.items if key == "items" else dict.get(doc, key, default)
-		with patch.object(unusable_scrap.frappe, "get_all", return_value=["UNUSABLE-WH"]):
+		with patch.object(
+			unusable_scrap.frappe,
+			"get_all",
+			return_value=[frappe._dict(unusable_scrap_warehouse="UNUSABLE-WH", unusable_scrap_item="UNUSABLE")],
+		):
 			with self.assertRaisesRegex(frappe.ValidationError, "restricted"):
 				unusable_scrap.reject_unusable_scrap_consumption(doc)
+
+	def test_configured_scrap_warehouse_allows_other_manufacturing_items(self):
+		doc = frappe._dict(custom_smartedge_scrap_movement_type=None)
+		doc.items = [frappe._dict(s_warehouse="UNUSABLE-WH", item_code="BASE-COLOUR", batch_no=None)]
+		doc.get = lambda key, default=None: doc.items if key == "items" else dict.get(doc, key, default)
+		with patch.object(
+			unusable_scrap.frappe,
+			"get_all",
+			return_value=[frappe._dict(unusable_scrap_warehouse="UNUSABLE-WH", unusable_scrap_item="UNUSABLE")],
+		):
+			unusable_scrap.reject_unusable_scrap_consumption(doc)
 
 	def test_disposal_requires_manager_authority(self):
 		with patch.object(unusable_scrap.frappe, "get_roles", return_value=["Manufacturing User"]):

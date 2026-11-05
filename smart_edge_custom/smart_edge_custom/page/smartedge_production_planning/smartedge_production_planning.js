@@ -487,7 +487,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const $row = $(
 			`<div class="se-operation-row se-${status_class} ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
 				<div class="se-operation-strip">
-					<div class="se-operation-title" draggable="true" title="${__("Drag to reschedule this operation")}"><span>${frappe.utils.escape_html(card.operation_sequence || "•")}</span> ${frappe.utils.escape_html(operation_label)} ${saved_lot_link}</div>
+					<div class="se-operation-title" draggable="true" title="${frappe.utils.escape_html(operation_label)}"><span class="se-operation-sequence">${frappe.utils.escape_html(card.operation_sequence || "•")}</span><span class="se-operation-title-content"><span class="se-operation-name">${frappe.utils.escape_html(operation_label)}</span>${saved_lot_link}</span></div>
 					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
 					${qc_badge}
 					<button class="btn btn-xs btn-default se-toggle-operation-details" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? __("Collapse operation") : __("Expand operation")}">${expanded ? "−" : "+"}</button>
@@ -1891,6 +1891,7 @@ function get_qc_badge_html(card) {
 		"QC Pending": "pending",
 		"QC Approved": "approved",
 		"QC Rejected": "rejected",
+		"Awaiting Manufacturing Output": "waiting",
 	}[card.qc_display_status] || "pending";
 	return `<span class="se-qc-badge se-qc-${state}">${frappe.utils.escape_html(__(card.qc_display_status))}</span>`;
 }
@@ -1900,6 +1901,7 @@ function get_group_qc_status(operations) {
 	if (statuses.includes("QC Pending")) return "QC Pending";
 	if (statuses.includes("QC Rejected")) return "QC Rejected";
 	if (statuses.includes("QC Approved")) return "QC Approved";
+	if (statuses.includes("Awaiting Manufacturing Output")) return "Awaiting Manufacturing Output";
 	return null;
 }
 
@@ -1909,6 +1911,9 @@ function get_status_label(status) {
 	}
 	if (status === "On Hold") {
 		return __("Paused");
+	}
+	if (status === "Awaiting Manufacturing Output") {
+		return __("Waiting for Output");
 	}
 	return __(status || "Pending");
 }

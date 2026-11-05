@@ -34,6 +34,17 @@ class TestScrapRecovery(unittest.TestCase):
 			with self.subTest(value=value), self.assertRaises(frappe.ValidationError):
 				scrap_recovery._positive(value, "Quantity")
 
+	def test_selected_recovered_item_batch_flag_is_authoritative(self):
+		item = frappe._dict(name="RECOVERED-ITEM", disabled=0, is_stock_item=1, has_batch_no=1, stock_uom="Kg")
+		with patch.object(scrap_recovery.frappe.db, "get_value", return_value=item):
+			self.assertEqual(scrap_recovery._stock_item("RECOVERED-ITEM", "Recovered Material Item").name, "RECOVERED-ITEM")
+
+	def test_recovered_item_without_batch_flag_remains_blocked(self):
+		item = frappe._dict(name="RECOVERED-ITEM", disabled=0, is_stock_item=1, has_batch_no=0, stock_uom="Kg")
+		with patch.object(scrap_recovery.frappe.db, "get_value", return_value=item):
+			with self.assertRaisesRegex(frappe.ValidationError, "Recovered Material Item .*batch tracking enabled"):
+				scrap_recovery._stock_item("RECOVERED-ITEM", "Recovered Material Item")
+
 	def test_completed_grinder_retry_reuses_existing_posting(self):
 		doc = frappe._dict(
 			name="REC-1", status="Ground", grinder_stock_entry="STE-GRINDER",

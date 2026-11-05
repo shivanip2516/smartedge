@@ -135,7 +135,7 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 
 		apply_item_configuration_defaults(doc)
 
-		self.assertEqual(doc.custom_base_colour, "American Walnut")
+		self.assertIsNone(doc.custom_base_colour)
 		self.assertIsNone(doc.base_colour_item)
 
 	@patch(

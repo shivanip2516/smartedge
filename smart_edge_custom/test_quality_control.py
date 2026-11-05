@@ -67,12 +67,36 @@ class TestQualityControl(unittest.TestCase):
 			"QC Pending",
 		)
 
+	def test_new_inspection_uses_valid_erpnext_status_for_pending_custom_qc(self):
+		doc = Mock()
+		qc_entry = frappe._dict(
+			name="PLAN-QC",
+			final_eb_bom_generator="GEN-1",
+			operation="QC After Extrusion",
+		)
+		with patch.object(qc, "_source_details", return_value=(
+			frappe._dict(name="PLAN-EXT"),
+			frappe._dict(name="JOB-1"),
+			"LOT-1",
+			"BATCH-1",
+		)), patch.object(qc, "_next_key", return_value="smartedge-qc:PLAN-QC:1"), patch.object(
+			qc.frappe, "new_doc", return_value=doc
+		), patch.object(
+			qc.frappe.db, "get_value", return_value=frappe._dict(finished_item="FG-1", company="ACME")
+		), patch.object(qc, "_notify_quality_managers"):
+			qc._new_inspection(qc_entry, 100)
+
+		self.assertEqual(doc.status, "Accepted")
+		self.assertEqual(doc.custom_smartedge_qc_status, "Pending")
+		doc.insert.assert_called_once_with(ignore_permissions=True)
+
 	def test_board_qc_enrichment_preserves_source_operation_identity(self):
 		source = frappe._dict(
 			name="PLAN-EXT",
 			operation="Single Mould Extrusion + Integrated Online Printing",
 			workstation="Single Mould Extrusion",
 			production_job="JOB-EXT",
+			status="Completed",
 		)
 		checkpoint = frappe._dict(
 			name="PLAN-QC",
@@ -104,6 +128,39 @@ class TestQualityControl(unittest.TestCase):
 		self.assertEqual(source.qc_checkpoint_operation, "QC After Extrusion")
 		self.assertEqual(source.qc_display_status, "QC Pending")
 		self.assertTrue(source.qc_required)
+
+	def test_board_qc_enrichment_does_not_mark_running_source_as_pending(self):
+		source = frappe._dict(
+			name="PLAN-EXT",
+			operation="Single Mould Extrusion",
+			workstation="Single Mould Extrusion",
+			production_job="JOB-EXT",
+			status="In Progress",
+		)
+		checkpoint = frappe._dict(
+			name="PLAN-QC",
+			operation="QC After Extrusion",
+			workstation="QC After Extrusion",
+		)
+		context = {
+			"operation": checkpoint.operation,
+			"qc_display_status": "Awaiting Manufacturing Output",
+			"qc_status": "Blocked",
+		}
+
+		def previous(row):
+			return source if row.name == checkpoint.name else None
+
+		with patch.object(qc, "is_qc_entry", side_effect=lambda row: row.name == checkpoint.name), patch.object(
+			qc, "get_qc_context", return_value=context
+		), patch(
+			"smart_edge_custom.manufacturing.planning.get_previous_mandatory_entry",
+			side_effect=previous,
+		):
+			qc.attach_qc_details([source, checkpoint])
+
+		self.assertFalse(getattr(source, "qc_required", False))
+		self.assertFalse(getattr(source, "qc_display_status", None))
 
 	def test_aggregate_counts_reinspection_acceptance_without_double_releasing_rework(self):
 		rows = [
@@ -167,6 +224,20 @@ class TestQualityControl(unittest.TestCase):
 			qc.SmartEdgeQualityInspection.update_qc_reference(doc)
 		standard_child_sync.assert_not_called()
 		standard_reference_sync.assert_not_called()
+
+	def test_smartedge_submission_requires_api_authority(self):
+		blocked = object.__new__(qc.SmartEdgeQualityInspection)
+		blocked.custom_smartedge_qc_key = "smartedge-qc:1"
+		blocked.flags = frappe._dict()
+		with self.assertRaises(frappe.ValidationError):
+			qc.SmartEdgeQualityInspection.before_submit(blocked)
+
+		allowed = object.__new__(qc.SmartEdgeQualityInspection)
+		allowed.custom_smartedge_qc_key = "smartedge-qc:1"
+		allowed.flags = frappe._dict(smartedge_qc_api=True)
+		with patch.object(qc.QualityInspection, "before_submit") as standard_before_submit:
+			qc.SmartEdgeQualityInspection.before_submit(allowed)
+		standard_before_submit.assert_called_once_with()
 
 
 if __name__ == "__main__":

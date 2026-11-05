@@ -524,7 +524,6 @@ def get_generator_map(names):
 		"finished_item",
 		"finished_item_name",
 		"custom_size",
-		"custom_base_colour",
 		"custom_customer_order_code",
 		"production_quantity",
 		"stock_uom",
@@ -563,7 +562,6 @@ def matches_search(row, generator, search):
 			row.get("material_item"),
 			generator.finished_item,
 			generator.finished_item_name,
-			generator.custom_base_colour,
 			generator.custom_customer_order_code,
 			generator.get("sales_order"),
 			generator.get("customer"),
@@ -878,6 +876,19 @@ def get_compatible_workstations(operation, operation_row=None, include_default=1
 
 	if cint(include_default):
 		add_unique(workstations, default_workstation)
+	# A route normally stores one representative Workstation. Existing ERPNext
+	# Workstation Type membership is the supported way to expose equivalent
+	# machines without making every workstation selectable for the operation.
+	representative = frappe.db.get_value("Final EB BOM Operation", operation_row, "workstation") if operation_row else None
+	representative = representative or default_workstation
+	if representative:
+		workstation_type = frappe.db.get_value("Workstation", representative, "workstation_type")
+		if workstation_type:
+			for row in frappe.get_all(
+				"Workstation", filters={"workstation_type": workstation_type, "disabled": 0},
+				fields=["name"], order_by="name asc", limit_page_length=500,
+			):
+				add_unique(workstations, row.name)
 	return filter_enabled_workstations(workstations)
 
 

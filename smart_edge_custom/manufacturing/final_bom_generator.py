@@ -48,8 +48,6 @@ def get_finished_item_configuration(finished_item):
 	]
 	for fieldname in (
 		"custom_size",
-		"custom_base_colour",
-		"custom_base_color",
 		"custom_color",
 		"custom_product_category",
 		"custom_product_type_design_category",
@@ -81,9 +79,6 @@ def get_finished_item_configuration(finished_item):
 		"item_group": item.item_group,
 		"stock_uom": item.stock_uom,
 		"custom_size": size_value,
-		"custom_base_colour": item.get("custom_base_colour")
-		or item.get("custom_base_color")
-		or item.get("custom_color"),
 		"custom_product_category": item.get("custom_product_category"),
 		"custom_product_type_design_category": item.get("custom_product_type_design_category"),
 		"custom_type_finish": item.get("custom_type_finish"),

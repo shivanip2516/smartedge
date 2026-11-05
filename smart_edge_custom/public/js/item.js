@@ -79,12 +79,6 @@ function configure_customer_order_code_field(frm) {
 		frm.set_df_property("custom_customer_order_code", "reqd", 0);
 	}
 
-	for (const fieldname of ["custom_base_color", "custom_base_colour"]) {
-		if (frm.fields_dict[fieldname]) {
-			frm.set_df_property(fieldname, "hidden", 1);
-			frm.set_df_property(fieldname, "reqd", 0);
-		}
-	}
 }
 
 const OPTIONAL_ITEM_GROUPS = ["Additives", "Compounds", "Pigments", "Base Colour"];

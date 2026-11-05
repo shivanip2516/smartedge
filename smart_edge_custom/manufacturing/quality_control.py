@@ -49,7 +49,7 @@ class SmartEdgeQualityInspection(QualityInspection):
 		return super().on_cancel()
 
 	def before_submit(self):
-		if self.get("custom_smartedge_qc_key"):
+		if self.get("custom_smartedge_qc_key") and not self.flags.get("smartedge_qc_api"):
 			frappe.throw(_("Use SmartEdge Submit QC Decision; route inspections remain controlled audit records."))
 		return super().before_submit()
 
@@ -145,7 +145,10 @@ def _new_inspection(qc_entry, eligible_qty, source_job=None, source_qc=None):
 	doc.sample_size = flt(eligible_qty)
 	doc.inspected_by = frappe.session.user
 	doc.manual_inspection = 1
-	doc.status = ""  # The custom lifecycle is authoritative until a decision is recorded.
+	# ERPNext requires a valid standard status even while the SmartEdge QC
+	# lifecycle is still Pending.  Keep the custom field authoritative for the
+	# workflow and use the valid draft value accepted by the core DocType.
+	doc.status = "Accepted"
 	doc.custom_smartedge_qc_key = _next_key(qc_entry.name)
 	doc.custom_final_eb_bom_generator = qc_entry.final_eb_bom_generator
 	doc.custom_qc_plan_entry = qc_entry.name
@@ -294,6 +297,13 @@ def submit_decision(
 		"remarks": remarks,
 	}
 	_save_api(doc, updates)
+	# Finalized SmartEdge decisions must use ERPNext's normal submission
+	# lifecycle so the linked Quality Inspection is no longer left in Draft.
+	# The API flag is narrowly scoped to this validated decision path; direct
+	# manual submission remains blocked by SmartEdgeQualityInspection.
+	if doc.docstatus == 0:
+		doc.flags.smartedge_qc_api = True
+		doc.submit()
 	_close_pending_assignments(doc.name)
 	if doc.custom_source_qc:
 		source = _lock_inspection(doc.custom_source_qc)
@@ -493,7 +503,19 @@ def get_qc_context(plan_entry):
 		"Final EB BOM Generator", entry.final_eb_bom_generator,
 		["finished_item", "finished_item_name"], as_dict=True,
 	) or frappe._dict()
+	# A QC checkpoint is not actionable until the preceding manufacturing
+	# operation has completed and released output.  Do not surface a generic
+	# "QC Pending" state while that operation is still running; doing so makes
+	# the predecessor card appear blocked before it has produced anything.
+	output_released = bool(
+		flt(entry.get("released_qty_meter")) > EPSILON
+		or flt(entry.get("released_qty_kg")) > EPSILON
+	)
 	display_status = get_qc_display_status(current)
+	qc_status = current.custom_smartedge_qc_status if current else "Pending"
+	if not current and not output_released:
+		display_status = "Awaiting Manufacturing Output"
+		qc_status = "Blocked"
 	can_view_inspection = bool(current and frappe.has_permission("Quality Inspection", "read"))
 	notification_warning = None
 	if display_status == "QC Pending" and not get_qc_recipient_users():
@@ -504,7 +526,7 @@ def get_qc_context(plan_entry):
 		"is_qc": is_qc_entry(entry),
 		"qc_required": True,
 		"quality_inspection": current.name if can_view_inspection else None,
-		"qc_status": current.custom_smartedge_qc_status if current else "Pending",
+		"qc_status": qc_status,
 		"qc_display_status": display_status,
 		"qc_notification_warning": notification_warning,
 		"eligible_qty": flt(active.custom_eligible_qty) if active else max(
@@ -540,7 +562,17 @@ def attach_qc_details(rows):
 
 		previous = get_previous_mandatory_entry(row)
 		source_row = rows_by_name.get(previous.name) if previous else None
-		if source_row:
+		# Only attach the checkpoint summary to its source operation after the
+		# source has completed.  Before completion the QC operation may already
+		# be planned, but there is no eligible output to inspect yet.
+		source_completed = bool(
+			source_row
+			and (
+				source_row.get("status") == "Completed"
+				or source_row.get("job_status") == "Completed"
+			)
+		)
+		if source_completed:
 			for key, value in context.items():
 				if key in SOURCE_QC_CONTEXT_FIELDS:
 					source_row[key] = value

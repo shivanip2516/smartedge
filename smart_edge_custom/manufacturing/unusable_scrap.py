@@ -312,9 +312,21 @@ def reject_unusable_scrap_consumption(doc, method=None):
 	"""Warehouse/batch separation is backed by server validation on every Stock Entry."""
 	if doc.get("custom_smartedge_scrap_movement_type") == "Unusable Scrap Disposal":
 		return
-	warehouses = set(frappe.get_all("SmartEdge Recovery Material", filters={"disabled": 0, "unusable_scrap_warehouse": ["is", "set"]}, pluck="unusable_scrap_warehouse"))
+	configurations = frappe.get_all(
+		"SmartEdge Recovery Material",
+		filters={"disabled": 0, "unusable_scrap_warehouse": ["is", "set"]},
+		fields=["unusable_scrap_warehouse", "unusable_scrap_item"],
+	)
+	# A Stock Entry may legitimately use the configured scrap warehouse for
+	# another item (for example, a manufacturing receipt).  Restrict only the
+	# configured unusable-scrap item, or a batch already linked to a scrap lot.
+	protected_sources = {
+		(row.unusable_scrap_warehouse, row.unusable_scrap_item)
+		for row in configurations
+		if row.unusable_scrap_warehouse and row.unusable_scrap_item
+	}
 	for row in doc.get("items") or []:
-		if row.get("s_warehouse") in warehouses:
+		if (row.get("s_warehouse"), row.get("item_code")) in protected_sources:
 			frappe.throw(_("Unusable scrap in {0} is restricted to the authorized disposal workflow.").format(row.s_warehouse))
 		if row.get("batch_no") and frappe.db.exists("Batch", {"name": row.batch_no, "custom_smartedge_unusable_scrap_lot": ["is", "set"]}):
 			frappe.throw(_("Unusable scrap Batch {0} cannot be consumed by production or recovery.").format(row.batch_no))

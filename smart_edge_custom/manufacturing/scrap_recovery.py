@@ -29,6 +29,8 @@ def _require_recovery_user():
 
 
 def _stock_item(item_code, label):
+	if not item_code:
+		frappe.throw(_("{0} is required.").format(label))
 	item = frappe.db.get_value(
 		"Item", item_code,
 		["name", "item_name", "stock_uom", "is_stock_item", "disabled", "has_batch_no"],
@@ -36,8 +38,8 @@ def _stock_item(item_code, label):
 	)
 	if not item or item.disabled or not item.is_stock_item:
 		frappe.throw(_("{0} must be an enabled stock Item.").format(label))
-	if not item.has_batch_no:
-		frappe.throw(_("{0} must have batch tracking enabled.").format(label))
+	if cint(item.get("has_batch_no")) != 1:
+		frappe.throw(_("{0} ({1}) must have batch tracking enabled. The authoritative Item.has_batch_no value is {2}.").format(label, item_code, item.get("has_batch_no") or 0))
 	return item
 
 

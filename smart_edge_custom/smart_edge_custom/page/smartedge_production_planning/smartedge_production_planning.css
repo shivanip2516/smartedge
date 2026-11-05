@@ -520,6 +520,9 @@
 }
 
 .smartedge-planning .se-operation-title {
+	display: flex;
+	align-items: center;
+	gap: 4px;
 	min-width: 0;
 	flex: 1;
 	overflow: hidden;
@@ -529,6 +532,23 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	cursor: grab;
+}
+
+.smartedge-planning .se-operation-sequence {
+	flex: 0 0 22px;
+}
+
+.smartedge-planning .se-operation-title-content {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.smartedge-planning .se-operation-name {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .smartedge-planning .se-operation-title:active {
@@ -678,6 +698,7 @@
 }
 
 .smartedge-planning .se-status-pill {
+	flex: 0 0 auto;
 	display: inline-flex;
 	align-items: center;
 	max-width: 100%;
@@ -693,8 +714,11 @@
 }
 
 .smartedge-planning .se-qc-badge {
+	flex: 0 0 auto;
 	display: inline-flex;
 	align-items: center;
+	max-width: 140px;
+	overflow: hidden;
 	min-height: 18px;
 	padding: 2px 7px;
 	border: 1px solid transparent;
@@ -703,7 +727,13 @@
 	font-weight: 850;
 	line-height: 13px;
 	text-transform: uppercase;
+	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.smartedge-planning .se-operation-strip > .se-toggle-operation-details {
+	flex: 0 0 auto;
+	margin-top: 0;
 }
 
 .smartedge-planning .se-qc-pending {
