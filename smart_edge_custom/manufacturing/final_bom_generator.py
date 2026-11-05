@@ -606,8 +606,10 @@ def get_route_operations(doc, route_doc):
 	warnings = []
 	production_quantity = flt(doc.get("production_quantity"))
 
-	# Existing releases retain their saved operation snapshot and row identities.
-	if doc.get("name") and doc.get("operation_preview") and frappe.db.exists(
+	# Existing releases retain their saved operation snapshot only while the
+	# resolved route is unchanged. A Printing Route/extrusion/slitting change
+	# must rebuild the preview instead of returning stale rows.
+	if route_doc and doc.get("name") and doc.get("operation_preview") and doc.get("selected_route") == route_doc.name and frappe.db.exists(
 		"SmartEdge Production Plan Entry",
 		{"final_eb_bom_generator": doc.get("name"), "plan_type": "Final EB", "status": ["!=", "Cancelled"]},
 	):
