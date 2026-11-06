@@ -275,9 +275,59 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Reports / Utilities",
-   "link_count": 2,
+   "link_count": 7,
    "onboard": 0,
    "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Production Performance",
+   "link_count": 0,
+   "link_to": "Production Performance",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Machine Performance",
+   "link_count": 0,
+   "link_to": "Machine Performance",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Operator Productivity",
+   "link_count": 0,
+   "link_to": "Operator Productivity",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Quality Performance",
+   "link_count": 0,
+   "link_to": "Quality Performance",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Material Efficiency",
+   "link_count": 0,
+   "link_to": "Material Efficiency",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
   },
   {
    "hidden": 0,

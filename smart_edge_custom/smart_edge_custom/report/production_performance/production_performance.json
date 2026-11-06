@@ -1,0 +1,1 @@
+{"doctype":"Report","name":"Production Performance","module":"smart_edge_custom","is_standard":"Yes","apply_user_permissions":1,"report_name":"Production Performance","ref_doctype":"SmartEdge Production Job","report_type":"Script Report","roles":[{"role":"Manufacturing User"},{"role":"Manufacturing Manager"},{"role":"System Manager"}]}
