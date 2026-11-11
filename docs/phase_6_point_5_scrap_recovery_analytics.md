@@ -1,10 +1,10 @@
-# Phase 6 Point 5 — Scrap & Recovery Analytics
+# Phase 6 Point 5 — Scrap and Recovery Analytics
 
 ## Report location
 
-The standard Frappe Script Report **Scrap & Recovery Analytics** is available from:
+The standard Frappe Script Report **Scrap and Recovery Analytics** is available from:
 
-`SmartEdge Manufacturing → Reports / Utilities → Scrap & Recovery Analytics`
+`SmartEdge Manufacturing → Reports / Utilities → Scrap and Recovery Analytics`
 
 It is read-only and is permitted to Manufacturing User and Manufacturing Manager, matching the existing Production Job report permissions and remaining subject to Company and user permissions.
 

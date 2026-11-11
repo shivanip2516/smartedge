@@ -1,0 +1,12 @@
+{
+ "doctype": "Print Format",
+ "name": "SmartEdge Production Traceability Label",
+ "doc_type": "SmartEdge Production Lot",
+ "module": "smart_edge_custom",
+ "standard": "Yes",
+ "custom_format": 1,
+ "print_format_type": "Jinja",
+ "disabled": 0,
+ "condition": "{{ doc.actual_end and frappe.db.get_value('Quality Inspection', doc.quality_inspection, 'docstatus') == 1 and frappe.db.get_value('Quality Inspection', doc.quality_inspection, 'custom_smartedge_qc_status') == 'Accepted' and (doc.is_stock_inventory_batch or frappe.db.get_value('Batch', {'custom_operation_lot': doc.name}, 'custom_batch_purpose') == 'Physical Stock') }}",
+ "format_data": "[{\"fieldtype\":\"Barcode\",\"label\":\"Traceability QR\",\"barcode_field\":\"name\",\"barcode_format\":\"QR\"},{\"fieldtype\":\"Custom HTML\",\"options\":\"{% set item_meta = frappe.get_meta('Item') %}{% set size = frappe.db.get_value('Item', doc.finished_item, 'custom_size') if item_meta.has_field('custom_size') else None %}{% set color = frappe.db.get_value('Item', doc.finished_item, 'custom_color') if item_meta.has_field('custom_color') else None %}{% set accepted = frappe.db.get_value('Quality Inspection', doc.quality_inspection, 'custom_accepted_qty') %}<div style='font-family: sans-serif; width: 70mm; padding: 4mm'><h3 style='margin:0 0 3mm'>SmartEdge Traceability</h3><div><b>Item:</b> {{ doc.finished_item }}<br>{{ doc.finished_item_name or '' }}</div><div><b>Size:</b> {{ size or 'N/A' }}<br><b>Color:</b> {{ color or 'N/A' }}</div><div><b>Batch:</b> {{ frappe.db.get_value('Batch', {'custom_operation_lot': doc.name}, 'name') or 'N/A' }}<br><b>Accepted:</b> {{ accepted }} {{ doc.quantity_uom or '' }}<br><b>Weight:</b> {{ doc.produced_quantity_kg or 'N/A' }} Kg</div><div><b>Production Date:</b> {{ doc.actual_end }}<br><b>Workstation:</b> {{ doc.workstation or 'N/A' }}<br><b>Reference:</b> SE-LOT:{{ doc.name }}</div></div>\"}]"
+}

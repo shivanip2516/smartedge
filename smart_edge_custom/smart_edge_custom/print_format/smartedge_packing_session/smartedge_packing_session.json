@@ -1,0 +1,10 @@
+{
+ "doctype": "Print Format",
+ "name": "SmartEdge Packing List",
+ "doc_type": "SmartEdge Packing Session",
+ "module": "smart_edge_custom",
+ "standard": "Yes",
+ "custom_format": 1,
+ "print_format_type": "Jinja",
+ "disabled": 0
+}

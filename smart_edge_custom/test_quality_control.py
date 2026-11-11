@@ -66,6 +66,10 @@ class TestQualityControl(unittest.TestCase):
 			qc.get_qc_display_status(frappe._dict(custom_smartedge_qc_status="Under Review")),
 			"QC Pending",
 		)
+		self.assertEqual(
+			qc.get_qc_display_status(frappe._dict(custom_smartedge_qc_status="Rework Required")),
+			"QC Rework Required",
+		)
 
 	def test_new_inspection_uses_valid_erpnext_status_for_pending_custom_qc(self):
 		doc = Mock()
@@ -89,6 +93,48 @@ class TestQualityControl(unittest.TestCase):
 		self.assertEqual(doc.status, "Accepted")
 		self.assertEqual(doc.custom_smartedge_qc_status, "Pending")
 		doc.insert.assert_called_once_with(ignore_permissions=True)
+
+	def test_resubmit_rework_does_not_mutate_submitted_source(self):
+		source = frappe._dict(
+			name="MAT-QA-2026-00008", docstatus=1,
+			custom_smartedge_qc_status="Rework Required", custom_rework_resolved=0,
+			custom_rework_resubmitted_to=None, custom_qc_plan_entry="PLAN-QC",
+			custom_rework_qty=36, custom_source_production_job="SE-JOB-2026-00154",
+		)
+		new_doc = frappe._dict(name="MAT-QA-2026-00009", custom_smartedge_qc_status="Pending")
+		with patch.object(qc, "require_qc_authority"), patch.object(qc, "_lock_inspection", return_value=source), patch.object(
+			qc, "_validate_smartedge_inspection"
+		), patch.object(qc.frappe, "get_all", return_value=[]), patch.object(
+			qc.frappe, "get_doc", return_value=frappe._dict(name="PLAN-QC")
+		), patch.object(qc, "_new_inspection", return_value=new_doc) as create, patch.object(
+			qc, "_save_api"
+		) as save:
+			result = qc.resubmit_rework(source.name)
+
+		self.assertEqual(result["quality_inspection"], "MAT-QA-2026-00009")
+		create.assert_called_once_with(
+			frappe._dict(name="PLAN-QC"), 36,
+			source_job="SE-JOB-2026-00154", source_qc="MAT-QA-2026-00008",
+		)
+		save.assert_not_called()
+
+	def test_resubmit_rework_reuses_existing_reinspection(self):
+		source = frappe._dict(
+			name="MAT-QA-2026-00008", docstatus=1,
+			custom_smartedge_qc_status="Rework Required", custom_rework_resolved=0,
+			custom_rework_resubmitted_to=None, custom_qc_plan_entry="PLAN-QC",
+			custom_rework_qty=36, custom_source_production_job="SE-JOB-2026-00154",
+		)
+		existing = frappe._dict(name="MAT-QA-2026-00009", custom_smartedge_qc_status="Pending")
+		with patch.object(qc, "require_qc_authority"), patch.object(qc, "_lock_inspection", return_value=source), patch.object(
+			qc, "_validate_smartedge_inspection"
+		), patch.object(qc.frappe, "get_all", return_value=[frappe._dict(name=existing.name)]), patch.object(
+			qc.frappe, "get_doc", side_effect=[existing]
+		), patch.object(qc, "_new_inspection") as create:
+			result = qc.resubmit_rework(source.name)
+
+		self.assertEqual(result["quality_inspection"], existing.name)
+		create.assert_not_called()
 
 	def test_board_qc_enrichment_preserves_source_operation_identity(self):
 		source = frappe._dict(
@@ -175,6 +221,20 @@ class TestQualityControl(unittest.TestCase):
 			result = qc.aggregate("PLAN-QC")
 		self.assertEqual(result.accepted_qty, 100)
 		self.assertEqual(result.root_inspected_qty, 100)
+		self.assertEqual(result.unresolved_rework_qty, 0)
+
+	def test_reinspection_resolves_parent_without_submitted_source_update(self):
+		rows = [
+			frappe._dict(name="QI-1", custom_smartedge_qc_status="Rework Required", custom_eligible_qty=100,
+				custom_inspected_qty=100, custom_accepted_qty=80, custom_rejected_qty=0, custom_rework_qty=20,
+				custom_source_qc=None, custom_rework_resolved=0, modified="1"),
+			frappe._dict(name="QI-2", custom_smartedge_qc_status="Accepted", custom_eligible_qty=20,
+				custom_inspected_qty=20, custom_accepted_qty=20, custom_rejected_qty=0, custom_rework_qty=0,
+				custom_source_qc="QI-1", custom_rework_resolved=0, modified="2"),
+		]
+		with patch.object(qc, "_inspection_rows", return_value=rows):
+			result = qc.aggregate("PLAN-QC")
+		self.assertEqual(result.accepted_qty, 100)
 		self.assertEqual(result.unresolved_rework_qty, 0)
 
 	def test_pending_notification_is_role_scoped_and_idempotent(self):

@@ -48,7 +48,7 @@
   {"fieldname":"stock_entry","fieldtype":"Link","label":"Related Stock Entry","options":"Stock Entry","read_only":1},
   {"fieldname":"quality_inspection","fieldtype":"Link","label":"Quality Inspection","options":"Quality Inspection","read_only":1},
   {"fieldname":"traceability_details","fieldtype":"HTML","label":"Input Material Batches"},
-  {"default":"0","fieldname":"is_stock_inventory_batch","fieldtype":"Check","label":"ERPNext Stock Inventory Batch","read_only":1}
+  {"default":"1","fieldname":"is_stock_inventory_batch","fieldtype":"Check","label":"ERPNext Stock Inventory Batch"}
  ],
  "index_web_pages_for_search": 1,
  "links": [],

@@ -61,7 +61,7 @@ app_include_css = "/assets/smart_edge_custom/css/base_colour.css"
 # webform_include_css = {"doctype": "public/css/doctype.css"}
 
 # include js in page
-# page_js = {"page" : "public/js/file.js"}
+page_js = {"smartedge-packing": "public/js/smartedge_packing.js"}
 
 # include js in doctype views
 # doctype_js = {"doctype" : "public/js/doctype.js"}
@@ -74,8 +74,10 @@ doctype_js = {
 	"Sales Order": "public/js/sales_order.js",
 	"Workstation": "public/js/workstation.js",
 	"Work Order": "public/js/work_order.js",
+	"SmartEdge Production Lot": "public/js/smartedge_production_lot.js",
 }
 doctype_list_js = {
+	"Sales Order": "public/js/sales_order_list.js",
 	"Batch": "public/js/batch_list.js",
 	"Base Colour": "public/js/base_colour_list.js",
 	"Compound": "public/js/manufacturing_masters.js",
@@ -91,6 +93,10 @@ override_whitelisted_methods = {
 
 override_doctype_class = {
 	"Quality Inspection": "smart_edge_custom.manufacturing.quality_control.SmartEdgeQualityInspection",
+}
+
+jinja = {
+	"methods": ["smart_edge_custom.manufacturing.production_lot.get_label_qr_code"],
 }
 
 # Svg Icons
@@ -200,7 +206,11 @@ doc_events = {
 	"Stock Ledger Entry": {"before_insert": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Pick List": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Stock Reservation Entry": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
-	"Delivery Note": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
+	"Delivery Note": {
+		"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock",
+		"on_submit": "smart_edge_custom.manufacturing.packing.on_delivery_note_submit",
+		"on_cancel": "smart_edge_custom.manufacturing.packing.on_delivery_note_cancel",
+	},
 	"Purchase Receipt": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Purchase Invoice": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},
 	"Sales Invoice": {"validate": "smart_edge_custom.manufacturing.operation_batch.reject_operation_batches_in_stock"},

@@ -503,6 +503,45 @@
    "read_only": 1
   },
   {
+   "fieldname": "packing_qr_verified_lot",
+   "fieldtype": "Link",
+   "label": "Packing QR Verified Production Lot",
+   "options": "SmartEdge Production Lot",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "packing_qr_verified_qty",
+   "fieldtype": "Float",
+   "label": "Packing QR Verified Quantity",
+   "precision": "6",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "packing_qr_verified_uom",
+   "fieldtype": "Link",
+   "label": "Packing QR Verified UOM",
+   "options": "UOM",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "packing_qr_verified_at",
+   "fieldtype": "Datetime",
+   "label": "Packing QR Verified At",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "packing_qr_verified_by",
+   "fieldtype": "Link",
+   "label": "Packing QR Verified By",
+   "options": "User",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
    "fieldname": "remarks",
    "fieldtype": "Small Text",
    "label": "Remarks"

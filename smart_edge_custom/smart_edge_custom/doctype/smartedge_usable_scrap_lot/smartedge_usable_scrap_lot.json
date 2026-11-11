@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "format:USL-.#####",
+ "autoname": "format:USL-{#####}",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": ["status", "company", "production_job", "production_lot", "operation", "source_workstation", "source_employee", "source_section", "source_item", "source_batch", "scrap_section", "scrap_item", "scrap_batch", "warehouse", "quantity", "uom", "stock_entry"],

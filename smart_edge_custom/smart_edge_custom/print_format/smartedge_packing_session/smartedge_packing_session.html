@@ -1,0 +1,10 @@
+<div style="font-family: sans-serif; width: 190mm; padding: 8mm">
+  <h2 style="margin: 0 0 4mm">SmartEdge Packing List</h2>
+  <div><b>Packing List:</b> {{ doc.name }} &nbsp; <b>Date:</b> {{ doc.packing_date or '' }}</div>
+  <div><b>Customer:</b> {{ doc.customer or '' }} &nbsp; <b>Sales Order:</b> {{ doc.sales_order or 'N/A' }}</div>
+  <div><b>Warehouse:</b> {{ doc.warehouse or '' }} &nbsp; <b>Operator:</b> {{ doc.operator or '' }}</div>
+  <table style="width:100%; border-collapse:collapse; margin-top:6mm; font-size:9pt">
+    <thead><tr>{% for h in ['Pack ID','Sales Order Item','FG Item','FG Batch','Production Lot','Quantity','Meter','Kg','UOM','Status'] %}<th style="border:1px solid #000; padding:2mm; text-align:left">{{ h }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in doc.packs %}<tr>{% for value in [row.pack_id, row.sales_order_item, row.item_code, row.fg_batch, row.production_lot, row.packed_qty, row.meter_quantity, row.kg_quantity, row.stock_uom, row.status] %}<td style="border:1px solid #000; padding:2mm">{{ value or '' }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+  </table>
+</div>

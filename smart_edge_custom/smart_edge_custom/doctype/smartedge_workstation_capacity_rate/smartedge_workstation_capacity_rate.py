@@ -12,6 +12,7 @@ class SmartEdgeWorkstationCapacityRate(Document):
 		self.validate_workstation()
 		self.validate_rate()
 		self.validate_matching_scope()
+		self.validate_capacity_rows()
 		self.validate_duplicate()
 
 	def on_update(self):
@@ -39,10 +40,10 @@ class SmartEdgeWorkstationCapacityRate(Document):
 			frappe.throw(_("Capacity Unit must be Kg/Hour or Meter/Hour."))
 
 	def validate_matching_scope(self):
-		if not self.operation and any((self.product_size, self.product_item, self.process_route)):
-			frappe.throw(_("Operation is required for product, size, or route-specific capacity."))
-		if self.process_route and not (self.product_size or self.product_item):
-			frappe.throw(_("A route-specific capacity must also specify Product Size or Finished Item."))
+		# Capacity is configured at Workstation level.  Product-size rows are
+		# validated by validate_capacity_rows(); legacy selector fields remain
+		# readable for migration but no longer impose Operation/route rules.
+		return
 
 	def validate_duplicate(self):
 		selector_fields = ("operation", "company", "product_size", "product_item", "process_route")
@@ -61,3 +62,15 @@ class SmartEdgeWorkstationCapacityRate(Document):
 				frappe.throw(
 					_("A capacity row with the same Workstation, Operation, product/size/route, company, and unit already exists.")
 				)
+
+	def validate_capacity_rows(self):
+		seen = set()
+		for row in self.get("capacity_rows") or []:
+			if flt(row.capacity_rate) <= 0:
+				frappe.throw(_("Capacity Rate must be greater than zero."))
+			if row.capacity_uom not in SUPPORTED_CAPACITY_UOMS:
+				frappe.throw(_("Capacity Unit must be Kg/Hour or Meter/Hour."))
+			key = (row.product_size, row.capacity_uom)
+			if key in seen:
+				frappe.throw(_("Duplicate Product Size and Capacity Unit in capacity rows: {0}.").format(row.product_size))
+			seen.add(key)

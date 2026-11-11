@@ -23,6 +23,10 @@ def _value(row, fieldname):
 	return getattr(row, fieldname, None)
 
 
+def _normalize_product_size(value):
+	return " ".join(str(value or "").strip().lower().split())
+
+
 def _request_cache():
 	cache = getattr(frappe.local, "smartedge_machine_capacity", None)
 	if cache is None:
@@ -43,6 +47,49 @@ def capacity_table_exists():
 	if "table_exists" not in cache:
 		cache["table_exists"] = bool(frappe.db.table_exists(CAPACITY_DOCTYPE))
 	return cache["table_exists"]
+
+
+def _get_workstation_capacity_rows(workstations):
+	"""Return size-specific rows plus a workstation default.
+
+	The child table is authoritative for new configurations. Legacy parent
+	fields remain readable until the migration patch has been reviewed.
+	"""
+	workstations = sorted({value for value in workstations if value})
+	if not workstations or not capacity_table_exists():
+		return []
+	parents = frappe.get_all(
+		CAPACITY_DOCTYPE,
+		filters={"workstation": ["in", workstations], "enabled": 1},
+		fields=["name", "workstation", "operation", "company", "product_size", "product_item", "process_route", "capacity_rate", "capacity_uom"],
+		limit_page_length=5000,
+	)
+	rows = []
+	for parent in parents:
+		try:
+			child_rows = frappe.get_all(
+				"SmartEdge Workstation Capacity Rate Row",
+				filters={"parent": parent.name, "parenttype": CAPACITY_DOCTYPE, "parentfield": "capacity_rows"},
+				fields=["name", "product_size", "capacity_rate", "capacity_uom"],
+				limit_page_length=500,
+			)
+		except Exception:
+			child_rows = []
+		if child_rows:
+			rows.extend({**dict(row), "workstation": parent.workstation, "company": parent.company, "parent": parent.name} for row in child_rows)
+			if parent.capacity_rate and parent.capacity_uom:
+				rows.append({
+					"name": parent.name,
+					"workstation": parent.workstation,
+					"product_size": None,
+					"capacity_rate": parent.capacity_rate,
+					"capacity_uom": parent.capacity_uom,
+					"company": parent.company,
+					"parent": parent.name,
+				})
+		else:
+			rows.append(parent)
+	return rows
 
 
 def get_expected_capacity(category):
@@ -73,21 +120,24 @@ def select_capacity_rate(rows, operation=None, product_size=None, product_item=N
 	choosing by creation order.
 	"""
 	eligible = []
-	context = {
-		"operation": operation,
-		"product_size": product_size,
-		"product_item": product_item,
-		"process_route": process_route,
-	}
+	legacy_rows = not any(_value(row, "parent") for row in rows)
+	context = {"product_size": product_size}
+	if legacy_rows:
+		context.update({
+			"operation": operation,
+			"product_item": product_item,
+			"process_route": process_route,
+		})
 	for row in rows:
 		row_company = _value(row, "company")
 		if row_company and row_company != company:
 			continue
-		if not _value(row, "operation") and any(
-			_value(row, fieldname) for fieldname in ("product_size", "product_item", "process_route")
-		):
+		if _value(row, "product_size") and _normalize_product_size(_value(row, "product_size")) != _normalize_product_size(product_size):
 			continue
-		if any(_value(row, fieldname) and _value(row, fieldname) != value for fieldname, value in context.items()):
+		if legacy_rows and any(
+			fieldname != "product_size" and _value(row, fieldname) and _value(row, fieldname) != value
+			for fieldname, value in context.items()
+		):
 			continue
 		specificity = sum(bool(_value(row, fieldname)) for fieldname in context)
 		company_specificity = 1 if row_company else 0
@@ -131,23 +181,12 @@ def get_capacity_rate(
 	cache = _request_cache()
 	if cache_key in cache:
 		return cache[cache_key]
-	rows = frappe.get_all(
-		CAPACITY_DOCTYPE,
-		filters={"workstation": workstation, "capacity_uom": capacity_uom, "enabled": 1},
-		fields=[
-			"name",
-			"workstation",
-			"operation",
-			"company",
-			"product_size",
-			"product_item",
-			"process_route",
-			"capacity_rate",
-			"capacity_uom",
-		],
-		limit_page_length=500,
-	)
-	match = select_capacity_rate(rows, operation, product_size, product_item, process_route, company)
+	rows = _get_workstation_capacity_rows([workstation])
+	rows = [row for row in rows if not row.get("capacity_uom") or row.get("capacity_uom") == capacity_uom]
+	if any(_value(row, "operation") or _value(row, "product_item") or _value(row, "process_route") for row in rows):
+		match = select_capacity_rate(rows, operation, product_size, product_item, process_route, company)
+	else:
+		match = select_capacity_rate(rows, product_size=product_size)
 	cache[cache_key] = match
 	return match
 
@@ -159,26 +198,16 @@ def get_capacity_rate_rows(workstations):
 	cache_key = ("rate_rows", *workstations)
 	cache = _request_cache()
 	if cache_key not in cache:
-		cache[cache_key] = frappe.get_all(
-			CAPACITY_DOCTYPE,
-			filters={"workstation": ["in", workstations], "enabled": 1},
-			fields=[
-				"name",
-				"workstation",
-				"operation",
-				"company",
-				"product_size",
-				"product_item",
-				"process_route",
-				"capacity_rate",
-				"capacity_uom",
-			],
-			limit_page_length=5000,
-		)
+		cache[cache_key] = _get_workstation_capacity_rows(workstations)
 	return cache[cache_key]
 
 
 def select_capacity_rate_for_row(rows, row, workstation, capacity_uom):
+	legacy = any(
+		_value(candidate, fieldname)
+		for candidate in rows
+		for fieldname in ("operation", "product_item", "process_route", "company")
+	)
 	return select_capacity_rate(
 		[
 			candidate
@@ -186,11 +215,11 @@ def select_capacity_rate_for_row(rows, row, workstation, capacity_uom):
 			if _value(candidate, "workstation") == workstation
 			and _value(candidate, "capacity_uom") == capacity_uom
 		],
-		operation=_value(row, "operation"),
+		operation=_value(row, "operation") if legacy else None,
 		product_size=_value(row, "custom_size"),
-		product_item=_value(row, "finished_item"),
-		process_route=_value(row, "selected_route"),
-		company=_value(row, "company"),
+		product_item=_value(row, "finished_item") if legacy else None,
+		process_route=_value(row, "selected_route") if legacy else None,
+		company=_value(row, "company") if legacy else None,
 	)
 
 
@@ -491,6 +520,12 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 	else:
 		match = select_capacity_rate_for_row(rate_rows, row, workstation, capacity_uom)
 	planned_quantity_value = _value(row, quantity_field)
+	if flt(planned_quantity_value) <= 0:
+		# Final EB route rows carry their authoritative production quantity on
+		# the generator.  Use that value when the planning-entry convenience
+		# field has not been populated yet.
+		fallback_field = "total_eb_weight_kg" if quantity_field == "planned_kg" else "production_quantity"
+		planned_quantity_value = _value(row, fallback_field)
 	planned_quantity = flt(planned_quantity_value)
 	base = {
 		"applicable": 1,
@@ -872,7 +907,14 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 	entry_name = _value(entry, "name")
 	metrics = get_context_capacity_metrics(context, allocations, excluded_plan_entries={entry_name})
 	if not metrics["availability_configured"]:
-		return _unverified_projection(workstation, planned_date, shift, rate_payload, metrics["availability"])
+		return _unverified_projection(
+			workstation,
+			planned_date,
+			shift,
+			rate_payload,
+			metrics["availability"],
+			status="availability_not_configured",
+		)
 	if not metrics["allocation_configured"]:
 		return _unverified_projection(
 			workstation,
@@ -880,6 +922,7 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 			shift,
 			rate_payload,
 			configuration_message=metrics["calculation_message"],
+			status="schedule_not_configured",
 		)
 
 	other_hours = 0
@@ -941,21 +984,24 @@ def _unverified_projection(
 	rate_payload=None,
 	availability=None,
 	configuration_message=None,
+	status="not_configured",
 ):
+	availability = availability or {}
 	return {
-		"status": "not_configured",
-		"availability_status": "not_configured",
+		"status": status,
+		"availability_status": status,
 		"requires_confirmation": 0,
 		"workstation": workstation,
 		"planned_date": str(planned_date),
 		"shift": shift,
 		"capacity_uom": (rate_payload or {}).get("capacity_uom"),
-		"message": _(
-			"Capacity cannot be verified for this Workstation, product size and selected date/shift."
-		),
+		"message": configuration_message
+			or (rate_payload or {}).get("message")
+			or availability.get("message")
+			or _("Capacity cannot be verified for this Workstation, product size and selected date/shift."),
 		"configuration_message": (
 			configuration_message
 			or (rate_payload or {}).get("message")
-			or (availability or {}).get("message")
+			or availability.get("message")
 		),
 	}

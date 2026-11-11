@@ -1,0 +1,11 @@
+{
+ "doctype": "Report",
+ "name": "SmartEdge OEE and Machine KPI Report",
+ "module": "smart_edge_custom",
+ "is_standard": "Yes",
+ "report_name": "SmartEdge OEE and Machine KPI Report",
+ "ref_doctype": "SmartEdge Production Job",
+ "report_type": "Script Report",
+ "apply_user_permissions": 1,
+ "roles": [{"role":"Manufacturing User"},{"role":"Manufacturing Manager"},{"role":"System Manager"}]
+}

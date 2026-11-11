@@ -1,6 +1,8 @@
+import json
 import unittest
 from datetime import datetime, time, timedelta
 from unittest.mock import patch
+from pathlib import Path
 
 import frappe
 
@@ -8,6 +10,15 @@ from smart_edge_custom.smart_edge_custom.report.scrap_and_recovery_analytics imp
 
 
 class TestScrapRecoveryAnalytics(unittest.TestCase):
+	def test_report_registration_uses_python_safe_name_and_link_filters(self):
+		root = Path(__file__).resolve().parent / "smart_edge_custom" / "report" / "scrap_and_recovery_analytics"
+		metadata = json.loads((root / "scrap_and_recovery_analytics.json").read_text())
+		self.assertEqual(metadata["name"], "Scrap and Recovery Analytics")
+		script = (root / "scrap_and_recovery_analytics.js").read_text()
+		self.assertIn('frappe.query_reports["Scrap and Recovery Analytics"]', script)
+		for option in ("Company", "Workstation", "Item", "Shift Type", "Operation"):
+			self.assertIn(f'options: "{option}"', script)
+
 	def setUp(self):
 		self.enterContext(patch.object(report, "_", side_effect=lambda text: text))
 		self.enterContext(patch.object(frappe, "get_system_settings", return_value="Banker's Rounding (legacy)"))

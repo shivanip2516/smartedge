@@ -48,6 +48,20 @@ assert.equal(
 	"QC Pending"
 );
 
+assert.equal(
+	get_group_qc_status([
+		{ qc_required: true, qc_display_status: "QC Rework Required" },
+	]),
+	"QC Rework Required"
+);
+assert.equal(
+	get_group_qc_status([
+		{ qc_required: true, qc_display_status: "QC Pending" },
+		{ qc_required: true, qc_display_status: "QC Rework Required" },
+	]),
+	"QC Rework Required"
+);
+
 function operation(id, sequence, status = "Pending", planned_date = null) {
 	return { id, operation_sequence: sequence, status, planned_date };
 }

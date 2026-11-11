@@ -393,5 +393,17 @@
         "read_only": 1,
         "module": "smart_edge_custom",
         "insert_after": "custom_previous_operation_batch"
+    },
+    {
+        "doctype": "Custom Field",
+        "name": "Operation-custom_require_input_qr_scan",
+        "dt": "Operation",
+        "fieldname": "custom_require_input_qr_scan",
+        "fieldtype": "Check",
+        "label": "Require Input QR Scan",
+        "default": "0",
+        "description": "Require verification of the input Production Lot QR before completing a SmartEdge Production Job for this Operation.",
+        "insert_after": "workstation",
+        "module": "smart_edge_custom"
     }
 ]

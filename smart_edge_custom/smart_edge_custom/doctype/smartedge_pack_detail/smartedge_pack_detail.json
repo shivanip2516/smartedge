@@ -1,0 +1,31 @@
+{
+ "doctype": "DocType",
+ "name": "SmartEdge Pack Detail",
+ "module": "smart_edge_custom",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"pack_id","fieldtype":"Data","label":"Pack ID","reqd":1},
+  {"fieldname":"sales_order","fieldtype":"Link","label":"Sales Order","options":"Sales Order","reqd":1},
+  {"fieldname":"sales_order_item","fieldtype":"Link","label":"Sales Order Item","options":"Sales Order Item","reqd":1},
+  {"fieldname":"customer","fieldtype":"Link","label":"Customer","options":"Customer","reqd":1},
+  {"fieldname":"item_code","fieldtype":"Link","label":"FG Item","options":"Item","reqd":1},
+  {"fieldname":"fg_batch","fieldtype":"Link","label":"FG Batch","options":"Batch","reqd":1},
+  {"fieldname":"production_lot","fieldtype":"Link","label":"Production Lot","options":"SmartEdge Production Lot","reqd":1},
+  {"fieldname":"packed_qty","fieldtype":"Float","label":"Packed Quantity","precision":"6","reqd":1},
+  {"fieldname":"meter_quantity","fieldtype":"Float","label":"Meter Quantity","precision":"6"},
+  {"fieldname":"kg_quantity","fieldtype":"Float","label":"Kg Quantity","precision":"6"},
+  {"fieldname":"stock_uom","fieldtype":"Link","label":"Stock UOM","options":"UOM","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Confirmed\nDelivered\nCancelled","default":"Confirmed","reqd":1},
+  {"fieldname":"delivery_note","fieldtype":"Link","label":"Delivery Note","options":"Delivery Note"},
+  {"fieldname":"delivery_note_item","fieldtype":"Data","label":"Delivery Note Item"},
+  {"fieldname":"operator","fieldtype":"Link","label":"Operator","options":"User"},
+  {"fieldname":"packed_at","fieldtype":"Datetime","label":"Packed At"}
+ ],
+ "permissions": [
+  {"role":"Manufacturing User","read":1,"write":1,"create":1},
+  {"role":"Manufacturing Manager","read":1,"write":1,"create":1},
+  {"role":"Stock User","read":1,"write":1,"create":1},
+  {"role":"Stock Manager","read":1,"write":1,"create":1}
+ ]
+}

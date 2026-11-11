@@ -272,7 +272,9 @@ def register_usable_scrap(job, production_lot, source_batch=None):
 		"source_item": production_lot.finished_item,
 		"source_batch": source_batch,
 		"scrap_item": config.usable_scrap_item,
-		"scrap_batch": batch_id,
+		# The Batch Link must not reference a generated name before the ERPNext
+		# Batch exists. It is linked immediately after _create_recovery_batch().
+		"scrap_batch": None,
 		"warehouse": config.usable_scrap_warehouse,
 		"quantity": quantity,
 		"uom": scrap_item.stock_uom,

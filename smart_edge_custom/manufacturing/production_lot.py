@@ -7,6 +7,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, now_datetime
 
+LABEL_PRINT_FORMAT = "SmartEdge Production Traceability Label"
+
 LOT_DOCTYPE = "SmartEdge Production Lot"
 LEDGER_DOCTYPE = "SmartEdge WIP Ledger Entry"
 ACTIVE = "Active"
@@ -18,6 +20,73 @@ BALANCE_OUT_TYPES = {
 	"Transfer to Finished Goods",
 }
 STAGE_TRANSFER_TYPES = {"Transfer to Next Operation", "QC Release"}
+
+
+def get_label_qr_code(reference):
+	"""Generate the standard Frappe QR data URI used by the traceability label."""
+	from frappe.utils.print_format_generator import get_qr_code
+
+	return get_qr_code(str(reference))
+
+
+def _label_item_values(item_code):
+	meta = frappe.get_meta("Item", cached=True)
+	fields = ["item_name", "stock_uom"]
+	for fieldname in ("custom_size", "custom_color"):
+		if meta.has_field(fieldname):
+			fields.append(fieldname)
+	return frappe.db.get_value("Item", item_code, fields, as_dict=True) or frappe._dict()
+
+
+def get_label_context(production_lot):
+	"""Return validated accepted-material data for the standard label format."""
+	frappe.has_permission(LOT_DOCTYPE, "read", throw=True)
+	if frappe.session.user != "Administrator" and not set(frappe.get_roles()).intersection(
+		{"Manufacturing User", "Manufacturing Manager", "Quality Manager", "Stock User", "Stock Manager", "System Manager"}
+	):
+		frappe.throw(_("You are not authorized to print SmartEdge production labels."), frappe.PermissionError)
+	lot = frappe.get_doc(LOT_DOCTYPE, production_lot)
+	if not lot.actual_end or flt(lot.produced_quantity) <= 0:
+		frappe.throw(_("Production Lot {0} has no completed output to label.").format(lot.name))
+	if not lot.quality_inspection:
+		frappe.throw(_("Production Lot {0} has no Quality Inspection.").format(lot.name))
+	qc = frappe.db.get_value(
+		"Quality Inspection", lot.quality_inspection,
+		["docstatus", "custom_smartedge_qc_status", "custom_accepted_qty"], as_dict=True,
+	)
+	if not qc or qc.docstatus != 1 or qc.custom_smartedge_qc_status != "Accepted":
+		frappe.throw(_("Accepted QC is required before printing a label for Production Lot {0}.").format(lot.name))
+	accepted_qty = flt(qc.custom_accepted_qty)
+	if accepted_qty <= 0:
+		frappe.throw(_("The accepted quantity for Production Lot {0} is zero.").format(lot.name))
+	meta = frappe.get_meta("Batch", cached=True)
+	batch = frappe.db.get_value("Batch", {"custom_operation_lot": lot.name}, "name") if meta.has_field("custom_operation_lot") else None
+	if not batch:
+		frappe.throw(_("No traceability Batch is linked to Production Lot {0}.").format(lot.name))
+	batch_purpose = frappe.db.get_value("Batch", batch, "custom_batch_purpose") if meta.has_field("custom_batch_purpose") else None
+	if not lot.is_stock_inventory_batch and batch_purpose != "Physical Stock":
+		frappe.throw(_("Labels are disabled for non-stock Production Lot {0}.").format(lot.name))
+	item = _label_item_values(lot.finished_item)
+	return {
+		"production_lot": lot.name, "item_code": lot.finished_item,
+		"item_name": lot.finished_item_name or item.get("item_name") or lot.finished_item,
+		"size": item.get("custom_size"), "color": item.get("custom_color"),
+		"batch": batch, "accepted_quantity": accepted_qty,
+		"accepted_uom": lot.quantity_uom or item.get("stock_uom"),
+		"accepted_weight": flt(lot.produced_quantity_kg) if lot.produced_quantity_kg else None,
+		"production_date": lot.actual_end, "workstation": lot.workstation,
+		"traceability_reference": f"SE-LOT:{lot.name}", "print_format": LABEL_PRINT_FORMAT,
+	}
+
+
+@frappe.whitelist()
+def get_print_label_url(production_lot):
+	"""Validate eligibility and return the standard Frappe print URL; no writes occur."""
+	context = get_label_context(production_lot)
+	from urllib.parse import urlencode
+
+	query = urlencode({"doctype": LOT_DOCTYPE, "name": production_lot, "format": LABEL_PRINT_FORMAT, "no_letterhead": 1, "trigger_print": 1})
+	return {"url": f"{frappe.utils.get_url()}/printview?{query}", "context": context}
 
 
 def is_qc_operation(entry):
@@ -295,7 +364,18 @@ def get_input_production_lot(entry):
 	source_job = entry.get("released_from_production_job")
 	if not source_job:
 		return None
-	return frappe.db.get_value("SmartEdge Production Job", source_job, "output_production_lot")
+	# The release relationship is authoritative.  Older completed jobs may not
+	# have output_production_lot populated even though their Production Lot was
+	# persisted, so resolve that same job's lot as a safe compatibility fallback.
+	output_lot = frappe.db.get_value("SmartEdge Production Job", source_job, "output_production_lot")
+	if output_lot:
+		return output_lot
+	return frappe.db.get_value(
+		LOT_DOCTYPE,
+		{"production_job": source_job},
+		"name",
+		order_by="actual_end desc, creation desc",
+	)
 
 
 def record_qc_hold(job, entry=None):

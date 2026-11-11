@@ -1767,6 +1767,11 @@ def link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry, finished_
 	doc.db_set("final_manufacturing_stock_entry", stock_entry_name, update_modified=False)
 	if doc.meta.has_field("final_stock_posted_qty"):
 		doc.db_set("final_stock_posted_qty", finished_qty, update_modified=False)
+	# The stock link is the authoritative completion event.  Persist the
+	# generator status only for this exact linked document, after the submitted
+	# final Stock Entry has been validated and recorded.
+	if doc.get("status") != "Cancelled" and doc.meta.has_field("status"):
+		doc.db_set("status", "Completed", update_modified=False)
 	job_meta = frappe.get_meta("SmartEdge Production Job", cached=True)
 	job_updates = {}
 	if job_meta.has_field("manufacturing_stock_entry"):
@@ -2457,6 +2462,8 @@ def get_complete_job_context(plan_entry):
 	context["scrap_uom"] = get_recovery_uom(production.finished_item if production else None)
 	context["unusable_scrap_uom"] = get_unusable_scrap_uom(production.finished_item if production else None)
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	from smart_edge_custom.manufacturing.packing import operation_qr_required
+	context["packing_qr_required"] = operation_qr_required(entry.operation)
 	if entry.get("plan_type") == "Required Material":
 		context.update(
 			{
@@ -2645,9 +2652,13 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	if len(active_jobs) > 1:
 		frappe.throw(_("Multiple active Production Jobs exist for this planned operation."))
 	existing = active_jobs[0].name if active_jobs else None
+	from smart_edge_custom.manufacturing.production_lot import get_input_production_lot
+	resolved_input_lot = get_input_production_lot(entry)
 	if existing:
 		job = frappe.get_doc("SmartEdge Production Job", existing)
 		job.check_permission("write")
+		if resolved_input_lot and job.meta.has_field("input_production_lot") and not job.get("input_production_lot"):
+			job.input_production_lot = resolved_input_lot
 		if job.status in {"Completed", "Cancelled"}:
 			frappe.throw(_("Completed or cancelled Production Jobs cannot be restarted."))
 		if job.status in {"Draft", "Paused", "On Hold"}:
@@ -2697,6 +2708,8 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	job.planned_qty_meter = pending_quantity.get("meter")
 	job.planned_qty_kg = pending_quantity.get("kg")
 	apply_released_quantity_to_job(job, entry)
+	if resolved_input_lot and job.meta.has_field("input_production_lot"):
+		job.input_production_lot = resolved_input_lot
 	job.operator_employee = operator_employee
 	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import get_current_shift
 
@@ -2895,6 +2908,12 @@ def complete_production_job(
 	lock_production_job(job.name)
 	job.reload()
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	from smart_edge_custom.manufacturing.packing import operation_qr_required
+	if operation_qr_required(entry.operation):
+		if not job.get("packing_qr_verified_lot") or job.get("packing_qr_verified_lot") != job.get("input_production_lot"):
+			frappe.throw(_("Verify the previous operation Production Lot QR before completing Packing."))
+		if flt(job.get("packing_qr_verified_qty")) + 0.000001 < flt(actual_qty_meter or good_qty):
+			frappe.throw(_("Verified QR quantity does not cover the Packing quantity."))
 	from smart_edge_custom.manufacturing.quality_control import is_qc_entry, validate_downstream_quantity
 
 	if is_qc_entry(entry) and not getattr(frappe.flags, "smartedge_qc_decision", False):
@@ -2960,6 +2979,11 @@ def complete_production_job(
 	else:
 		validate_final_completion_stock_entry_setup(job, completion_type)
 	completion_result = job.complete_job(completion_type)
+	# Re-evaluate the exact linked generator after the job has persisted its
+	# completed plan-entry state.  This is the authoritative point at which a
+	# newly completed final operation can trigger final manufacturing posting.
+	if entry.get("plan_type") != MATERIAL_PLAN_TYPE and entry.final_eb_bom_generator:
+		update_generator_planning_status(entry.final_eb_bom_generator)
 	if material_result:
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 		from smart_edge_custom.manufacturing.work_order_sync import sync_work_order_to_planning

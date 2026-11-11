@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "format:UNS-.#####",
+ "autoname": "format:UNS-{#####}",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": ["status","company","production_job","final_eb_bom_generator","production_lot","source_section","source_operation","source_workstation","source_employee","source_item","source_batch","movement_datetime","stock_section","scrap_item","scrap_batch","warehouse","quantity","uom","stored_quantity","disposed_quantity","available_quantity","storage_stock_entry"],

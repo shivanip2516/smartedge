@@ -1,4 +1,6 @@
+import json
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import frappe
@@ -7,6 +9,11 @@ from smart_edge_custom.manufacturing import scrap_recovery
 
 
 class TestScrapRecovery(unittest.TestCase):
+	def test_usable_scrap_lot_uses_generated_naming_series(self):
+		path = Path(__file__).resolve().parent / "smart_edge_custom" / "doctype" / "smartedge_usable_scrap_lot" / "smartedge_usable_scrap_lot.json"
+		metadata = json.loads(path.read_text())
+		self.assertEqual(metadata["autoname"], "format:USL-{#####}")
+
 	def setUp(self):
 		def throw(message, exc=frappe.ValidationError, **kwargs):
 			raise exc(message)

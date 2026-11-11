@@ -1,0 +1,23 @@
+{
+ "doctype": "DocType",
+ "name": "SmartEdge Packing Session",
+ "module": "smart_edge_custom",
+ "autoname": "naming_series:",
+ "fields": [
+  {"fieldname":"naming_series","fieldtype":"Select","label":"Naming Series","options":"SE-PACK-.#####","default":"SE-PACK-.#####","reqd":1},
+  {"fieldname":"customer","fieldtype":"Link","label":"Customer","options":"Customer","reqd":1},
+  {"fieldname":"sales_order","fieldtype":"Link","label":"Sales Order","options":"Sales Order"},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Draft\nConfirmed\nDelivered\nCancelled","default":"Draft","reqd":1},
+  {"fieldname":"packing_date","fieldtype":"Date","label":"Packing Date","default":"Today","reqd":1},
+  {"fieldname":"operator","fieldtype":"Link","label":"Operator","options":"User"},
+  {"fieldname":"delivery_note","fieldtype":"Link","label":"Delivery Note","options":"Delivery Note"},
+  {"fieldname":"packs","fieldtype":"Table","label":"Packs","options":"SmartEdge Pack Detail"}
+ ],
+ "permissions": [
+  {"role":"Manufacturing User","read":1,"write":1,"create":1},
+  {"role":"Manufacturing Manager","read":1,"write":1,"create":1},
+  {"role":"Stock User","read":1,"write":1,"create":1},
+  {"role":"Stock Manager","read":1,"write":1,"create":1}
+ ]
+}

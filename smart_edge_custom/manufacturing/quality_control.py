@@ -305,9 +305,6 @@ def submit_decision(
 		doc.flags.smartedge_qc_api = True
 		doc.submit()
 	_close_pending_assignments(doc.name)
-	if doc.custom_source_qc:
-		source = _lock_inspection(doc.custom_source_qc)
-		_save_api(source, {"custom_rework_resolved": 1})
 	_sync_qc_release(doc.custom_qc_plan_entry)
 	remaining = max(flt(doc.custom_eligible_qty) - values[_("Inspected Quantity")], 0)
 	if remaining > EPSILON:
@@ -318,6 +315,11 @@ def submit_decision(
 			source_qc=doc.custom_source_qc,
 		)
 	_finalize_qc_job_if_resolved(doc.custom_qc_plan_entry, quality_inspection)
+	# QC decisions can be the final gating event for the route. Re-evaluate the
+	# exact linked generator after the checkpoint state is persisted so final
+	# manufacturing posting is triggered without requiring another board action.
+	from smart_edge_custom.manufacturing.planning import update_generator_planning_status
+	update_generator_planning_status(doc.custom_final_eb_bom_generator)
 	return get_qc_context(doc.custom_qc_plan_entry)
 
 
@@ -330,13 +332,24 @@ def resubmit_rework(quality_inspection):
 		frappe.throw(_("Only unresolved rework can be resubmitted for inspection."))
 	if doc.custom_rework_resubmitted_to:
 		return inspection_context(frappe.get_doc("Quality Inspection", doc.custom_rework_resubmitted_to))
+	# The original inspection is normally submitted and must remain immutable.
+	# The reinspection already carries the reverse link through custom_source_qc;
+	# use it as the idempotency key instead of updating the submitted source.
+	existing = frappe.get_all(
+		"Quality Inspection",
+		filters={"custom_source_qc": doc.name, "docstatus": ["!=", 2]},
+		fields=["name"],
+		order_by="creation desc",
+		limit_page_length=1,
+	)
+	if existing:
+		return inspection_context(frappe.get_doc("Quality Inspection", existing[0].name))
 	new_doc = _new_inspection(
 		frappe.get_doc("SmartEdge Production Plan Entry", doc.custom_qc_plan_entry),
 		doc.custom_rework_qty,
 		source_job=doc.custom_source_production_job,
 		source_qc=doc.name,
 	)
-	_save_api(doc, {"custom_rework_resubmitted_to": new_doc.name})
 	return inspection_context(new_doc)
 
 
@@ -369,6 +382,10 @@ def _root_inspected_quantity(plan_entry):
 	)
 
 
+def _has_reinspection(rows, inspection_name):
+	return any(row.custom_source_qc == inspection_name for row in rows)
+
+
 def aggregate(plan_entry):
 	rows = _inspection_rows(plan_entry)
 	accepted = sum(flt(row.custom_accepted_qty) for row in rows if row.custom_smartedge_qc_status in FINAL_STATUSES)
@@ -376,7 +393,9 @@ def aggregate(plan_entry):
 	rework = sum(
 		flt(row.custom_rework_qty)
 		for row in rows
-		if row.custom_smartedge_qc_status == "Rework Required" and not row.custom_rework_resolved
+		if row.custom_smartedge_qc_status == "Rework Required"
+		and not row.custom_rework_resolved
+		and not _has_reinspection(rows, row.name)
 	)
 	active = [row for row in rows if row.custom_smartedge_qc_status in ACTIVE_STATUSES]
 	latest = sorted(rows, key=lambda row: row.modified or "")[-1] if rows else None
@@ -496,7 +515,9 @@ def get_qc_context(plan_entry):
 	latest = data.latest
 	unresolved_rework = next((
 		row for row in reversed(data.rows)
-		if row.custom_smartedge_qc_status == "Rework Required" and not row.custom_rework_resolved
+		if row.custom_smartedge_qc_status == "Rework Required"
+		and not row.custom_rework_resolved
+		and not _has_reinspection(data.rows, row.name)
 	), None)
 	current = active or unresolved_rework or latest
 	production = frappe.db.get_value(
@@ -597,7 +618,9 @@ def get_qc_display_status(inspection=None):
 		return "QC Approved"
 	if custom_status == "Rejected":
 		return "QC Rejected"
-	if custom_status in {"Pending", "Under Review", "Rework Required"}:
+	if custom_status == "Rework Required":
+		return "QC Rework Required"
+	if custom_status in {"Pending", "Under Review"}:
 		return "QC Pending"
 	if inspection.get("docstatus") == 1 and inspection.get("status") == "Accepted":
 		return "QC Approved"

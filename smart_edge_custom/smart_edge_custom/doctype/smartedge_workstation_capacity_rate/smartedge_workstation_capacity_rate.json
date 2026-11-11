@@ -18,7 +18,8 @@
   "product_size",
   "product_item",
   "matching_col_2",
-  "process_route"
+  "process_route",
+  "capacity_rows"
  ],
  "fields": [
   {
@@ -47,6 +48,7 @@
   {
    "description": "Leave blank only for a Workstation-wide default. Product, size, and route-specific rows require an Operation.",
    "fieldname": "operation",
+   "hidden": 1,
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
@@ -97,7 +99,14 @@
    "label": "Optional Product / Size / Route Matching"
   },
   {
+   "fieldname": "capacity_rows",
+   "fieldtype": "Table",
+   "label": "Product Size Capacity Rates",
+   "options": "SmartEdge Workstation Capacity Rate Row"
+  },
+  {
    "fieldname": "product_size",
+   "hidden": 1,
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
@@ -106,6 +115,7 @@
   },
   {
    "fieldname": "product_item",
+   "hidden": 1,
    "fieldtype": "Link",
    "in_standard_filter": 1,
    "label": "Finished Item",
@@ -117,6 +127,7 @@
   },
   {
    "fieldname": "process_route",
+   "hidden": 1,
    "fieldtype": "Link",
    "in_standard_filter": 1,
    "label": "Process Route",

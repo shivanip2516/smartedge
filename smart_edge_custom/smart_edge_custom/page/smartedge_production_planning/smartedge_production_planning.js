@@ -10,6 +10,29 @@ frappe.pages["smartedge-production-planning"].on_page_show = function (wrapper) 
 
 frappe.provide("smart_edge_custom");
 
+function get_qr_verification_error_message(error) {
+	const response = error?.responseJSON || error?.response || error || {};
+	let server_messages = response._server_messages || error?._server_messages;
+	if (server_messages) {
+		try {
+			const messages = JSON.parse(server_messages);
+			const first = Array.isArray(messages) ? messages[0] : messages;
+			if (typeof first === "string") {
+				try {
+					const parsed = JSON.parse(first);
+					if (parsed.message) return parsed.message;
+				} catch (e) {
+					return first;
+				}
+			}
+			if (first?.message) return first.message;
+		} catch (e) {
+			// Fall through to the normal response message.
+		}
+	}
+	return response.message || error?.message || __("The scanned QR could not be verified.");
+}
+
 smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	constructor(wrapper) {
 		this.wrapper = wrapper;
@@ -740,6 +763,17 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			);
 			if (!proceed) return false;
 		}
+		if (["availability_not_configured", "schedule_not_configured"].includes(projection.status)) {
+			const title = projection.status === "availability_not_configured"
+				? __("Workstation Availability Not Configured")
+				: __("Capacity Schedule Not Configured");
+			const proceed = await this.show_capacity_decision(
+				title,
+				`<p>${frappe.utils.escape_html(projection.message || projection.configuration_message || "")}</p>`,
+				true
+			);
+			if (!proceed) return false;
+		}
 		if (projection.requires_confirmation) {
 			if (!projection.can_confirm || !projection.confirmation_token) {
 				frappe.msgprint({
@@ -1381,6 +1415,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const unusable_scrap_label = (label) => `${__(label)}${unusable_scrap_uom ? ` (${frappe.utils.escape_html(unusable_scrap_uom)})` : ""}`;
 		const kg_required = flt(context.planned_qty_kg) > 0;
 		let completing = false;
+		let verified_qr = null;
 		const dialog = new frappe.ui.Dialog({
 			title: __("Complete Process"),
 			fields: [
@@ -1412,6 +1447,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					hidden: !context.show_batch_consumption,
 					options: render_batch_consumption_summary(context.batch_consumption_preview),
 				},
+				{ fieldtype: "Section Break", label: __("Input Material Verification"), hidden: !context.packing_qr_required },
+				{ fieldtype: "Data", fieldname: "packing_qr", label: __("Scan Production Lot QR"), hidden: !context.packing_qr_required, description: __("Scan the previous operation label and press Enter.") },
+				{ fieldtype: "HTML", fieldname: "packing_qr_status", hidden: !context.packing_qr_required, options: `<div class="text-muted">${__("Not scanned")}</div>` },
 				{ fieldtype: "Section Break", label: __("Completion Details") },
 				{
 					fieldtype: "Select",
@@ -1450,6 +1488,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				const $primary = dialog.get_primary_btn();
 				$primary.prop("disabled", true);
 				try {
+					if (context.packing_qr_required) {
+						await verify_input_qr(values.actual_qty_meter);
+					}
 					await frappe.call({
 						method: `${this.method}.complete_production_job`,
 						args: {
@@ -1473,7 +1514,60 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				}
 			},
 		});
+		const set_qr_status = (message, indicator = "muted") => {
+			const wrapper = dialog.fields_dict.packing_qr_status?.$wrapper;
+			if (wrapper) wrapper.html(`<div class="text-${indicator}">${frappe.utils.escape_html(message)}</div>`);
+		};
+		const verify_input_qr = async (quantity) => {
+			const payload = String(dialog.get_value("packing_qr") || "").trim();
+			if (!payload) {
+				verified_qr = null;
+				set_qr_status(__("Not scanned"));
+				frappe.throw(__("Scan the input Production Lot QR before completing this operation."));
+			}
+			set_qr_status(__("Verifying QR…"));
+			const response = await frappe.call({
+				method: "smart_edge_custom.manufacturing.packing.verify_packing_qr",
+				args: { plan_entry: card.id, payload, quantity: quantity ?? dialog.get_value("actual_qty_meter") },
+			});
+			verified_qr = response.message || null;
+			const batch_text = verified_qr.batch ? ` | ${__("Batch")}: ${verified_qr.batch}` : "";
+			set_qr_status(__("QR Verified — Lot: {0} | Operation: {1} | Item: {2}{3} | Qty: {4} {5} | QC: {6}", [
+				verified_qr.production_lot,
+				verified_qr.source_operation || "N/A",
+				verified_qr.item || "N/A",
+				batch_text,
+				verified_qr.quantity,
+				verified_qr.uom || "",
+				verified_qr.qc_status || "N/A",
+			]), "success");
+			return verified_qr;
+		};
 		dialog.show();
+		if (context.packing_qr_required) {
+			const qr_input = dialog.fields_dict.packing_qr?.$input;
+			qr_input?.on("input", () => {
+				verified_qr = null;
+				set_qr_status(__("Scan pending verification"));
+			});
+			qr_input?.on("keydown", async (event) => {
+				if (event.key !== "Enter") return;
+				event.preventDefault();
+				try {
+					await verify_input_qr(dialog.get_value("actual_qty_meter"));
+				} catch (error) {
+					verified_qr = null;
+					set_qr_status(__("Verification failed"), "danger");
+					frappe.msgprint({ title: __("QR Verification Failed"), message: get_qr_verification_error_message(error), indicator: "red" });
+				}
+			});
+			const quantity_input = dialog.fields_dict.actual_qty_meter?.$input;
+			quantity_input?.on("input change", () => {
+				if (!verified_qr) return;
+				verified_qr = null;
+				set_qr_status(__("Quantity changed; scan again to verify."), "warning");
+			});
+		}
 		if (context.show_batch_consumption) {
 			let preview_request = 0;
 			const refresh_batch_preview = frappe.utils.debounce(async () => {
@@ -1889,6 +1983,7 @@ function get_qc_badge_html(card) {
 	if (!card?.qc_required || !card.qc_display_status) return "";
 	const state = {
 		"QC Pending": "pending",
+		"QC Rework Required": "rework",
 		"QC Approved": "approved",
 		"QC Rejected": "rejected",
 		"Awaiting Manufacturing Output": "waiting",
@@ -1898,6 +1993,7 @@ function get_qc_badge_html(card) {
 
 function get_group_qc_status(operations) {
 	const statuses = operations.filter((operation) => operation.qc_required).map((operation) => operation.qc_display_status);
+	if (statuses.includes("QC Rework Required")) return "QC Rework Required";
 	if (statuses.includes("QC Pending")) return "QC Pending";
 	if (statuses.includes("QC Rejected")) return "QC Rejected";
 	if (statuses.includes("QC Approved")) return "QC Approved";

@@ -1,4 +1,4 @@
-frappe.query_reports["Scrap & Recovery Analytics"] = {
+frappe.query_reports["Scrap and Recovery Analytics"] = {
 	formatter(value, row, column, data, default_formatter) {
 		if (["recovery_percent", "unusable_scrap_percent", "recovery_utilization_percent"].includes(column.fieldname)
 			&& (value === null || value === undefined || value === "")) {

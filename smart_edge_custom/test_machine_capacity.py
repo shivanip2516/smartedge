@@ -38,6 +38,13 @@ def rate(name, value, **selectors):
 
 
 class TestCapacityRateConfiguration(TestCase):
+	def test_size_rate_does_not_require_operation(self):
+		doc = frappe._dict(
+			operation=None, product_size="0.45x22", product_item=None,
+			process_route=None, capacity_rate=35, capacity_uom="Kg/Hour",
+		)
+		capacity_rate_config.SmartEdgeWorkstationCapacityRate.validate_matching_scope(doc)
+
 	@patch.object(capacity_rate_config.frappe, "throw", side_effect=frappe.ValidationError)
 	def test_zero_rate_is_rejected(self, _throw):
 		doc = frappe._dict(capacity_rate=0, capacity_uom="Kg/Hour")
@@ -121,7 +128,9 @@ class TestMachineCapacityMatching(TestCase):
 	def test_subsequent_request_uses_updated_rate(self, get_all, _table_exists, _cache):
 		get_all.side_effect = [
 			[rate("RATE", 35, operation="Extrusion")],
+			[],
 			[rate("RATE", 48, operation="Extrusion")],
+			[],
 		]
 		first = capacity.get_capacity_rate("Extruder-1", "Kg/Hour", operation="Extrusion")
 		updated = capacity.get_capacity_rate("Extruder-1", "Kg/Hour", operation="Extrusion")
@@ -135,6 +144,10 @@ class TestMachineCapacityMatching(TestCase):
 		]
 		match = capacity.select_capacity_rate(rows, operation="Printing", company="SmartEdge")
 		self.assertEqual(match.name, "COMPANY")
+
+	def test_size_matching_normalizes_whitespace_and_case(self):
+		rows = [frappe._dict(name="SIZE", product_size=" 0.45X22 ", capacity_rate=35, capacity_uom="Kg/Hour")]
+		self.assertEqual(capacity.select_capacity_rate(rows, product_size="0.45x22").name, "SIZE")
 
 	def test_product_specific_rate_precedes_size_and_workstation_defaults(self):
 		rows = [
@@ -315,6 +328,24 @@ class TestOperationCapacityPayload(TestCase):
 		self.assertEqual(payload["capacity_uom"], "Kg/Hour")
 		self.assertEqual(payload["planned_quantity"], 350)
 		self.assertEqual(payload["required_hours"], 10)
+
+	@patch.object(capacity, "get_capacity_availability")
+	@patch.object(capacity, "get_capacity_rate")
+	def test_extruder_falls_back_to_generator_total_weight(self, get_rate, get_availability):
+		get_rate.return_value = rate("EXTRUDER-RATE", 35)
+		get_availability.return_value = {"configured": 1, "shift_configured": 1, "net_hours": 8}
+		payload = capacity.get_operation_capacity_payload(
+			frappe._dict(
+				planning_category="Extrusion",
+				operation="Single Mould Extrusion",
+				workstation="Single Mould Extrusion",
+				planned_kg=0,
+				total_eb_weight_kg=173.3,
+				planned_date=date(2026, 11, 6),
+			)
+		)
+		self.assertEqual(payload["planned_quantity"], 173.3)
+		self.assertAlmostEqual(payload["required_hours"], 173.3 / 35, places=6)
 
 	@patch.object(capacity, "get_capacity_availability")
 	@patch.object(capacity, "get_capacity_rate")
@@ -661,8 +692,29 @@ class TestScheduleCapacityProjection(TestCase):
 		result = capacity.get_schedule_capacity_projection(
 			self.make_entry(), "Extruder-1", date(2026, 11, 4)
 		)
-		self.assertEqual(result["status"], "not_configured")
+		self.assertEqual(result["status"], "schedule_not_configured")
 		self.assertIn("not configured", result["configuration_message"])
+
+	@patch.object(capacity, "get_capacity_availability")
+	@patch.object(capacity, "prepare_capacity_allocations", return_value={})
+	@patch.object(capacity, "get_capacity_allocation_rows", return_value=[])
+	@patch.object(capacity, "get_capacity_rate_rows", return_value=[])
+	@patch.object(capacity, "get_rate_payload")
+	def test_missing_shift_availability_is_not_reported_as_missing_rate(
+		self, get_rate_payload, _get_rates, _get_rows, _prepare_allocations, get_availability
+	):
+		get_rate_payload.return_value = {
+			"applicable": 1, "configured": 1, "capacity_rate": 35, "required_hours": 4.95,
+		}
+		get_availability.return_value = {
+			"configured": 0, "message": "Workstation schedule is not configured.",
+			"net_hours": 0, "reservation_hours_by_reference": {},
+		}
+		result = capacity.get_schedule_capacity_projection(
+			self.make_entry(), "Extruder-1", date(2026, 11, 4)
+		)
+		self.assertEqual(result["status"], "availability_not_configured")
+		self.assertEqual(result["message"], "Workstation schedule is not configured.")
 
 	@patch.object(capacity, "get_capacity_availability")
 	@patch.object(capacity, "prepare_capacity_allocations")

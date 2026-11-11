@@ -275,7 +275,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Reports / Utilities",
-   "link_count": 7,
+   "link_count": 8,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -295,6 +295,16 @@
    "label": "Machine Performance",
    "link_count": 0,
    "link_to": "Machine Performance",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "SmartEdge OEE and Machine KPI Report",
+   "link_count": 0,
+   "link_to": "SmartEdge OEE and Machine KPI Report",
    "link_type": "Report",
    "onboard": 0,
    "type": "Link"
@@ -332,9 +342,9 @@
   {
    "hidden": 0,
    "is_query_report": 1,
-   "label": "Scrap & Recovery Analytics",
+   "label": "Scrap and Recovery Analytics",
    "link_count": 0,
-   "link_to": "Scrap & Recovery Analytics",
+   "link_to": "Scrap and Recovery Analytics",
    "link_type": "Report",
    "onboard": 0,
    "type": "Link"

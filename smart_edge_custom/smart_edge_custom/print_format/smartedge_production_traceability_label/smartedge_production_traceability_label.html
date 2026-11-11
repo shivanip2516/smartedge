@@ -1,0 +1,38 @@
+{% set item_meta = frappe.get_meta('Item') %}
+{% set size = frappe.db.get_value('Item', doc.finished_item, 'custom_size') if item_meta.has_field('custom_size') else None %}
+{% set color = frappe.db.get_value('Item', doc.finished_item, 'custom_color') if item_meta.has_field('custom_color') else None %}
+{% set accepted = frappe.db.get_value('Quality Inspection', doc.quality_inspection, 'custom_accepted_qty') or 0 %}
+{% set batch = frappe.db.get_value('Batch', {'custom_operation_lot': doc.name}, 'name') %}
+<style>
+	@page { size: auto; margin: 0; }
+	.se-label { width: 76mm; box-sizing: border-box; padding: 5mm; color: #000; background: #fff; font: 9pt/1.25 Arial, sans-serif; }
+	.se-label h1 { margin: 0; font-size: 16pt; letter-spacing: 1.5px; }
+	.se-label .sub { margin: 1mm 0 3mm; font-size: 7.5pt; letter-spacing: .6px; text-transform: uppercase; }
+	.se-label .rule { border-top: 1px solid #000; margin: 2mm 0; }
+	.se-label .item { font-size: 12pt; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; }
+	.se-label .code { margin-top: 1mm; font-size: 8pt; overflow-wrap: anywhere; }
+	.se-label .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 4mm; }
+	.se-label .cell { min-width: 0; margin-top: 2mm; }
+	.se-label .key { display: block; font-size: 7pt; font-weight: 700; text-transform: uppercase; }
+	.se-label .value { display: block; margin-top: .5mm; overflow-wrap: anywhere; }
+	.se-label .qty { font-size: 12pt; font-weight: 700; }
+	.se-label .qr { display: block; width: 28mm; height: 28mm; margin: 1mm auto 2mm; image-rendering: crisp-edges; }
+	.se-label .ref { margin-top: 3mm; padding-top: 2mm; border-top: 1px solid #000; font-size: 7.5pt; overflow-wrap: anywhere; }
+</style>
+<div class="se-label">
+	<div style="text-align:center"><h1>SMARTEDGE</h1><div class="sub">Production Traceability</div></div>
+	<div class="rule"></div>
+	<div class="item">{{ doc.finished_item_name or doc.finished_item }}</div>
+	<div class="code">{{ doc.finished_item }}</div>
+	<div class="grid">
+		<div class="cell"><span class="key">Size</span><span class="value">{{ size or 'N/A' }}</span></div>
+		<div class="cell"><span class="key">Color</span><span class="value">{{ color or 'N/A' }}</span></div>
+		<div class="cell"><span class="key">Accepted Meter</span><span class="value qty">{{ '{:,.3f}'.format(accepted|float) }} m</span></div>
+		<div class="cell"><span class="key">Accepted Weight</span><span class="value qty">{{ '{:,.3f}'.format((doc.produced_quantity_kg or 0)|float) }} kg</span></div>
+		<div class="cell"><span class="key">Batch</span><span class="value">{{ batch or 'N/A' }}</span></div>
+		<div class="cell"><span class="key">Production Date</span><span class="value">{{ doc.actual_end.strftime('%d %b %Y') if doc.actual_end else 'N/A' }}</span></div>
+		<div class="cell"><span class="key">Workstation</span><span class="value">{{ doc.workstation or 'N/A' }}</span></div>
+	</div>
+	<img class="qr" src="{{ get_label_qr_code('SE-LOT:' ~ doc.name) }}" alt="Traceability QR">
+	<div class="ref"><b>Traceability:</b> SE-LOT:{{ doc.name }}</div>
+</div>
