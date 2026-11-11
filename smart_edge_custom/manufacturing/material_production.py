@@ -739,7 +739,7 @@ def create_material_plan_entry(doc, requirement, values, work_order, operation_c
 	entry.planned_start_datetime = planned_start
 	entry.planned_end_datetime = frappe.utils.add_to_date(planned_start, hours=duration_hours)
 	entry.status = "Pending"
-	entry.priority = values.get("priority") or "Normal"
+	entry.priority = doc.get("priority") or "Normal"
 	entry.remarks = _("Required {0} production for {1}").format(requirement["material_type"], doc.name)
 	entry.insert()
 	if work_order.meta.has_field("custom_material_plan_entry"):
@@ -821,6 +821,16 @@ def validate_material_completion_bom(entry, work_order):
 
 
 def ensure_work_order_stock_entry(entry, purpose, quantity, production_job=None):
+	material_production_job = production_job
+	if purpose == "Manufacture" and not material_production_job:
+		production_job_name = frappe.db.get_value(
+			"SmartEdge Production Job",
+			{"plan_entry": entry.name, "status": ["in", ["In Progress", "Paused"]]},
+			"name",
+			order_by="creation desc",
+		)
+		if production_job_name:
+			material_production_job = frappe.get_doc("SmartEdge Production Job", production_job_name)
 	existing = frappe.get_all(
 		"Stock Entry",
 		filters={"work_order": entry.work_order, "purpose": purpose, "docstatus": ["<", 2]},
@@ -855,18 +865,16 @@ def ensure_work_order_stock_entry(entry, purpose, quantity, production_job=None)
 						stock_entry.name
 					)
 				)
-			production_job_name = production_job.name if production_job else frappe.db.get_value(
-				"SmartEdge Production Job",
-				{"plan_entry": entry.name, "status": ["in", ["In Progress", "Paused"]]},
-				"name",
-				order_by="creation desc",
-			)
 			recovered_pairs, recovered_allocations = [], []
-			if production_job_name:
+			if material_production_job:
 				from smart_edge_custom.manufacturing.scrap_recovery import append_recovered_components
 
-				recovered_pairs, recovered_allocations = append_recovered_components(stock_entry, production_job_name)
-			unusable_lot, unusable_pair = _append_material_unusable_scrap(stock_entry, entry, production_job)
+				recovered_pairs, recovered_allocations = append_recovered_components(
+					stock_entry, material_production_job.name
+				)
+			unusable_lot, unusable_pair = _append_material_unusable_scrap(
+				stock_entry, entry, material_production_job
+			)
 			if recovered_pairs:
 				stock_entry.save()
 				from smart_edge_custom.manufacturing.scrap_recovery import attach_recovered_batch_bundles
@@ -892,19 +900,17 @@ def ensure_work_order_stock_entry(entry, purpose, quantity, production_job=None)
 	stock_entry = frappe.get_doc(make_stock_entry(entry.work_order, purpose, quantity))
 	recovered_pairs, recovered_allocations = [], []
 	if purpose == "Manufacture":
-		production_job_name = production_job.name if production_job else frappe.db.get_value(
-			"SmartEdge Production Job",
-			{"plan_entry": entry.name, "status": ["in", ["In Progress", "Paused"]]},
-			"name",
-			order_by="creation desc",
-		)
-		if production_job_name:
+		if material_production_job:
 			from smart_edge_custom.manufacturing.scrap_recovery import append_recovered_components
 
-			recovered_pairs, recovered_allocations = append_recovered_components(stock_entry, production_job_name)
+			recovered_pairs, recovered_allocations = append_recovered_components(
+				stock_entry, material_production_job.name
+			)
 	unusable_lot, unusable_pair = (None, None)
 	if purpose == "Manufacture":
-		unusable_lot, unusable_pair = _append_material_unusable_scrap(stock_entry, entry, production_job)
+		unusable_lot, unusable_pair = _append_material_unusable_scrap(
+			stock_entry, entry, material_production_job
+		)
 	stock_entry.insert()
 	if recovered_pairs:
 		from smart_edge_custom.manufacturing.scrap_recovery import attach_recovered_batch_bundles

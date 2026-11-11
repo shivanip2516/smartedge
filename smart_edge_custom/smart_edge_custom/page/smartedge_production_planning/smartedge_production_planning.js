@@ -365,12 +365,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const $card = $(
 			`<div class="se-item-card ${category_class} se-${status_class}" data-execution-key="${frappe.utils.escape_html(group.key)}">
 				<div class="se-item-card-head">
+					<div class="se-item-statuses">
+						<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(group.status))}</span>
+						${group_qc_badge}
+					</div>
 					<div class="se-item-identity">
 						<div class="se-item-name" title="${frappe.utils.escape_html(item_name)}">${frappe.utils.escape_html(item_name)}</div>
 						${item_code ? `<div class="se-item-code">${frappe.utils.escape_html(item_code)}</div>` : ""}
 					</div>
-					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(group.status))}</span>
-					${group_qc_badge}
 				</div>
 				<div class="se-item-reference"><span>${reference_label}:</span> ${frappe.utils.escape_html(reference || "-")}</div>
 				${sales_order_reference}
@@ -510,9 +512,16 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const $row = $(
 			`<div class="se-operation-row se-${status_class} ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
 				<div class="se-operation-strip">
-					<div class="se-operation-title" draggable="true" title="${frappe.utils.escape_html(operation_label)}"><span class="se-operation-sequence">${frappe.utils.escape_html(card.operation_sequence || "•")}</span><span class="se-operation-title-content"><span class="se-operation-name">${frappe.utils.escape_html(operation_label)}</span>${saved_lot_link}</span></div>
-					<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
-					${qc_badge}
+					<div class="se-operation-title" draggable="true" title="${frappe.utils.escape_html(operation_label)}">
+						<span class="se-operation-sequence">${frappe.utils.escape_html(card.operation_sequence || "•")}</span>
+						<span class="se-operation-title-content">
+							<span class="se-operation-statuses">
+								<span class="se-status-pill ${status_class}">${frappe.utils.escape_html(get_status_label(status))}</span>
+								${qc_badge}
+							</span>
+							<span class="se-operation-name">${frappe.utils.escape_html(operation_label)}</span>${saved_lot_link}
+						</span>
+					</div>
 					<button class="btn btn-xs btn-default se-toggle-operation-details" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? __("Collapse operation") : __("Expand operation")}">${expanded ? "−" : "+"}</button>
 				</div>
 				<div class="se-operation-details-panel" ${expanded ? "" : "hidden"}>
@@ -1241,7 +1250,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
 				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
 				{ fieldtype: "Link", fieldname: "target_warehouse", label: __("Target Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.target_warehouse },
-				{ fieldtype: "Section Break", label: card.is_qc ? __("Operation and QC Employee") : __("Operation and Operator") },
+				{ fieldtype: "Section Break", label: card.is_qc ? __("Operation and QC Employee") : __("Operation and Planner") },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Link",
@@ -1261,17 +1270,26 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Column Break" },
 				{
 					fieldtype: "Link",
-					fieldname: "operator_employee",
-					label: card.is_qc ? __("QC Employee") : __("Employee"),
-					options: "Employee",
+					fieldname: "planner_user",
+					label: card.is_qc ? __("QC Employee") : __("Operator"),
+					options: card.is_qc ? "Employee" : "User",
 					reqd: 1,
-					default: context.operator_employee,
+					default: card.is_qc ? context.operator_employee : context.planner_user,
+					read_only: !card.is_qc,
+					description: !card.is_qc && context.planner_user
+						? context.planner_name && context.planner_name !== context.planner_user
+							? __("{0} ({1})", [context.planner_name, context.planner_user])
+							: context.planner_user
+						: "",
 					get_query: () => {
-						const filters = { status: "Active" };
-						if (context.company) {
-							filters.company = context.company;
+						if (card.is_qc) {
+							const filters = { status: "Active" };
+							if (context.company) {
+								filters.company = context.company;
+							}
+							return { filters };
 						}
-						return { filters };
+						return {};
 					},
 				},
 				{
@@ -1321,7 +1339,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						method: `${this.method}.start_production_job`,
 						args: {
 							plan_entry: card.id,
-							operator_employee: values.operator_employee,
+							operator_employee: card.is_qc ? values.planner_user : undefined,
 							workstation: values.workstation,
 							shift: values.shift,
 						},

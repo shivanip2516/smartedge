@@ -18,6 +18,7 @@
   "finished_item_name",
   "custom_size",
   "production_quantity",
+  "priority",
   "weight_per_meter_kg",
   "fp_col_2",
   "status",
@@ -37,16 +38,17 @@
   "prepared_components_section",
   "compound_item",
   "compound_consumption_batches",
-  "compound_batch_allocations",
   "source_warehouse",
   "components_col_2",
   "base_colour_item",
   "shade_consumption_batches",
-  "shade_batch_allocations",
   "material_weight_difference_kg_per_meter",
   "components_col_3",
   "material_weight_status",
   "allow_weight_mismatch",
+  "selected_material_batches_section",
+  "compound_batch_allocations",
+  "shade_batch_allocations",
   "material_production_section",
   "material_readiness_status",
   "compound_production_status",
@@ -203,6 +205,15 @@
    "label": "Production Quantity",
    "non_negative": 1,
    "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "Normal",
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Priority",
+   "options": "Urgent\nHigh\nNormal\nLow",
    "reqd": 1
   },
   {
@@ -385,6 +396,11 @@
    "label": "Selected Shade Batches (FIFO)",
    "options": "EB BOM Batch Allocation",
    "read_only": 1
+  },
+  {
+   "fieldname": "selected_material_batches_section",
+   "fieldtype": "Section Break",
+   "label": "Selected Material Batches"
   },
   {
    "fieldname": "material_production_section",

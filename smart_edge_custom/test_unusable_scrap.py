@@ -96,6 +96,39 @@ class TestUnusableScrap(unittest.TestCase):
 		):
 			unusable_scrap.reject_unusable_scrap_consumption(doc)
 
+	def test_storage_generation_allows_manufacturing_entry_with_configured_scrap_item(self):
+		doc = frappe._dict(
+			purpose="Manufacture",
+			custom_smartedge_scrap_movement_type="Unusable Scrap Transferred to Storage",
+			custom_smartedge_unusable_scrap_lot="UNS-1",
+		)
+		doc.items = [
+			frappe._dict(s_warehouse="Stores - SE", item_code="UNUSABLE", batch_no="SOURCE-BATCH"),
+			frappe._dict(t_warehouse="SCRAP-WH", item_code="UNUSABLE", type="Scrap", batch_no=None),
+		]
+		doc.get = lambda key, default=None: doc.items if key == "items" else dict.get(doc, key, default)
+		with patch.object(unusable_scrap.frappe.db, "exists", side_effect=[True, False, False]), patch.object(
+			unusable_scrap.frappe,
+			"get_all",
+			return_value=[
+				frappe._dict(unusable_scrap_warehouse="Stores - SE", unusable_scrap_item="UNUSABLE")
+			],
+		):
+			unusable_scrap.reject_unusable_scrap_consumption(doc)
+
+	def test_material_transfer_for_manufacture_allows_configured_item_from_source_warehouse(self):
+		doc = frappe._dict(purpose="Material Transfer for Manufacture", work_order="WO-1")
+		doc.items = [frappe._dict(s_warehouse="Stores - SE", item_code="UNUSABLE", batch_no=None)]
+		doc.get = lambda key, default=None: doc.items if key == "items" else dict.get(doc, key, default)
+		with patch.object(
+			unusable_scrap.frappe,
+			"get_all",
+			return_value=[
+				frappe._dict(unusable_scrap_warehouse="Stores - SE", unusable_scrap_item="UNUSABLE")
+			],
+		), patch.object(unusable_scrap.frappe.db, "exists", return_value=False):
+			unusable_scrap.reject_unusable_scrap_consumption(doc)
+
 	def test_disposal_requires_manager_authority(self):
 		with patch.object(unusable_scrap.frappe, "get_roles", return_value=["Manufacturing User"]):
 			with self.assertRaises(frappe.PermissionError):

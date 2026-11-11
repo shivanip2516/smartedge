@@ -21,6 +21,7 @@ class FinalEBBOMGenerator(Document):
 			)
 
 	def validate(self):
+		self.priority = self.priority or "Normal"
 		self.validate_initial_material_configuration()
 		validate_prepared_item(self.compound_item, "Compounds", _("Compound Item"))
 		validate_prepared_item(self.base_colour_item, "Base Colour", _("Base Colour Item"))
@@ -49,6 +50,8 @@ class FinalEBBOMGenerator(Document):
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 
 		refresh_material_readiness(self.name)
+		if self.has_value_changed("priority"):
+			sync_planning_priority(self.name, self.priority)
 
 	@frappe.whitelist()
 	def preview_bom(self):
@@ -70,3 +73,23 @@ def get_default_source_warehouse(item_code, company=None):
 		filters["company"] = company
 
 	return frappe.db.get_value("Item Default", filters, "default_warehouse")
+
+
+def sync_planning_priority(production, priority=None):
+	"""Keep all active planning entries aligned with their generator priority."""
+	priority = priority or "Normal"
+	entries = frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters={"final_eb_bom_generator": production, "status": ["!=", "Cancelled"]},
+		fields=["name", "priority"],
+		limit_page_length=500,
+	)
+	for entry in entries:
+		if (entry.priority or "Normal") != priority:
+			frappe.db.set_value(
+				"SmartEdge Production Plan Entry",
+				entry.name,
+				"priority",
+				priority,
+				update_modified=False,
+			)

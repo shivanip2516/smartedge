@@ -668,7 +668,7 @@ async function open_material_planning_dialog(frm) {
 				},
 			},
 			{ fieldtype: "Column Break" },
-			{ fieldtype: "Link", fieldname: `${prefix}_employee`, label: __("Employee"), options: "Employee", reqd: 1, get_query: () => ({ filters: { status: "Active", company: frm.doc.company } }) },
+			{ fieldtype: "Link", fieldname: `${prefix}_employee`, label: __("Operator"), options: "Employee", reqd: 1, get_query: () => ({ filters: { status: "Active", company: frm.doc.company } }) },
 			{ fieldtype: "Link", fieldname: `${prefix}_shift`, label: __("Shift"), options: "Shift Type" },
 			{ fieldtype: "Datetime", fieldname: `${prefix}_planned_start`, label: __("Planned Start"), reqd: 1, default: frappe.datetime.now_datetime() },
 			{ fieldtype: "Section Break", label: __("Warehouses") },

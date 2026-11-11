@@ -2370,13 +2370,15 @@ def get_start_job_context(plan_entry):
 		["company", "finished_item", "finished_item_name"],
 		as_dict=True,
 	)
+	from smart_edge_custom.manufacturing.quality_control import is_qc_entry
 	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import (
 		get_current_employee,
 		get_current_shift,
 	)
 
 	company = production.company if production else None
-	operator_employee = entry.get("planned_employee") or get_current_employee(company)
+	qc_entry = is_qc_entry(entry)
+	operator_employee = (entry.get("planned_employee") or get_current_employee(company)) if qc_entry else get_authenticated_employee(company)
 	if operator_employee and not can_read_employee(operator_employee):
 		operator_employee = None
 	pending_quantity = get_remaining_or_planned_quantity(entry)
@@ -2387,6 +2389,8 @@ def get_start_job_context(plan_entry):
 		"workstation": entry.workstation,
 		"compatible_workstations": get_compatible_workstations(entry.operation, entry.operation_row),
 		"company": company,
+		"planner_user": frappe.session.user,
+		"planner_name": frappe.db.get_value("User", frappe.session.user, "full_name") or frappe.session.user,
 		"operator_employee": operator_employee,
 		"operator_name": frappe.db.get_value("Employee", operator_employee, "employee_name") if operator_employee else None,
 		"shift": entry.get("planned_shift") or (get_current_shift(operator_employee) if operator_employee else None),
@@ -2625,10 +2629,17 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	if qc_entry:
 		require_qc_authority()
 		operator_employee = operator_employee or get_current_employee()
-	validate_employee(operator_employee, frappe.db.get_value("Final EB BOM Generator", entry.final_eb_bom_generator, "company"))
+	company = frappe.db.get_value("Final EB BOM Generator", entry.final_eb_bom_generator, "company")
+	if qc_entry:
+		validate_employee(operator_employee, company)
 	workstation = workstation or entry.workstation
 	validate_selected_workstation(entry, workstation)
 	validate_start_eligible(entry)
+	if not qc_entry:
+		operator_employee = get_authenticated_employee(company)
+		if not operator_employee:
+			frappe.throw(_("An active Employee record is required for Production Job execution. Planner is linked to the current User separately."))
+		validate_employee(operator_employee, company)
 	if entry.planned_start_datetime and entry.planned_end_datetime:
 		validate_capacity(workstation, entry.name, entry.planned_start_datetime, entry.planned_end_datetime)
 	else:
@@ -2662,6 +2673,8 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 		if job.status in {"Completed", "Cancelled"}:
 			frappe.throw(_("Completed or cancelled Production Jobs cannot be restarted."))
 		if job.status in {"Draft", "Paused", "On Hold"}:
+			if not qc_entry and job.meta.has_field("operator"):
+				job.operator = frappe.session.user
 			job.operator_employee = operator_employee
 			job.workstation = workstation
 			if shift:
@@ -2710,6 +2723,8 @@ def start_production_job(plan_entry, operator_employee=None, workstation=None, s
 	apply_released_quantity_to_job(job, entry)
 	if resolved_input_lot and job.meta.has_field("input_production_lot"):
 		job.input_production_lot = resolved_input_lot
+	if not qc_entry and job.meta.has_field("operator"):
+		job.operator = frappe.session.user
 	job.operator_employee = operator_employee
 	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import get_current_shift
 
@@ -3027,6 +3042,14 @@ def validate_employee(employee, company=None):
 		frappe.throw(_("Select an active Employee for this Company."))
 	if company and frappe.get_meta("Employee", cached=True).has_field("company") and employee_doc.company != company:
 		frappe.throw(_("Select an active Employee for this Company."))
+
+
+def get_authenticated_employee(company=None):
+	filters = {"user_id": frappe.session.user, "status": "Active"}
+	if company and frappe.get_meta("Employee", cached=True).has_field("company"):
+		filters["company"] = company
+	employees = frappe.get_all("Employee", filters=filters, pluck="name", limit=2)
+	return employees[0] if len(employees) == 1 else None
 
 
 def can_read_employee(employee):

@@ -7,6 +7,7 @@ from smart_edge_custom.manufacturing.final_bom_generator import (
 	InsufficientMaterialQuantityError,
 	create_planning_entries,
 	send_generator_to_planning,
+	sync_planning_priority,
 	validate_material_availability_for_release,
 	validate_ready_for_planning,
 )
@@ -21,6 +22,28 @@ from smart_edge_custom.smart_edge_custom.doctype.final_eb_bom_generator.final_eb
 
 
 class TestSalesOrderManufacturingPlanning(TestCase):
+	@patch("smart_edge_custom.smart_edge_custom.doctype.final_eb_bom_generator.final_eb_bom_generator.frappe.db.set_value")
+	@patch("smart_edge_custom.smart_edge_custom.doctype.final_eb_bom_generator.final_eb_bom_generator.frappe.get_all")
+	def test_generator_priority_sync_updates_active_planning_entries_only_when_needed(self, get_all, set_value):
+		get_all.return_value = [
+			frappe._dict(name="PLAN-1", priority="Normal"),
+			frappe._dict(name="PLAN-2", priority="High"),
+			frappe._dict(name="PLAN-3", priority=None),
+		]
+
+		sync_planning_priority("FEBG-1", "Urgent")
+
+		self.assertEqual(set_value.call_count, 3)
+		set_value.assert_any_call(
+			"SmartEdge Production Plan Entry", "PLAN-1", "priority", "Urgent", update_modified=False
+		)
+		set_value.assert_any_call(
+			"SmartEdge Production Plan Entry", "PLAN-2", "priority", "Urgent", update_modified=False
+		)
+		set_value.assert_any_call(
+			"SmartEdge Production Plan Entry", "PLAN-3", "priority", "Urgent", update_modified=False
+		)
+
 	def make_requirement(self, outstanding, coverage=0, idx=1):
 		return {
 			"sales_order_item": f"SO-ITEM-{idx}",

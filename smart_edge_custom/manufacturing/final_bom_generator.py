@@ -1144,7 +1144,7 @@ def create_planning_entries(doc):
 		entry.planned_meter = doc.production_quantity
 		entry.planned_kg = doc.total_eb_weight_kg
 		entry.status = "Pending"
-		entry.priority = "Normal"
+		entry.priority = doc.get("priority") or "Normal"
 		entry.insert(ignore_permissions=True)
 		entries.append(entry.name)
 
