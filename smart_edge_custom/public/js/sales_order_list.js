@@ -1,4 +1,16 @@
 frappe.listview_settings["Sales Order"] = {
+	add_fields: ["custom_planning_status"],
+	formatters: {
+		custom_planning_status(value) {
+			const status = value || "Not Planned";
+			const colors = {
+				"Not Planned": "red",
+				"Partially Planned": "orange",
+				Planned: "green",
+			};
+			return `<span class="indicator-pill ${colors[status] || "grey"} no-indicator-dot ellipsis">${frappe.utils.escape_html(__(status))}</span>`;
+		},
+	},
 	onload(listview) {
 		if (!frappe.user.has_role("Manufacturing User") && !frappe.user.has_role("Manufacturing Manager") && !frappe.user.has_role("System Manager")) return;
 		listview.page.add_inner_button(__("Generate FG & BOM"), () => open_generate_fg_bom_dialog(listview));

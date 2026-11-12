@@ -1,14 +1,431 @@
 {
+ "app": "smart_edge_custom",
  "category": "Modules",
  "doctype": "Workspace Sidebar",
  "for_user": "",
- "idx": 1,
- "indicator_color": "",
- "is_hidden": 0,
+ "header_icon": "factory",
+ "items": [
+  {
+   "child": 0,
+   "icon": "home",
+   "label": "Home",
+   "link_to": "SmartEdge Manufacturing",
+   "link_type": "Workspace",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "clipboard-list",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Production Definition",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "file-text",
+   "label": "Create Production Definition",
+   "link_to": "Final EB BOM Generator",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "calendar",
+   "label": "Production Planning Board",
+   "link_to": "smartedge-production-planning",
+   "link_type": "Page",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "package",
+   "label": "Item",
+   "link_to": "Item",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "flask-conical",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Formulation Masters",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "flask-conical",
+   "label": "Compound",
+   "link_to": "Compound",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "palette",
+   "label": "Base Colour",
+   "link_to": "Base Colour",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "ruler",
+   "label": "Size Weight",
+   "link_to": "Size Weight",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "droplet",
+   "label": "Shade",
+   "link_to": "Shade",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "layers",
+   "label": "Base Shade",
+   "link_to": "Base Shade",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "tags",
+   "label": "Item Category",
+   "link_to": "Item Category",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "boxes",
+   "label": "Material Type",
+   "link_to": "Material Type",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "paintbrush",
+   "label": "PVC Type Finish",
+   "link_to": "PVC Type Finish",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "printer",
+   "label": "Printing Design",
+   "link_to": "Printing Design",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "key-round",
+   "label": "Customer Order Code",
+   "link_to": "Customer Order Code",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "route",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Process Configuration",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "route",
+   "label": "SmartEdge Process Route",
+   "link_to": "SmartEdge Process Route",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "workflow",
+   "label": "Operation",
+   "link_to": "Operation",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "factory",
+   "label": "Workstation",
+   "link_to": "Workstation",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "wallet",
+   "label": "SmartEdge Cost Head",
+   "link_to": "SmartEdge Cost Head",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "gauge",
+   "label": "Workstation Capacity Rates",
+   "link_to": "SmartEdge Workstation Capacity Rate",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "timer",
+   "label": "Downtime Reason",
+   "link_to": "SmartEdge Downtime Reason",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "factory",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Manufacturing Execution",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "clipboard-check",
+   "label": "Production Plan Entry",
+   "link_to": "SmartEdge Production Plan Entry",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "settings",
+   "label": "Production Job",
+   "link_to": "SmartEdge Production Job",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "package-check",
+   "label": "Stock Entry",
+   "link_to": "Stock Entry",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "file-text",
+   "label": "Final EB BOM Generator",
+   "link_to": "Final EB BOM Generator",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "archive",
+   "label": "Production Lot",
+   "link_to": "SmartEdge Production Lot",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "package",
+   "label": "Packing Session",
+   "link_to": "SmartEdge Packing Session",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "database",
+   "label": "WIP Ledger Entry",
+   "link_to": "SmartEdge WIP Ledger Entry",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "shield-check",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Quality",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "shield-check",
+   "label": "Quality Inspection",
+   "link_to": "Quality Inspection",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "recycle",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Scrap Recovery",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "recycle",
+   "label": "Usable Scrap Lots",
+   "link_to": "SmartEdge Usable Scrap Lot",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "archive",
+   "label": "Unusable Scrap Storage / Disposal",
+   "link_to": "SmartEdge Unusable Scrap Lot",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "wrench",
+   "label": "Grinder / Pulverizer Recovery",
+   "link_to": "SmartEdge Scrap Recovery",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "flask-conical",
+   "label": "Recovery Material Mapping",
+   "link_to": "SmartEdge Recovery Material",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "workflow",
+   "label": "Recovered Material Reuse Rules",
+   "link_to": "SmartEdge Recovery Reuse Rule",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "clipboard-check",
+   "label": "Recovered Material Allocations",
+   "link_to": "SmartEdge Recovered Material Allocation",
+   "link_type": "DocType",
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "chart",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "Reports / Utilities",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "icon": "gauge",
+   "label": "Production Performance",
+   "link_to": "Production Performance",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "factory",
+   "label": "Machine Performance",
+   "link_to": "Machine Performance",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "chart",
+   "label": "SmartEdge OEE and Machine KPI Report",
+   "link_to": "SmartEdge OEE and Machine KPI Report",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "user-round",
+   "label": "Operator Productivity",
+   "link_to": "Operator Productivity",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "badge-check",
+   "label": "Quality Performance",
+   "link_to": "Quality Performance",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "chart",
+   "label": "Material Efficiency",
+   "link_to": "Material Efficiency",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "recycle",
+   "label": "Scrap and Recovery Analytics",
+   "link_to": "Scrap and Recovery Analytics",
+   "link_type": "Report",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "git-branch",
+   "label": "Batch Genealogy",
+   "link_to": "smartedge-batch-genealogy",
+   "link_type": "Page",
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "icon": "chart",
+   "label": "Stock Balance",
+   "link_to": "Stock Balance",
+   "link_type": "Report",
+   "type": "Link"
+  }
+ ],
+ "module": "smart_edge_custom",
  "label": "SmartEdge Manufacturing",
  "name": "SmartEdge Manufacturing",
  "parent_page": "",
  "public": 1,
  "title": "SmartEdge Manufacturing",
+ "standard": 1,
  "type": "Workspace"
 }

@@ -251,6 +251,18 @@ doc_events = {
 	"SmartEdge Production Job": {
 		"on_update": "smart_edge_custom.manufacturing.batch_genealogy.refresh_genealogy_from_production_job",
 	},
+	"Sales Order": {
+		"after_insert": "smart_edge_custom.manufacturing.sales_order_planning_status.update_sales_order_planning_status",
+		"on_update": "smart_edge_custom.manufacturing.sales_order_planning_status.update_sales_order_planning_status",
+		"on_update_after_submit": "smart_edge_custom.manufacturing.sales_order_planning_status.update_sales_order_planning_status",
+		"on_cancel": "smart_edge_custom.manufacturing.sales_order_planning_status.update_sales_order_planning_status",
+	},
+	"Final EB BOM Generator": {
+		"after_insert": "smart_edge_custom.manufacturing.sales_order_planning_status.update_from_final_eb_bom_generator",
+		"on_update": "smart_edge_custom.manufacturing.sales_order_planning_status.update_from_final_eb_bom_generator",
+		"on_cancel": "smart_edge_custom.manufacturing.sales_order_planning_status.update_from_final_eb_bom_generator",
+		"on_trash": "smart_edge_custom.manufacturing.sales_order_planning_status.update_from_final_eb_bom_generator",
+	},
 	"Work Order": {
 		"before_validate": "smart_edge_custom.manufacturing.batch_manufacturing.set_work_order_batch_quantity",
 		"on_update": "smart_edge_custom.manufacturing.material_production.sync_material_readiness_from_work_order",
