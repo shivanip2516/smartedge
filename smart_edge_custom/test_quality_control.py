@@ -31,13 +31,43 @@ class TestQualityControl(unittest.TestCase):
 		values = qc.validate_quantities(4524, 4000, 4000, 0, 0)
 		self.assertEqual(values["Accepted Quantity"], 4000)
 
+	def test_accepted_quantity_is_derived_from_inspected_and_losses(self):
+		values = qc.validate_quantities(6472.222222, 6472.222222, 6472.222222, 100, 10)
+		self.assertEqual(values["Accepted Quantity"], 6362.222222)
+
+	def test_blank_loss_quantities_are_treated_as_zero(self):
+		values = qc.validate_quantities(100, 100, 0, None, "")
+		self.assertEqual(values["Accepted Quantity"], 100)
+
 	def test_negative_quantity_is_rejected(self):
 		with self.assertRaises(frappe.ValidationError):
 			qc.validate_quantities(100, 100, 101, -1, 0)
 
-	def test_unreconciled_quantity_is_rejected(self):
+	def test_client_accepted_quantity_is_not_trusted(self):
+		values = qc.validate_quantities(100, 100, 0, 0, 0)
+		self.assertEqual(values["Accepted Quantity"], 100)
+
+	def test_rejected_and_rework_cannot_exceed_inspected_quantity(self):
 		with self.assertRaises(frappe.ValidationError):
-			qc.validate_quantities(100, 100, 99, 0, 0)
+			qc.validate_quantities(100, 100, 0, 90, 11)
+
+	def test_api_save_recalculates_accepted_quantity(self):
+		doc = frappe._dict(
+			custom_smartedge_qc_key="smartedge-qc:1",
+			custom_qc_plan_entry="PLAN-QC",
+			custom_eligible_qty=100,
+			custom_inspected_qty=100,
+			custom_accepted_qty=100,
+			custom_rejected_qty=10,
+			custom_rework_qty=5,
+			flags=frappe._dict(smartedge_qc_api=True),
+		)
+		doc.is_new = lambda: True
+		with patch.object(qc, "is_qc_entry", return_value=True), patch.object(
+			qc.frappe, "get_doc", return_value=frappe._dict(name="PLAN-QC")
+		):
+			qc.validate_quality_inspection(doc)
+		self.assertEqual(doc.custom_accepted_qty, 85)
 
 	def test_inspection_cannot_exceed_eligible_quantity(self):
 		with self.assertRaises(frappe.ValidationError):

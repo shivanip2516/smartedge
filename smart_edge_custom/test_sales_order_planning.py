@@ -98,7 +98,7 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 	@patch("smart_edge_custom.manufacturing.sales_order_planning.frappe.get_all")
 	@patch("smart_edge_custom.manufacturing.sales_order_planning.frappe.get_meta")
 	def test_completed_and_cancelled_generators_are_not_future_coverage(self, get_meta, get_all):
-		get_meta.return_value.has_field.return_value = True
+		get_meta.return_value.has_field.side_effect = lambda fieldname: fieldname in {"sales_order", "sales_order_item"}
 		get_all.return_value = [
 			frappe._dict({"name": "FEBG-A", "sales_order_item": "SO-ITEM-1", "production_quantity": 2000, "status": "Planned"}),
 			frappe._dict({"name": "FEBG-B", "sales_order_item": "SO-ITEM-1", "production_quantity": 1000, "status": "Completed"}),
@@ -109,6 +109,25 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 
 		self.assertEqual(coverage["SO-ITEM-1"], 2000)
 		self.assertEqual(len(linked), 3)
+
+	@patch("smart_edge_custom.manufacturing.sales_order_planning.frappe.db.exists", return_value=True)
+	@patch("smart_edge_custom.manufacturing.sales_order_planning.frappe.get_all")
+	@patch("smart_edge_custom.manufacturing.sales_order_planning.frappe.get_meta")
+	def test_consolidated_generator_coverage_is_visible_from_each_sales_order(self, get_meta, get_all, _exists):
+		get_meta.return_value.has_field.side_effect = lambda fieldname: fieldname in {
+			"sales_order", "sales_order_item", "sales_order_references"
+		}
+		get_all.side_effect = [
+			[],
+			[frappe._dict(parent="FEBG-CONSOLIDATED")],
+			[frappe._dict(name="FEBG-CONSOLIDATED", sales_order="SO-1", sales_order_item="ROW-1", production_quantity=550, status="Planned", production_status=None, finished_item="IT-1")],
+			[frappe._dict(parent="FEBG-CONSOLIDATED", sales_order_item="ROW-2", converted_production_quantity=300)],
+		]
+
+		coverage, linked = get_existing_coverage("SO-2")
+
+		self.assertEqual(coverage["ROW-2"], 300)
+		self.assertEqual([row.name for row in linked], ["FEBG-CONSOLIDATED"])
 
 	@patch("smart_edge_custom.manufacturing.sales_order_planning.build_manufacturing_overview")
 	@patch("smart_edge_custom.manufacturing.sales_order_planning.get_valid_sales_order")

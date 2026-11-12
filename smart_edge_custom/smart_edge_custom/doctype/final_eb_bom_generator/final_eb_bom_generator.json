@@ -13,6 +13,7 @@
   "sales_order_item",
   "customer",
   "required_delivery_date",
+  "sales_order_references",
   "finished_item",
   "finished_bom",
   "finished_item_name",
@@ -182,6 +183,13 @@
    "fieldname": "required_delivery_date",
    "fieldtype": "Date",
    "label": "Required Delivery Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order_references",
+   "fieldtype": "Table",
+   "label": "Sales Order References",
+   "options": "Final EB BOM Sales Order Reference",
    "read_only": 1
   },
   {

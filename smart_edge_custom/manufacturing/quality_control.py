@@ -219,10 +219,9 @@ def begin_review(quality_inspection, qc_employee=None):
 	return inspection_context(doc)
 
 
-def validate_quantities(eligible, inspected, accepted, rejected, rework):
+def validate_quantities(eligible, inspected, accepted=None, rejected=0, rework=0):
 	values = {
 		_("Inspected Quantity"): flt(inspected),
-		_("Accepted Quantity"): flt(accepted),
 		_("Rejected Quantity"): flt(rejected),
 		_("Rework Quantity"): flt(rework),
 	}
@@ -231,11 +230,19 @@ def validate_quantities(eligible, inspected, accepted, rejected, rework):
 			frappe.throw(_("{0} cannot be negative.").format(label))
 	if values[_("Inspected Quantity")] <= 0:
 		frappe.throw(_("Inspected Quantity must be greater than zero."))
-	classified = values[_("Accepted Quantity")] + values[_("Rejected Quantity")] + values[_("Rework Quantity")]
-	if abs(classified - values[_("Inspected Quantity")]) > EPSILON:
-		frappe.throw(_("Inspected Quantity must equal Accepted + Rejected + Rework Quantity."))
 	if values[_("Inspected Quantity")] > flt(eligible) + EPSILON:
 		frappe.throw(_("Inspected Quantity cannot exceed the eligible quantity {0}.").format(flt(eligible)))
+	if values[_("Rejected Quantity")] + values[_("Rework Quantity")] > values[_("Inspected Quantity")] + EPSILON:
+		frappe.throw(_("Rejected Quantity plus Rework Quantity cannot exceed Inspected Quantity."))
+	values[_("Accepted Quantity")] = round(
+		max(
+			values[_("Inspected Quantity")]
+			- values[_("Rejected Quantity")]
+			- values[_("Rework Quantity")],
+			0,
+		),
+		6,
+	)
 	return values
 
 
@@ -275,7 +282,7 @@ def submit_decision(
 	values = validate_quantities(doc.custom_eligible_qty, inspected_qty, accepted_qty, rejected_qty, rework_qty)
 	if (values[_("Rejected Quantity")] > EPSILON or values[_("Rework Quantity")] > EPSILON) and not str(reason or "").strip():
 		frappe.throw(_("Rejection / Rework Reason is required."))
-	status = _decision_status(accepted_qty, rejected_qty, rework_qty)
+	status = _decision_status(values[_("Accepted Quantity")], values[_("Rejected Quantity")], values[_("Rework Quantity")])
 	updates = {
 		"custom_smartedge_qc_status": status,
 		"custom_qc_employee": employee,
@@ -724,6 +731,15 @@ def validate_quality_inspection(doc, method=None):
 		frappe.get_doc("SmartEdge Production Plan Entry", doc.custom_qc_plan_entry)
 	):
 		frappe.throw(_("SmartEdge QC must reference a valid QC plan entry."))
+	if doc.flags.get("smartedge_qc_api") and doc.get("custom_inspected_qty") not in (None, ""):
+		values = validate_quantities(
+			doc.custom_eligible_qty,
+			doc.custom_inspected_qty,
+			doc.get("custom_accepted_qty"),
+			doc.get("custom_rejected_qty"),
+			doc.get("custom_rework_qty"),
+		)
+		doc.custom_accepted_qty = values[_("Accepted Quantity")]
 	protected_fields = (
 		"reference_type", "reference_name", "item_code", "batch_no", "status",
 		"custom_final_eb_bom_generator", "custom_qc_plan_entry", "custom_source_production_job",

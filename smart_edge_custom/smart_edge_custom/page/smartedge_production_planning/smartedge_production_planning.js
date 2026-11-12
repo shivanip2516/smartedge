@@ -1827,7 +1827,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Float", fieldname: "eligible_qty", label: __("Eligible Quantity"), precision: 6, read_only: 1, default: context.eligible_qty },
 				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: 6, reqd: 1, default: context.eligible_qty },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: 6, default: context.eligible_qty },
+				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: 6, read_only: 1, default: context.eligible_qty },
 				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Quantity"), precision: 6, default: 0 },
 				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Quantity"), precision: 6, default: 0 },
 				{ fieldtype: "Section Break" },
@@ -1866,6 +1866,18 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		const update_accepted_quantity = () => {
+			const inspected = flt(dialog.get_value("inspected_qty"));
+			const rejected = flt(dialog.get_value("rejected_qty"));
+			const rework = flt(dialog.get_value("rework_qty"));
+			dialog.set_value("accepted_qty", Math.max(inspected - rejected - rework, 0));
+		};
+		for (const fieldname of ["inspected_qty", "rejected_qty", "rework_qty"]) {
+			const field = dialog.fields_dict[fieldname];
+			field.df.onchange = update_accepted_quantity;
+			field.$input?.on("input change", update_accepted_quantity);
+		}
+		update_accepted_quantity();
 	}
 
 	async resubmit_qc_rework(card) {

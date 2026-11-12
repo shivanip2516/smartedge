@@ -16,6 +16,7 @@ ACTIVE_COVERAGE_STATUSES = (
 	"On Hold",
 )
 QUANTITY_TOLERANCE = 0.000001
+SALES_ORDER_REFERENCE_DOCTYPE = "Final EB BOM Sales Order Reference"
 
 
 @frappe.whitelist()
@@ -52,15 +53,8 @@ def create_final_eb_bom_generator(sales_order, sales_order_item, quantity):
 			)
 		)
 
-	generator = frappe.new_doc("Final EB BOM Generator")
-	generator.company = order.company
-	generator.finished_item = requirement["item_code"]
-	generator.production_quantity = quantity
-	generator.sales_order = order.name
-	generator.sales_order_item = requirement["sales_order_item"]
-	generator.customer = order.customer
-	generator.required_delivery_date = requirement["delivery_date"] or order.delivery_date
-	generator.insert()
+	source = build_sales_order_reference(order, requirement, quantity)
+	generator = create_final_eb_bom_generator_from_sources([source])
 
 	return {
 		"name": generator.name,
@@ -69,6 +63,82 @@ def create_final_eb_bom_generator(sales_order, sales_order_item, quantity):
 		"shortage_before": shortage,
 		"remaining_shortage": max(shortage - quantity, 0),
 	}
+
+
+def build_sales_order_reference(order, requirement, quantity=None):
+	"""Build one traceable source allocation in the generator's stock UOM."""
+	converted_quantity = flt(
+		requirement["manufacturing_shortage"] if quantity is None else quantity
+	)
+	conversion_factor = flt(requirement.get("conversion_factor")) or 1
+	return {
+		"sales_order": order.name,
+		"sales_order_item": requirement["sales_order_item"],
+		"customer": order.customer,
+		"company": order.company,
+		"finished_item": requirement["item_code"],
+		"finished_item_name": requirement.get("item_name"),
+		"source_quantity": flt(converted_quantity / conversion_factor),
+		"source_uom": requirement.get("uom") or requirement.get("stock_uom"),
+		"converted_production_quantity": converted_quantity,
+		"production_uom": requirement.get("stock_uom"),
+		"required_delivery_date": requirement.get("delivery_date") or order.delivery_date,
+	}
+
+
+def create_final_eb_bom_generator_from_sources(sources):
+	if not sources:
+		frappe.throw(_("At least one Sales Order Item reference is required."))
+
+	meta = frappe.get_meta("Final EB BOM Generator", cached=True)
+	reference_table_available = meta.has_field("sales_order_references") and frappe.db.exists(
+		"DocType", SALES_ORDER_REFERENCE_DOCTYPE
+	)
+	if len(sources) > 1 and not reference_table_available:
+		frappe.throw(
+			_("Final EB BOM Generator traceability fields are not installed. Run the app migration before consolidating Sales Orders.")
+		)
+
+	first = sources[0]
+	item_codes = {source["finished_item"] for source in sources}
+	companies = {source["company"] for source in sources}
+	production_uoms = {source["production_uom"] for source in sources}
+	if len(item_codes) != 1 or len(companies) != 1 or len(production_uoms) != 1:
+		frappe.throw(_("Only compatible Finished Goods requirements can be consolidated."))
+
+	generator = frappe.new_doc("Final EB BOM Generator")
+	generator.company = first["company"]
+	generator.finished_item = first["finished_item"]
+	generator.production_quantity = flt(
+		sum(flt(source["converted_production_quantity"]) for source in sources)
+	)
+	# Preserve the original single-reference fields for existing integrations.
+	generator.sales_order = first["sales_order"]
+	generator.sales_order_item = first["sales_order_item"]
+	customers = {source.get("customer") for source in sources}
+	if len(customers) == 1:
+		generator.customer = first.get("customer")
+	dates = [source.get("required_delivery_date") for source in sources if source.get("required_delivery_date")]
+	if dates:
+		generator.required_delivery_date = min(dates)
+
+	if reference_table_available:
+		for source in sources:
+			generator.append(
+				"sales_order_references",
+				{
+					"sales_order": source["sales_order"],
+					"sales_order_item": source["sales_order_item"],
+					"customer": source.get("customer"),
+					"finished_item": source["finished_item"],
+					"source_quantity": source["source_quantity"],
+					"source_uom": source["source_uom"],
+					"converted_production_quantity": source["converted_production_quantity"],
+				}
+			)
+
+	generator.insert()
+	return generator
 
 
 def get_valid_sales_order(sales_order):
@@ -153,17 +223,77 @@ def get_existing_coverage(sales_order):
 	meta = frappe.get_meta("Final EB BOM Generator", cached=True)
 	if not meta.has_field("sales_order") or not meta.has_field("sales_order_item"):
 		return {}, []
+	fields = [
+		"name",
+		"sales_order",
+		"sales_order_item",
+		"production_quantity",
+		"status",
+		"production_status",
+		"finished_item",
+	]
 	rows = frappe.get_all(
 		"Final EB BOM Generator",
 		filters={"sales_order": sales_order},
-		fields=["name", "sales_order_item", "production_quantity", "status", "production_status", "finished_item"],
+		fields=fields,
 		order_by="creation asc",
 		limit_page_length=1000,
 	)
+	primary_names = {row.name for row in rows}
+	reference_table_available = meta.has_field("sales_order_references") and frappe.db.exists(
+		"DocType", SALES_ORDER_REFERENCE_DOCTYPE
+	)
+	if reference_table_available:
+		referenced_parents = frappe.get_all(
+			SALES_ORDER_REFERENCE_DOCTYPE,
+			filters={"sales_order": sales_order, "parenttype": "Final EB BOM Generator"},
+			fields=["parent"],
+			limit_page_length=5000,
+		)
+		parent_names = {row.parent for row in referenced_parents if row.parent}
+		known_names = {row.name for row in rows}
+		additional_names = sorted(parent_names - known_names)
+		if additional_names:
+			rows.extend(
+				frappe.get_all(
+					"Final EB BOM Generator",
+					filters={"name": ["in", additional_names]},
+					fields=fields,
+					order_by="creation asc",
+					limit_page_length=len(additional_names),
+				)
+			)
 	coverage = defaultdict(float)
-	for row in rows:
-		if get_generator_lifecycle_status(row) in ACTIVE_COVERAGE_STATUSES and row.sales_order_item:
-			coverage[row.sales_order_item] += flt(row.production_quantity)
+	active_rows = {
+		row.name: row
+		for row in rows
+		if get_generator_lifecycle_status(row) in ACTIVE_COVERAGE_STATUSES
+	}
+	if active_rows and reference_table_available:
+		references = frappe.get_all(
+			SALES_ORDER_REFERENCE_DOCTYPE,
+			filters={
+				"parent": ["in", list(active_rows)],
+				"parenttype": "Final EB BOM Generator",
+				"sales_order": sales_order,
+			},
+			fields=["parent", "sales_order_item", "converted_production_quantity"],
+			limit_page_length=5000,
+		)
+		references_by_parent = defaultdict(list)
+		for reference in references:
+			references_by_parent[reference.parent].append(reference)
+		for row in active_rows.values():
+			if references_by_parent.get(row.name):
+				for reference in references_by_parent[row.name]:
+					if reference.sales_order_item:
+						coverage[reference.sales_order_item] += flt(reference.converted_production_quantity)
+			elif row.name in primary_names and row.sales_order_item:
+				coverage[row.sales_order_item] += flt(row.production_quantity)
+	else:
+		for row in active_rows.values():
+			if row.name in primary_names and row.sales_order_item:
+				coverage[row.sales_order_item] += flt(row.production_quantity)
 	return coverage, rows
 
 
@@ -217,6 +347,11 @@ def allocate_finished_stock(rows):
 
 def lock_sales_order(sales_order):
 	frappe.db.sql("select name from `tabSales Order` where name=%s for update", (sales_order,))
+
+
+def lock_sales_orders(sales_orders):
+	for sales_order in sorted(set(sales_orders)):
+		lock_sales_order(sales_order)
 
 
 def get_bin_quantities(item_code, warehouse):
