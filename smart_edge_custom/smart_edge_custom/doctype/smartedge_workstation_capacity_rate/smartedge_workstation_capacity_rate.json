@@ -19,6 +19,7 @@
   "product_item",
   "matching_col_2",
   "process_route",
+  "capacity_rows_section",
   "capacity_rows"
  ],
  "fields": [
@@ -96,7 +97,7 @@
    "collapsible": 1,
    "fieldname": "matching_section",
    "fieldtype": "Section Break",
-   "label": "Optional Product / Size / Route Matching"
+   "label": ""
   },
   {
    "fieldname": "capacity_rows",
@@ -132,6 +133,12 @@
    "in_standard_filter": 1,
    "label": "Process Route",
    "options": "SmartEdge Process Route"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "capacity_rows_section",
+   "fieldtype": "Section Break",
+   "label": "Optional Product / Size / Route Matching"
   }
  ],
  "index_web_pages_for_search": 1,

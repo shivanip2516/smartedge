@@ -15,16 +15,22 @@ frappe.ui.form.on("Final EB BOM Generator", {
 	},
 
 	async refresh(frm) {
-		show_status(frm);
 		render_configurator_summary(frm);
 		frm.add_custom_button(__("Refresh Route"), () => refresh_preview(frm, true));
 		frm.add_custom_button(__("Refresh Batch Allocation"), () => refresh_preview(frm, true, true));
 		await refresh_material_planning(frm);
+		show_status(frm);
 		update_send_to_planning_button(frm);
 	},
 
 	async finished_item(frm) {
 		await frm.set_value("finished_bom", null);
+		if (!frm.doc.finished_item) {
+			if (!is_weight_factor_locked(frm)) {
+				await frm.set_value("weight_factor", null);
+			}
+			return;
+		}
 		await fetch_finished_item_details(frm);
 		frm.preview_debounced();
 	},
@@ -132,9 +138,36 @@ async function fetch_finished_item_details(frm) {
 		}
 	}
 
-	if (!frm.doc.weight_factor && details.weight_factor) {
+	if (
+		details.weight_factor !== undefined &&
+		details.weight_factor !== null &&
+		!is_weight_factor_locked(frm)
+	) {
 		await frm.set_value("weight_factor", details.weight_factor);
 	}
+}
+
+const WEIGHT_FACTOR_LOCKED_STATUSES = new Set([
+	"Ready for Planning",
+	"Partially Planned",
+	"Planned",
+	"In Production",
+	"Completed",
+	"On Hold",
+	"Cancelled",
+	"Sent to Planning",
+	"Materials Produced",
+	"Production Completed",
+]);
+
+function is_weight_factor_locked(frm) {
+	if (frm.is_new()) {
+		return false;
+	}
+
+	return [frm.doc.production_status, frm.doc.status].some((status) =>
+		WEIGHT_FACTOR_LOCKED_STATUSES.has(status)
+	);
 }
 
 async function refresh_preview(frm, show_alert = false, refresh_batch_allocations = false) {
@@ -164,7 +197,7 @@ async function refresh_preview(frm, show_alert = false, refresh_batch_allocation
 	if (show_alert) {
 		frappe.show_alert({
 			message: __("BOM preview refreshed."),
-			indicator: get_indicator(frm.doc.status),
+			indicator: get_material_status_indicator(frm.doc.status),
 		});
 	}
 	if (!frm.is_new() && !frm.is_dirty()) {
@@ -198,7 +231,6 @@ function apply_preview(frm, preview) {
 		"total_production_cost",
 		"cost_per_meter",
 		"warnings",
-		"status",
 		"selected_route",
 	];
 
@@ -230,39 +262,18 @@ function set_child_rows(frm, table_field, rows) {
 }
 
 function show_status(frm) {
-	const workflow_status = frm.__material_workflow_status || get_material_workflow_status(frm);
-	const display_status = workflow_status
-		? __("Material Workflow: {0}", [workflow_status])
-		: frm.doc.status;
-	if (!display_status) {
+	const workflow_status = frm.doc.status;
+	if (!workflow_status) {
 		return;
 	}
 
-	frm.dashboard.clear_headline();
-	frm.dashboard.set_headline_alert(
-		frappe.utils.escape_html(display_status),
-		["Ready to Send to Planning", "Sent to Planning", "Materials Produced", "Production Completed"].includes(workflow_status)
-			? "green"
-			: get_indicator(frm.doc.status)
-	);
+	frm.page.set_indicator(__(workflow_status), get_material_status_indicator(workflow_status));
 }
 
-function get_material_workflow_status(frm) {
-	if (!frm.doc.compound_item || !frm.doc.base_colour_item || !cint(frm.doc.compound_consumption_batches) || !cint(frm.doc.shade_consumption_batches)) {
-		return __("Material Configuration Pending");
-	}
-	if ([frm.doc.compound_production_status, frm.doc.base_colour_production_status].some((status) =>
-		["In Progress", "Paused", "Partially Completed"].includes(status)
-	)) {
-		return __("Material Production In Progress");
-	}
-	if (frm.__material_planning_context?.released_to_planning) {
-		return __("Sent to Planning");
-	}
-	if (cint(frm.doc.compound_planned_batches) || cint(frm.doc.base_colour_planned_batches)) {
-		return __("Material Production Planned");
-	}
-	return __("Ready to Send to Planning");
+function get_material_status_indicator(workflow_status) {
+	return ["Ready to Send to Planning", "Sent to Planning", "Materials Produced", "Production Completed"].includes(workflow_status)
+		? "green"
+		: "orange";
 }
 
 function render_configurator_summary(frm, route_summary = {}) {
@@ -305,7 +316,7 @@ function render_configurator_summary(frm, route_summary = {}) {
 		{
 			title: __("Material Workflow"),
 			items: [
-				[__("Workflow Status"), frm.__material_workflow_status || get_material_workflow_status(frm)],
+				[__("Workflow Status"), frm.doc.status],
 				[__("Compound Status"), frm.doc.compound_production_status],
 				[__("Compound Planned / Completed"), `${cint(frm.doc.compound_planned_batches)} / ${cint(frm.doc.compound_completed_batches)}`],
 				[__("Base Colour Status"), frm.doc.base_colour_production_status],
@@ -392,16 +403,6 @@ function format_number(value, precision) {
 		return "-";
 	}
 	return flt(value, precision).toFixed(precision);
-}
-
-function get_indicator(status) {
-	if (["Ready for Planning", "Planned", "Completed"].includes(status)) {
-		return "green";
-	}
-	if (["Cancelled", "On Hold"].includes(status)) {
-		return "red";
-	}
-	return "orange";
 }
 
 async function send_to_planning(frm) {
@@ -536,6 +537,9 @@ async function refresh_material_planning(frm) {
 
 function apply_material_status(frm, context) {
 	frm.__material_workflow_status = context.workflow_status || frm.__material_workflow_status;
+	if (context.workflow_status && frm.doc.status !== context.workflow_status) {
+		frm.doc.status = context.workflow_status;
+	}
 	frm.doc.material_readiness_status = context.overall_status;
 	for (const row of context.requirements || []) {
 		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
@@ -547,6 +551,7 @@ function apply_material_status(frm, context) {
 	}
 	frm.refresh_fields([
 		"material_readiness_status",
+		"status",
 		"compound_production_status",
 		"compound_production_plan",
 		"compound_work_order",

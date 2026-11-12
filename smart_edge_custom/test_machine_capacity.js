@@ -4,6 +4,7 @@ global.smart_edge_custom = {};
 global.__ = (value) => value;
 global.flt = (value) => Number.parseFloat(value || 0);
 global.cint = (value) => Number.parseInt(value || 0, 10);
+global.se_format_number = (value) => Number(value).toFixed(2);
 global.frappe = {
 	pages: { "smartedge-production-planning": {} },
 	provide: () => {},
@@ -12,6 +13,7 @@ global.frappe = {
 
 const {
 	capacity_projection_html,
+	capacity_summary_html,
 	get_machine_capacity_labels,
 	get_utilization_status,
 } = require("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js");
@@ -86,3 +88,29 @@ assert.match(overload, /Overload<\/th><td>1(?:\.00)? Hours/);
 
 const unavailable = capacity_projection_html({ available_hours: 0, new_operation_hours: 2, utilization: null });
 assert.match(unavailable, /Projected Utilization<\/th><td>N\/A/);
+
+const scheduling_conflict = capacity_summary_html({
+	status: "duration_insufficient",
+	message: "Expected duration is insufficient.",
+	working_hours_status: "ok",
+	scheduling_conflict: 1,
+	scheduling_conflict_blocked: 1,
+	scheduling_conflict_message: "Workstation Scheduling Conflict: PLAN-OLD overlaps the requested interval.",
+	conflicting_operation: "PLAN-OLD",
+	conflicting_time_interval: "04-11-2026 09:00:00 – 04-11-2026 15:00:00",
+	workstation: "Extruder-1",
+	planned_date: "2026-11-04",
+	planned_start: "11:00:00",
+	planned_end: "13:00:00",
+	available_hours: 8,
+	already_planned_hours: 6,
+	required_hours: 4.34,
+	planned_hours: 2.5,
+	working_hours: "09:00:00–19:00:00",
+});
+assert.match(scheduling_conflict, /Scheduling Conflict/);
+assert.match(scheduling_conflict, /PLAN-OLD/);
+assert.match(scheduling_conflict, /09:00:00/);
+assert.match(scheduling_conflict, /Expected duration is insufficient/);
+assert.match(scheduling_conflict, /Workstation Scheduling Conflict/);
+assert.match(scheduling_conflict, /Not Bookable/);

@@ -1,5 +1,4 @@
 import json
-import re
 
 import frappe
 from frappe import _
@@ -23,6 +22,28 @@ LOCKED_BATCH_ALLOCATION_STATUSES = {
 	"Cancelled",
 }
 IMMUTABLE_BATCH_ALLOCATION_STATUSES = {"Completed", "Cancelled"}
+GENERATOR_LIFECYCLE_STATUSES = {
+	"Draft",
+	"Ready for Planning",
+	"Partially Planned",
+	"Planned",
+	"In Production",
+	"Completed",
+	"On Hold",
+	"Cancelled",
+}
+WEIGHT_FACTOR_LOCKED_STATUSES = {
+	"Ready for Planning",
+	"Partially Planned",
+	"Planned",
+	"In Production",
+	"Completed",
+	"On Hold",
+	"Cancelled",
+	"Sent to Planning",
+	"Materials Produced",
+	"Production Completed",
+}
 ALREADY_SENT_TO_PLANNING_MESSAGE = _(
 	"This Finished Product has already been sent to Production Planning. Duplicate planning is not allowed."
 )
@@ -64,9 +85,27 @@ def get_finished_item_configuration(finished_item):
 		frappe.throw(_("Finished Product Item {0} does not exist.").format(frappe.bold(finished_item)))
 
 	size_value = item.get("custom_size")
+	if not size_value:
+		frappe.throw(
+			_("Finished Product Item {0} must have a Size Weight selected in the Size field.").format(
+				frappe.bold(finished_item)
+			)
+		)
+
 	size_details = get_size_details(size_value)
 	if not size_details:
-		size_details = parse_size(size_value)
+		frappe.throw(
+			_("Size Weight {0} linked to Finished Product Item {1} does not exist.").format(
+				frappe.bold(size_value), frappe.bold(finished_item)
+			)
+		)
+
+	if flt(size_details.get("factor")) <= 0:
+		frappe.throw(
+			_("Size Weight {0} must have a valid Weight Factor greater than zero.").format(
+				frappe.bold(size_value)
+			)
+		)
 
 	printing_type = derive_printing_type(
 		item.get("custom_product_type_design_category"),
@@ -115,17 +154,6 @@ def get_default_source_warehouse(item_code):
 		return None
 
 	return frappe.db.get_value("Item Default", {"parent": item_code}, "default_warehouse")
-
-
-def parse_size(size_value):
-	if not size_value:
-		return {}
-
-	match = re.search(r"(\d+(?:\.\d+)?)\s*(?:x|X|\*|×)\s*(\d+(?:\.\d+)?)", str(size_value))
-	if not match:
-		return {}
-
-	return {"thickness": flt(match.group(1)), "width": flt(match.group(2))}
 
 
 def derive_printing_type(product_type=None, finish=None, short_code=None):
@@ -290,9 +318,10 @@ def calculate_batch_allocations(doc, materials):
 	):
 		existing = [allocation_row_as_dict(row) for row in doc.get(table_field) or []]
 		force_refresh = bool(doc.get("_refresh_batch_allocations"))
-		if force_refresh and doc.get("status") in IMMUTABLE_BATCH_ALLOCATION_STATUSES:
-			frappe.throw(_("Batch allocations cannot be refreshed for a {0} production record.").format(doc.get("status")))
-		if doc.get("status") in LOCKED_BATCH_ALLOCATION_STATUSES and not force_refresh:
+		lifecycle_status = get_generator_lifecycle_status(doc)
+		if force_refresh and lifecycle_status in IMMUTABLE_BATCH_ALLOCATION_STATUSES:
+			frappe.throw(_("Batch allocations cannot be refreshed for a {0} production record.").format(lifecycle_status))
+		if lifecycle_status in LOCKED_BATCH_ALLOCATION_STATUSES and not force_refresh:
 			allocations[table_field] = existing
 			continue
 
@@ -835,10 +864,14 @@ def apply_item_configuration_defaults(doc):
 		return
 
 	config = get_finished_item_configuration(doc.get("finished_item"))
+	locked_weight_factor = get_locked_weight_factor(doc)
 	for fieldname, value in config.items():
 		if value in (None, ""):
 			continue
-		if fieldname in {"weight_factor", "printing_route", "extrusion_type", "slitting_requirement"} and doc.get(
+		if fieldname == "weight_factor":
+			set_doc_value(doc, fieldname, locked_weight_factor if locked_weight_factor is not None else value)
+			continue
+		if fieldname in {"printing_route", "extrusion_type", "slitting_requirement"} and doc.get(
 			fieldname
 		):
 			continue
@@ -847,6 +880,37 @@ def apply_item_configuration_defaults(doc):
 		if fieldname in {"thickness_mm", "width_mm"} and flt(doc.get(fieldname)):
 			continue
 		set_doc_value(doc, fieldname, value)
+
+
+def get_locked_weight_factor(doc):
+	"""Keep the stored factor once planning or production has started."""
+	persisted = get_persisted_generator_state(doc)
+	if not persisted:
+		return None
+
+	status = get_generator_lifecycle_status(persisted)
+	if status not in WEIGHT_FACTOR_LOCKED_STATUSES and persisted.get("status") not in WEIGHT_FACTOR_LOCKED_STATUSES:
+		return None
+
+	if flt(persisted.get("weight_factor")) <= 0:
+		frappe.throw(
+			_("The stored Weight Factor is missing for this production record; an authorized recalculation is required.")
+		)
+
+	return flt(persisted.get("weight_factor"))
+
+
+def get_persisted_generator_state(doc):
+	name = doc.get("name")
+	if not name:
+		return None
+
+	return frappe.db.get_value(
+		"Final EB BOM Generator",
+		name,
+		["status", "production_status", "weight_factor"],
+		as_dict=True,
+	)
 
 
 def apply_process_defaults(doc):
@@ -869,8 +933,9 @@ def set_doc_value(doc, fieldname, value):
 
 
 def get_status(doc, difference, materials, missing_consumables, route_warnings):
-	if doc.get("status") in {"Partially Planned", "Planned", "In Production", "Completed", "On Hold", "Cancelled"}:
-		return doc.get("status")
+	lifecycle_status = get_generator_lifecycle_status(doc)
+	if lifecycle_status in {"Partially Planned", "Planned", "In Production", "Completed", "On Hold", "Cancelled"}:
+		return lifecycle_status
 	if any(flt(row.get("shortage_qty")) < 0 for row in materials):
 		return "Draft"
 	if route_warnings:
@@ -881,6 +946,20 @@ def get_status(doc, difference, materials, missing_consumables, route_warnings):
 		return "Draft"
 	if doc.get("finished_item") and doc.get("compound_item") and doc.get("base_colour_item") and doc.get("selected_route"):
 		return "Ready for Planning"
+	return "Draft"
+
+
+def get_generator_lifecycle_status(doc):
+	"""Return the preserved production lifecycle status.
+
+	The visible ``status`` field is the persisted Material Workflow status. Older
+	records may not be reconciled yet, so fall back to its legacy value.
+	"""
+	production_status = doc.get("production_status")
+	if production_status in GENERATOR_LIFECYCLE_STATUSES:
+		return production_status
+	if doc.get("status") in GENERATOR_LIFECYCLE_STATUSES:
+		return doc.get("status")
 	return "Draft"
 
 
@@ -925,11 +1004,12 @@ def apply_preview_to_doc(doc, preview):
 		"total_production_cost",
 		"cost_per_meter",
 		"warnings",
-		"status",
 		"selected_route",
 	):
 		if doc.meta.has_field(fieldname):
 			doc.set(fieldname, preview.get(fieldname))
+	if doc.meta.has_field("production_status"):
+		doc.set("production_status", preview.get("status"))
 
 	doc.set("material_preview", [])
 	for row in preview.get("materials") or []:
@@ -1065,9 +1145,11 @@ def send_generator_to_planning(doc):
 		}
 
 	preview = validate_ready_for_planning(doc)
-	doc.status = "Ready for Planning"
+	doc.production_status = "Ready for Planning"
 	doc.save()
 	entries = create_planning_entries(doc)
+	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+	refresh_material_readiness(doc.name)
 	return {"status": doc.status, "entries": entries, "already_sent": False, **preview}
 
 

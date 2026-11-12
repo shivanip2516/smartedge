@@ -4,6 +4,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from smart_edge_custom.manufacturing.final_bom_generator import get_generator_lifecycle_status
+
 
 ACTIVE_COVERAGE_STATUSES = (
 	"Draft",
@@ -154,13 +156,13 @@ def get_existing_coverage(sales_order):
 	rows = frappe.get_all(
 		"Final EB BOM Generator",
 		filters={"sales_order": sales_order},
-		fields=["name", "sales_order_item", "production_quantity", "status", "finished_item"],
+		fields=["name", "sales_order_item", "production_quantity", "status", "production_status", "finished_item"],
 		order_by="creation asc",
 		limit_page_length=1000,
 	)
 	coverage = defaultdict(float)
 	for row in rows:
-		if row.status in ACTIVE_COVERAGE_STATUSES and row.sales_order_item:
+		if get_generator_lifecycle_status(row) in ACTIVE_COVERAGE_STATUSES and row.sales_order_item:
 			coverage[row.sales_order_item] += flt(row.production_quantity)
 	return coverage, rows
 

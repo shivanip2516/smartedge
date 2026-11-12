@@ -103,8 +103,46 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		this.$board_scroll = $(`<div class="smartedge-board-scroll"></div>`).appendTo(this.$board_container);
 		this.$board_container.on("scroll", () => this.close_card_menus());
 		this.$board_scroll.on("scroll", () => this.close_card_menus());
+		this.$board_scroll.on("wheel.smartedgePlanning", (event) => this.handle_board_wheel(event));
 		this.$board = $(`<div class="smartedge-week-board se-board"></div>`).appendTo(this.$board_scroll);
 		this.make_filters();
+	}
+
+	handle_board_wheel(event) {
+		const native_event = event.originalEvent;
+		const board = this.$board_scroll && this.$board_scroll[0];
+		if (!native_event || !board) {
+			return;
+		}
+
+		const inside_column_body = $(event.target).closest(".day-drop-zone").length > 0;
+		const delta_x = native_event.deltaX || 0;
+		const delta_y = native_event.deltaY || 0;
+		let horizontal_delta = 0;
+
+		if (native_event.shiftKey) {
+			horizontal_delta = Math.abs(delta_x) >= Math.abs(delta_y) ? delta_x : delta_y;
+		} else if (delta_x && (!inside_column_body || Math.abs(delta_x) > Math.abs(delta_y))) {
+			horizontal_delta = delta_x;
+		} else if (!inside_column_body && delta_y) {
+			horizontal_delta = delta_y;
+		}
+
+		if (!horizontal_delta) {
+			return;
+		}
+
+		const max_scroll_left = board.scrollWidth - board.clientWidth;
+		const next_scroll_left = Math.max(
+			0,
+			Math.min(max_scroll_left, board.scrollLeft + horizontal_delta)
+		);
+		if (next_scroll_left === board.scrollLeft) {
+			return;
+		}
+
+		event.preventDefault();
+		board.scrollLeft = next_scroll_left;
 	}
 
 	make_filters() {
@@ -757,12 +795,25 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				workstation: args.workstation,
 				planned_start: args.planned_start,
 				duration_hours: args.duration_hours,
+				override_capacity: args.override_capacity,
 			},
 			error_handlers: get_planning_error_handlers(),
 		});
 		const projection = response.message || {};
 		if (flt(projection.planned_hours) > 0) {
 			args.duration_hours = flt(projection.planned_hours);
+		}
+		if (
+			projection.status === "duration_insufficient"
+			|| (projection.working_hours_status && projection.working_hours_status !== "ok")
+			|| projection.scheduling_conflict_blocked
+		) {
+			frappe.msgprint({
+				title: __("Invalid Workstation Schedule"),
+				indicator: "red",
+				message: capacity_summary_html(projection),
+			});
+			return false;
 		}
 		if (projection.status === "not_configured") {
 			const proceed = await this.show_capacity_decision(
@@ -784,6 +835,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			if (!proceed) return false;
 		}
 		if (projection.requires_confirmation) {
+			if (!args.override_capacity) {
+				await this.show_capacity_decision(
+					__("Workstation Capacity Overload"),
+					`${capacity_projection_html(projection)}<p>${__("Enable Override capacity warning only if you have authorization to continue.")}</p>`,
+					false
+				);
+				return false;
+			}
 			if (!projection.can_confirm || !projection.confirmation_token) {
 				frappe.msgprint({
 					title: __("Workstation Capacity Overload"),
@@ -1110,14 +1169,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		if (!workstations.length) {
 			frappe.throw(__("No compatible Workstation found for Operation {0}.", [card.operation]));
 		}
-		const default_start = get_time_from_datetime(card.planned_start) || "09:00";
+		const site_now = get_schedule_site_now();
+		const has_saved_schedule = Boolean(card.planned_date);
+		const default_date = has_saved_schedule ? card.planned_date : site_now.date;
+		const default_start = has_saved_schedule
+			? normalize_schedule_time(get_schedule_time_from_datetime(card.planned_start)) || site_now.time
+			: site_now.time;
 		const default_duration = card.duration_hours || 1;
 		const workstation_editable = !card.workstation || can_change_workstation(card);
 		const dialog = new frappe.ui.Dialog({
 			title: changing_workstation ? __("Change Workstation") : __("Plan Operation"),
 			fields: [
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
-				{ fieldtype: "Date", fieldname: "planned_date", label: __("Date"), reqd: 1, default: date_key },
+				{ fieldtype: "Date", fieldname: "planned_date", label: __("Date"), reqd: 1, default: default_date },
 				{
 					fieldtype: "Select",
 					fieldname: "workstation",
@@ -1141,7 +1205,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					label: __("Planned End"),
 					read_only: 1,
 				},
+				{ fieldtype: "HTML", fieldname: "capacity_summary", options: "" },
 				{ fieldtype: "Check", fieldname: "override_sequence", label: __("Override sequence warning") },
+				{ fieldtype: "Check", fieldname: "override_capacity", label: __("Override capacity warning") },
 			],
 			primary_action_label: __("Schedule"),
 			primary_action: async (values) => {
@@ -1154,6 +1220,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							duration_hours: values.duration_hours,
 							priority: card.priority,
 							override_sequence: values.override_sequence,
+							override_capacity: values.override_capacity,
 				});
 				if (!scheduled) return;
 				dialog.hide();
@@ -1172,6 +1239,42 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		dialog.fields_dict.planned_start.$input?.on("change", update_end);
 		dialog.fields_dict.duration_hours.$input?.on("change", update_end);
 		update_end();
+		let capacity_request = 0;
+		const refresh_capacity_summary = frappe.utils.debounce(async () => {
+			const request_id = ++capacity_request;
+			const values = dialog.get_values(true) || {};
+			try {
+				const response = await frappe.call({
+					method: `${this.method}.check_schedule_capacity`,
+					args: {
+						plan_entry: card.id,
+						planned_date: values.planned_date,
+						workstation: values.workstation,
+						planned_start: normalize_schedule_time(values.planned_start),
+						duration_hours: values.duration_hours,
+						override_capacity: values.override_capacity,
+					},
+				});
+				if (request_id !== capacity_request) return;
+				dialog.fields_dict.capacity_summary.$wrapper.html(capacity_summary_html(response.message || {}));
+			} catch (error) {
+				if (request_id !== capacity_request) return;
+				dialog.fields_dict.capacity_summary.$wrapper.html(
+					`<p class="text-danger">${frappe.utils.escape_html(error?.message || __("Capacity could not be calculated."))}</p>`
+				);
+			}
+		}, 180);
+		for (const fieldname of ["planned_date", "workstation", "planned_start", "duration_hours", "override_capacity"]) {
+			const field = dialog.fields_dict[fieldname];
+			if (!field) continue;
+			const existing_onchange = field.df.onchange;
+			field.df.onchange = function (...args) {
+				if (typeof existing_onchange === "function") existing_onchange.apply(this, args);
+				refresh_capacity_summary();
+			};
+			field.$input?.on("input change", refresh_capacity_summary);
+		}
+		refresh_capacity_summary();
 	}
 
 	async unplan(card) {
@@ -1250,7 +1353,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
 				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
 				{ fieldtype: "Link", fieldname: "target_warehouse", label: __("Target Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.target_warehouse },
-				{ fieldtype: "Section Break", label: card.is_qc ? __("Operation and QC Employee") : __("Operation and Planner") },
+				{ fieldtype: "Section Break", label: card.is_qc ? __("Operation and QC Employee") : __("Operation and Operator") },
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{
 					fieldtype: "Link",
@@ -1276,11 +1379,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					reqd: 1,
 					default: card.is_qc ? context.operator_employee : context.planner_user,
 					read_only: !card.is_qc,
-					description: !card.is_qc && context.planner_user
-						? context.planner_name && context.planner_name !== context.planner_user
-							? __("{0} ({1})", [context.planner_name, context.planner_user])
-							: context.planner_user
-						: "",
+					hidden: !card.is_qc,
 					get_query: () => {
 						if (card.is_qc) {
 							const filters = { status: "Active" };
@@ -1291,6 +1390,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						}
 						return {};
 					},
+				},
+				{
+					fieldtype: "Data",
+					fieldname: "operator_display_name",
+					label: __("Operator"),
+					read_only: 1,
+					hidden: card.is_qc,
+					default: context.planner_name || context.planner_user || "",
 				},
 				{
 					fieldtype: "Link",
@@ -1427,11 +1534,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const meter_label = is_material ? __("Completed Batches") : __("Actual Completed Qty") + " (m)";
 		const output_uom = is_material ? (context.quantity_uom || "") : "m";
 		const output_label = (label) => `${__(label)}${output_uom ? ` (${frappe.utils.escape_html(output_uom)})` : ""}`;
-		const scrap_uom = context.scrap_uom || output_uom;
-		const scrap_label = (label) => `${__(label)}${scrap_uom ? ` (${frappe.utils.escape_html(scrap_uom)})` : ""}`;
+		const scrap_uom = context.usable_scrap_uom || context.scrap_uom || output_uom;
 		const unusable_scrap_uom = context.unusable_scrap_uom || scrap_uom;
-		const unusable_scrap_label = (label) => `${__(label)}${unusable_scrap_uom ? ` (${frappe.utils.escape_html(unusable_scrap_uom)})` : ""}`;
+		const uom_options = (values, fallback) => {
+			const options = Array.from(new Set([...(values || []), fallback].filter(Boolean)));
+			return options.join("\n");
+		};
 		const kg_required = flt(context.planned_qty_kg) > 0;
+		const quantity_calculation_enabled = is_material || kg_required;
 		let completing = false;
 		let verified_qr = null;
 		const dialog = new frappe.ui.Dialog({
@@ -1478,14 +1588,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					default: "Full Completion",
 				},
 				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || context.planned_qty_meter || card.qty || 0 },
-				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, read_only: is_material, default: context.actual_qty_kg || context.planned_qty_kg || card.planned_weight_kg || 0 },
+				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: context.actual_qty_kg || context.planned_qty_kg || card.planned_weight_kg || 0 },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "good_qty", label: output_label("Good Output"), precision: 6, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
-				{ fieldtype: "Float", fieldname: "rejected_qty", label: output_label("Rejected Output"), precision: 6, default: context.rejected_qty || 0 },
-				{ fieldtype: "Float", fieldname: "rework_qty", label: output_label("Rework"), precision: 6, default: context.rework_qty || 0 },
+				{ fieldtype: "Float", fieldname: "good_qty", label: output_label("Good Output"), precision: 6, hidden: quantity_calculation_enabled, read_only: 1, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
+				{ fieldtype: "Float", fieldname: "good_qty_kg", label: __("Good Output (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, read_only: 1, default: context.good_qty_kg || context.actual_qty_kg || 0 },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: output_label("Rejected Output"), precision: 6, hidden: quantity_calculation_enabled, default: context.rejected_qty || 0 },
+				{ fieldtype: "Float", fieldname: "rejected_qty_kg", label: __("Rejected Output (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, default: context.rejected_qty_kg || 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: output_label("Rework"), precision: 6, hidden: quantity_calculation_enabled, default: context.rework_qty || 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty_kg", label: __("Rework (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, default: context.rework_qty_kg || 0 },
 				{ fieldtype: "Section Break" },
-				{ fieldtype: "Float", fieldname: "usable_scrap", label: scrap_label("Usable Scrap"), precision: 6, default: context.usable_scrap || 0 },
-				{ fieldtype: "Float", fieldname: "unusable_scrap", label: unusable_scrap_label("Unusable Scrap"), precision: 6, default: context.unusable_scrap || 0 },
+				{ fieldtype: "Float", fieldname: "usable_scrap", label: __("Usable Scrap"), precision: 6, hidden: !quantity_calculation_enabled, default: context.usable_scrap || 0 },
+				{ fieldtype: "Select", fieldname: "usable_scrap_uom", label: __("Usable Scrap UOM"), hidden: !quantity_calculation_enabled, options: uom_options(context.usable_scrap_uom_options, scrap_uom), default: scrap_uom },
+				{ fieldtype: "Float", fieldname: "unusable_scrap", label: __("Unusable Scrap"), precision: 6, hidden: !quantity_calculation_enabled, default: context.unusable_scrap || 0 },
+				{ fieldtype: "Select", fieldname: "unusable_scrap_uom", label: __("Unusable Scrap UOM"), hidden: !quantity_calculation_enabled, options: uom_options(context.unusable_scrap_uom_options, unusable_scrap_uom), default: unusable_scrap_uom },
 				{ fieldtype: "Small Text", fieldname: "remarks", label: __("Remarks"), default: context.remarks || "" },
 			],
 			primary_action_label: __("Confirm Completion"),
@@ -1509,7 +1624,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					if (context.packing_qr_required) {
 						await verify_input_qr(values.actual_qty_meter);
 					}
-					await frappe.call({
+					const completion_args = {
 						method: `${this.method}.complete_production_job`,
 						args: {
 							plan_entry: card.id,
@@ -1523,7 +1638,17 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							unusable_scrap: values.unusable_scrap,
 							remarks: values.remarks,
 						},
-					});
+					};
+					if (quantity_calculation_enabled) {
+						Object.assign(completion_args.args, {
+							good_qty_kg: values.good_qty_kg,
+							rejected_qty_kg: values.rejected_qty_kg,
+							rework_qty_kg: values.rework_qty_kg,
+							usable_scrap_uom: values.usable_scrap_uom,
+							unusable_scrap_uom: values.unusable_scrap_uom,
+						});
+					}
+					await frappe.call(completion_args);
 					dialog.hide();
 					await this.refresh();
 				} finally {
@@ -1562,6 +1687,52 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			return verified_qr;
 		};
 		dialog.show();
+		let completion_quantity_request = 0;
+		const set_completion_quantity_message = (message, indicator = "muted") => {
+			const $help = dialog.fields_dict.good_qty_kg?.$wrapper?.find(".help-box");
+			if ($help?.length) {
+				$help.attr("class", `help-box text-${indicator}`).text(message || "");
+			}
+		};
+		const refresh_completion_quantities = frappe.utils.debounce(async (request_id) => {
+			const values = dialog.get_values() || {};
+			try {
+				const response = await frappe.call({
+					method: `${this.method}.calculate_completion_quantities`,
+					args: {
+						plan_entry: card.id,
+						actual_qty_kg: values.actual_qty_kg,
+						rejected_qty_kg: values.rejected_qty_kg,
+						rework_qty_kg: values.rework_qty_kg,
+						usable_scrap: values.usable_scrap,
+						usable_scrap_uom: values.usable_scrap_uom,
+						unusable_scrap: values.unusable_scrap,
+						unusable_scrap_uom: values.unusable_scrap_uom,
+					},
+				});
+				if (request_id !== completion_quantity_request) return;
+				const result = response.message || {};
+				dialog.set_value("good_qty_kg", result.good_qty_kg || 0);
+				dialog.set_value("good_qty", result.good_qty || 0);
+				set_completion_quantity_message(__("Calculated from Actual Completed Quantity and entered loss quantities."));
+			} catch (error) {
+				if (request_id !== completion_quantity_request) return;
+				dialog.set_value("good_qty_kg", 0);
+				set_completion_quantity_message(error?.message || __("Enter valid scrap UOMs configured for their Items."), "danger");
+			}
+		}, 180);
+		const schedule_completion_refresh = () => refresh_completion_quantities(++completion_quantity_request);
+		if (quantity_calculation_enabled) {
+			for (const fieldname of [
+				"actual_qty_kg", "rejected_qty_kg", "rework_qty_kg", "usable_scrap", "usable_scrap_uom", "unusable_scrap", "unusable_scrap_uom",
+			]) {
+				const field = dialog.fields_dict[fieldname];
+				if (!field) continue;
+				field.df.onchange = schedule_completion_refresh;
+				field.$input?.on("input change", schedule_completion_refresh);
+			}
+			schedule_completion_refresh();
+		}
 		if (context.packing_qr_required) {
 			const qr_input = dialog.fields_dict.packing_qr?.$input;
 			qr_input?.on("input", () => {
@@ -1609,15 +1780,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				dialog.fields_dict[fieldname].df.onchange = refresh_batch_preview;
 				dialog.fields_dict[fieldname].$input?.on("change", refresh_batch_preview);
 			}
-		}
-		if (is_material) {
-			const update_material_quantity = () => {
-				const batches = cint(dialog.get_value("actual_qty_meter"));
-				dialog.set_value("actual_qty_kg", flt(batches * flt(context.weight_per_batch), 6));
-			};
-			dialog.fields_dict.actual_qty_meter.df.onchange = update_material_quantity;
-			dialog.fields_dict.actual_qty_meter.$input?.on("change", update_material_quantity);
-			update_material_quantity();
 		}
 		if (dialog.set_secondary_action_label && dialog.set_secondary_action) {
 			dialog.set_secondary_action_label(__("Cancel"));
@@ -1947,9 +2109,13 @@ function se_format_number(value, precision) {
 
 function get_invalid_completion_output(values = {}) {
 	const fields = {
+		actual_qty_kg: "Actual Completed Quantity (Kg)",
 		good_qty: "Good Output",
+		good_qty_kg: "Good Output (Kg)",
 		rejected_qty: "Rejected Output",
+		rejected_qty_kg: "Rejected Output (Kg)",
 		rework_qty: "Rework",
+		rework_qty_kg: "Rework (Kg)",
 		usable_scrap: "Usable Scrap",
 		unusable_scrap: "Unusable Scrap",
 	};
@@ -1960,10 +2126,22 @@ function get_invalid_completion_output(values = {}) {
 	return null;
 }
 
-function get_time_from_datetime(value) {
+function get_schedule_site_now() {
+	const value = frappe.datetime.system_datetime();
+	return {
+		date: value.slice(0, 10),
+		time: normalize_schedule_time(value.slice(11, 19)),
+	};
+}
+
+function get_schedule_time_from_datetime(value) {
 	if (!value) return "";
-	const parts = String(value).split(" ");
-	return (parts[1] || parts[0] || "").slice(0, 5);
+	const parts = String(value).trim().split(/[ T]/);
+	return parts[parts.length - 1] || "";
+}
+
+function get_time_from_datetime(value) {
+	return get_schedule_time_from_datetime(value).slice(0, 5);
 }
 
 function get_planned_time_label(card) {
@@ -2141,6 +2319,107 @@ function capacity_projection_html(projection = {}) {
 	</table></div><p>${__("Do you want to continue scheduling this operation despite the overload?")}</p>`;
 }
 
+function capacity_summary_html(projection = {}) {
+	if (
+		!projection
+		|| (projection.status === "not_applicable" && !projection.working_hours_status)
+	) return "";
+	const value_or_na = (value, suffix = "") =>
+		value === null || value === undefined || value === ""
+			? __("Not Available")
+			: `${se_format_number(value, 2)}${suffix ? ` ${suffix}` : ""}`;
+	const display_date = projection.planned_date && frappe.datetime?.str_to_user
+		? frappe.datetime.str_to_user(projection.planned_date)
+		: projection.planned_date;
+	const required_hours = value_or_na(projection.required_hours, __("Hours"));
+	const planned_hours = value_or_na(projection.planned_hours, __("Hours"));
+	const available_hours = value_or_na(projection.available_hours, __("Hours"));
+	const already_planned_hours = value_or_na(projection.already_planned_hours, __("Hours"));
+	const working_hours_status = projection.working_hours_status || "not_verified";
+	const scheduling_conflict = Boolean(projection.scheduling_conflict);
+	const scheduling_conflict_blocked = Boolean(projection.scheduling_conflict_blocked);
+	const conflict_operations = projection.conflicting_operations || [];
+	const conflicting_operation = projection.conflicting_operation
+		|| conflict_operations.map((conflict) => conflict.name).filter(Boolean).join(", ");
+	const conflicting_time_interval = projection.conflicting_time_interval
+		|| conflict_operations
+			.map((conflict) => [conflict.start, conflict.end].filter(Boolean).join(" – "))
+			.filter(Boolean)
+			.join(", ");
+	const working_status_labels = {
+		ok: __("Within Working Hours"),
+		before_open: __("Before Opening Hours"),
+		after_close: __("Working Hours Exceeded"),
+		outside_working_hours: __("Outside Working Hours"),
+		unavailable: __("Workstation Unavailable"),
+		not_configured: __("Working Hours Not Configured"),
+		not_verified: __("Not Verified"),
+	};
+	const remaining_hours =
+		!scheduling_conflict_blocked
+		&& working_hours_status === "ok"
+		&& projection.available_hours !== null && projection.available_hours !== undefined
+			&& projection.already_planned_hours !== null && projection.already_planned_hours !== undefined
+			? value_or_na(Math.max(flt(projection.available_hours) - flt(projection.already_planned_hours), 0), __("Hours"))
+			: scheduling_conflict_blocked
+				? __("Not Bookable")
+				: working_hours_status === "ok" ? __("Not Available") : __("Not Bookable");
+	const rate = projection.capacity_rate
+		? `${se_format_number(projection.capacity_rate, 2)} ${projection.capacity_uom || ""}`.trim()
+		: __("Not Configured");
+	const quantity = projection.planned_quantity
+		? `${se_format_number(projection.planned_quantity, 2)} ${projection.quantity_uom || ""}`.trim()
+		: __("Not Available");
+	const status_labels = {
+		ok: __("Within Capacity"),
+		overload: __("Capacity Exceeded"),
+		duration_insufficient: __("Duration Insufficient"),
+		not_configured: __("Not Configured"),
+		availability_not_configured: __("Availability Not Configured"),
+		schedule_not_configured: __("Schedule Not Configured"),
+	};
+	const status = status_labels[projection.status] || __("Not Verified");
+	const status_class = projection.status === "ok" ? "text-success" : "text-warning";
+	const scheduling_conflict_label = scheduling_conflict
+		? scheduling_conflict_blocked ? __("Yes — Scheduling Blocked") : __("Yes — Parallel Capacity")
+		: __("No");
+	const rows = [
+		[__("Workstation"), projection.workstation || "—"],
+		[__("Date / Shift"), [display_date, projection.shift || __("All Day")].filter(Boolean).join(" / ")],
+		[__("Planned Start"), projection.planned_start || __("Not Available")],
+		[__("Planned End"), projection.planned_end || __("Not Available")],
+		[__("Workstation Working Hours"), projection.working_hours || __("Not Configured")],
+		[__("Scheduling Conflict"), scheduling_conflict_label],
+		[__("Conflicting Operation"), conflicting_operation || "—"],
+		[__("Conflicting Time Interval"), conflicting_time_interval || "—"],
+		[__("Applicable Rate"), rate],
+		[__("Planned Quantity"), quantity],
+		[__("Required Duration"), required_hours],
+		[__("Expected Duration"), planned_hours],
+		[__("Available Machine Hours"), available_hours],
+		[__("Existing Scheduled Load"), already_planned_hours],
+		[__("Remaining Capacity"), remaining_hours],
+		[__("Capacity Status"), `<span class="${status_class}">${frappe.utils.escape_html(status)}</span>`],
+		[
+			__("Working-Hours Status"),
+			'<span class="' + (working_hours_status === "ok" ? "text-success" : "text-danger") + '">' +
+				frappe.utils.escape_html(working_status_labels[working_hours_status] || __("Not Verified")) +
+				"</span>",
+		],
+	];
+	const messages = [
+		projection.message,
+		working_hours_status !== "ok" && projection.working_hours_message,
+		scheduling_conflict && projection.scheduling_conflict_message,
+	].filter(Boolean);
+	const message = messages.length
+		? '<div class="text-warning mb-2">' + messages.map((value) => '<p class="mb-1">' + frappe.utils.escape_html(value) + '</p>').join("") + '</div>'
+		: "";
+	return `<div class="se-capacity-summary">${message}<div class="table-responsive"><table class="table table-bordered table-sm mb-0">
+		<tbody>${rows.map(([label, value]) => `<tr><th>${frappe.utils.escape_html(label)}</th><td>${typeof value === "string" && value.startsWith("<span") ? value : frappe.utils.escape_html(value)}</td></tr>`).join("")}</tbody>
+	</table></div></div>`;
+}
+
 function get_utilization_status(utilization) {
 	if (utilization === null || utilization === undefined) return "unknown";
 	if (flt(utilization) > 100) return "overloaded";
@@ -2168,15 +2447,23 @@ function compute_planned_end(start, duration_hours) {
 	if (!start || !duration_hours) return "";
 	const parts = String(start).split(":").map((part) => cint(part));
 	const date = new Date();
-	date.setHours(parts[0] || 0, parts[1] || 0, 0, 0);
+	date.setHours(parts[0] || 0, parts[1] || 0, parts[2] || 0, 0);
 	date.setMinutes(date.getMinutes() + flt(duration_hours) * 60);
-	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
 }
 
 function normalize_schedule_time(value) {
 	if (value === null || value === undefined || value === "") return value;
 	const time = String(value).trim();
-	return /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
+	const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time);
+	if (!match) return value;
+
+	const hours = Number(match[1]);
+	const minutes = Number(match[2]);
+	const seconds = Number(match[3] || 0);
+	if (hours > 23 || minutes > 59 || seconds > 59) return value;
+
+	return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
 function normalize_time_control(control) {
@@ -2224,7 +2511,7 @@ function get_material_shortage_payload(error) {
 }
 
 function set_schedule_date_limits(dialog, date_field, time_field) {
-	const today = frappe.datetime.get_today();
+	const today = get_schedule_site_now().date;
 	const date_input = dialog.fields_dict[date_field]?.$input;
 	date_input?.attr("min", today);
 	const update_time_min = () => {
@@ -2327,6 +2614,7 @@ if (typeof module !== "undefined" && module.exports) {
 		get_group_qc_status,
 		get_machine_capacity_labels,
 		capacity_projection_html,
+		capacity_summary_html,
 		get_utilization_status,
 		get_invalid_completion_output,
 		get_operation_display_label,

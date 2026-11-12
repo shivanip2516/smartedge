@@ -55,18 +55,33 @@ class TestItemValidation(FrappeTestCase):
 				}
 			).insert(ignore_permissions=True)
 
-	def test_standard_erpnext_item_does_not_require_smartedge_fields(self):
+	def test_non_excluded_item_group_requires_smartedge_fields(self):
 		item = self._new_item("TEST-STANDARD-ERPNext-ITEM", "Services")
-		item.insert(ignore_permissions=True)
-		self.assertTrue(item.name)
+
+		with self.assertRaisesRegex(
+			frappe.ValidationError,
+			"Size, Color, Product Category, Product Type / Design Category, Type / Finish",
+		):
+			item.insert(ignore_permissions=True)
 
 	def test_smartedge_finished_product_requires_dynamic_fields(self):
 		item = self._new_item("TEST-SMARTEDGE-INCOMPLETE", "Products")
 
 		with self.assertRaisesRegex(
 			frappe.ValidationError,
-			"Size, Type Short Code, Color, HSN/SAC",
+			"Size, Color, Product Category, Product Type / Design Category, Type / Finish",
 		):
+			item.insert(ignore_permissions=True)
+
+	def test_non_excluded_item_group_requires_hsn_code(self):
+		item = self._new_item("TEST-SMARTEDGE-MISSING-HSN", "Products")
+		item.custom_size = "TEST-ITEM-SIZE"
+		item.custom_color = "TEST-ITEM-COLOR"
+		item.custom_product_category = "SS"
+		item.custom_product_type_design_category = "Solid"
+		item.custom_type_finish = "TEST-ITEM-FINISH"
+
+		with self.assertRaisesRegex(frappe.ValidationError, "HSN/SAC"):
 			item.insert(ignore_permissions=True)
 
 	def test_material_item_groups_are_exempt(self):
@@ -79,6 +94,8 @@ class TestItemValidation(FrappeTestCase):
 		item = self._new_item("TEST-SMARTEDGE-VALID", "Products")
 		item.custom_size = "TEST-ITEM-SIZE"
 		item.custom_color = "TEST-ITEM-COLOR"
+		item.custom_product_category = "SS"
+		item.custom_product_type_design_category = "Solid"
 		item.custom_type_finish = "TEST-ITEM-FINISH"
 		item.gst_hsn_code = "39169090"
 		item.insert(ignore_permissions=True)

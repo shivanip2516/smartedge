@@ -22,6 +22,7 @@
   "weight_per_meter_kg",
   "fp_col_2",
   "status",
+  "production_status",
   "final_manufacturing_stock_entry",
   "final_stock_posted_qty",
   "custom_product_type_design_category",
@@ -123,6 +124,14 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
+   "options": "Draft\nMaterial Configuration Pending\nMaterial Production In Progress\nMaterial Production Planned\nReady to Send to Planning\nSent to Planning\nMaterials Produced\nProduction Completed\nReady for Planning\nPartially Planned\nPlanned\nIn Production\nCompleted\nOn Hold\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "production_status",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Production Lifecycle Status",
    "options": "Draft\nReady for Planning\nPartially Planned\nPlanned\nIn Production\nCompleted\nOn Hold\nCancelled",
    "read_only": 1
   },
@@ -287,11 +296,11 @@
    "precision": "3"
   },
   {
-   "default": "1.5",
    "fieldname": "weight_factor",
    "fieldtype": "Float",
    "label": "Weight Factor",
    "precision": "4",
+   "read_only": 1,
    "reqd": 1
   },
   {

@@ -7,12 +7,17 @@ from smart_edge_custom.manufacturing.final_bom_generator import (
 	apply_process_defaults,
 	apply_preview_to_doc,
 	calculate_bom_preview,
+	get_generator_lifecycle_status,
 	send_generator_to_planning,
 	validate_prepared_item,
 )
 
 
 class FinalEBBOMGenerator(Document):
+	def before_validate(self):
+		if not self.production_status:
+			self.production_status = get_generator_lifecycle_status(self)
+
 	def before_insert(self):
 		if not self.company:
 			self.company = (

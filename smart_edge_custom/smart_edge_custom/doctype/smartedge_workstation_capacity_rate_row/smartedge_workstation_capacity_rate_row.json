@@ -5,9 +5,9 @@
  "istable": 1,
  "editable_grid": 1,
  "fields": [
-  {"fieldname":"product_size","fieldtype":"Link","label":"Product Size","options":"Size Weight","reqd":1},
-  {"fieldname":"capacity_rate","fieldtype":"Float","label":"Capacity Rate","precision":"6","reqd":1,"non_negative":1},
-  {"fieldname":"capacity_uom","fieldtype":"Select","label":"Capacity Unit","options":"Kg/Hour\nMeter/Hour","reqd":1}
+  {"fieldname":"product_size","fieldtype":"Link","label":"Product Size","options":"Size Weight","reqd":1,"in_list_view":1},
+  {"fieldname":"capacity_rate","fieldtype":"Float","label":"Capacity Rate","precision":"6","reqd":1,"non_negative":1,"in_list_view":1},
+  {"fieldname":"capacity_uom","fieldtype":"Select","label":"Capacity Unit","options":"Kg/Hour\nMeter/Hour","reqd":1,"in_list_view":1}
  ],
  "permissions": []
 }

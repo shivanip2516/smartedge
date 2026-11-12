@@ -15,6 +15,7 @@ from smart_edge_custom.manufacturing.fifo_batch_selection import get_fifo_batch_
 from smart_edge_custom.manufacturing.final_bom_generator import (
 	convert_stock_qty_to_kg,
 	get_prepared_component_batch_weight,
+	get_generator_lifecycle_status,
 )
 
 MATERIAL_PLAN_TYPE = "Required Material"
@@ -112,7 +113,7 @@ def get_material_workflow_status(doc, requirements, released_to_planning=False):
 
 
 def has_valid_final_manufacturing_completion(doc):
-	if doc.get("status") != "Completed":
+	if get_generator_lifecycle_status(doc) != "Completed":
 		return False
 	stock_entry = doc.get("final_manufacturing_stock_entry")
 	posted_qty = flt(doc.get("final_stock_posted_qty"))
@@ -969,7 +970,12 @@ def refresh_material_readiness(production):
 	# Readiness refreshes run from Stock Entry and Production Job hooks. They only
 	# need quantities/statuses and must not acquire Workstation read permissions.
 	context = build_material_planning_context(doc, include_planning_details=False)
-	updates = {"material_readiness_status": context["overall_status"]}
+	lifecycle_status = get_generator_lifecycle_status(doc)
+	updates = {
+		"material_readiness_status": context["overall_status"],
+		"production_status": lifecycle_status,
+		"status": "Cancelled" if lifecycle_status == "Cancelled" else context["workflow_status"],
+	}
 	for requirement in context["requirements"]:
 		config = MATERIAL_CONFIG[requirement["material_type"]]
 		updates.update(

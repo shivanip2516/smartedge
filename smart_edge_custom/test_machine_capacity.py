@@ -1,10 +1,11 @@
 from datetime import date, datetime, time
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 
 from smart_edge_custom.manufacturing import machine_capacity as capacity
+from smart_edge_custom.manufacturing import planning
 from smart_edge_custom.smart_edge_custom.doctype.smartedge_workstation_capacity_rate import (
 	smartedge_workstation_capacity_rate as capacity_rate_config,
 )
@@ -173,6 +174,285 @@ class TestMachineCapacityMatching(TestCase):
 
 
 class TestMachineCapacityIntervals(TestCase):
+	@patch.object(capacity, "get_downtime_intervals", return_value=[])
+	@patch.object(
+		capacity,
+		"get_workstation_schedule",
+		return_value=(
+			[(datetime(2026, 11, 4, 9), datetime(2026, 11, 4, 19))],
+			True,
+			None,
+			False,
+		),
+	)
+	def test_time_window_must_fit_inside_workstation_hours(self, _get_schedule, _get_downtime):
+		valid = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "09:00:00", 2
+		)
+		before_open = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "08:00:00", 2
+		)
+		after_close = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "18:00:00", 2
+		)
+		duration_warning_only = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "15:42:55", 3
+		)
+		duration_and_working_hours_failure = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "15:42:55", 4.35
+		)
+		self.assertEqual(valid["status"], "ok")
+		self.assertEqual(before_open["status"], "before_open")
+		self.assertEqual(after_close["status"], "after_close")
+		self.assertEqual(duration_warning_only["status"], "ok")
+		self.assertEqual(duration_and_working_hours_failure["status"], "after_close")
+		self.assertEqual(duration_and_working_hours_failure["planned_end"], "20:03:55")
+
+	@patch.object(capacity, "get_downtime_intervals", return_value=[])
+	@patch.object(capacity, "get_workstation_schedule")
+	def test_time_window_cannot_cross_a_working_hours_break(self, get_schedule, _get_downtime):
+		def schedule(_workstation, date_value):
+			if date_value == date(2026, 11, 4):
+				return (
+					[
+						(datetime(2026, 11, 4, 9), datetime(2026, 11, 4, 13)),
+						(datetime(2026, 11, 4, 14), datetime(2026, 11, 4, 19)),
+					],
+					True,
+					None,
+					False,
+				)
+			return [], True, None, False
+
+		get_schedule.side_effect = schedule
+		result = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "12:00:00", 3
+		)
+		self.assertEqual(result["status"], "outside_working_hours")
+		break_start = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "13:30:00", 0.5
+		)
+		self.assertEqual(break_start["status"], "outside_working_hours")
+
+	@patch.object(capacity, "get_downtime_intervals", return_value=[])
+	@patch.object(capacity, "get_workstation_schedule")
+	def test_overnight_working_hours_are_date_aware(self, get_schedule, _get_downtime):
+		def schedule(_workstation, date_value):
+			if date_value == date(2026, 11, 4):
+				return (
+					[(datetime(2026, 11, 4, 22), datetime(2026, 11, 5, 6))],
+					True,
+					None,
+					False,
+				)
+			return [], True, None, False
+
+		get_schedule.side_effect = schedule
+		result = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "23:00:00", 2
+		)
+		self.assertEqual(result["status"], "ok")
+
+	@patch.object(capacity, "get_downtime_intervals", return_value=[])
+	@patch.object(capacity, "get_workstation_schedule")
+	def test_holiday_makes_workstation_unavailable(self, get_schedule, _get_downtime):
+		def schedule(_workstation, date_value):
+			if date_value == date(2026, 11, 4):
+				return [], True, "Workstation holiday.", True
+			return [], True, None, False
+
+		get_schedule.side_effect = schedule
+		result = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "09:00:00", 2
+		)
+		self.assertEqual(result["status"], "unavailable")
+
+	@patch.object(capacity, "get_downtime_intervals", return_value=[])
+	@patch.object(capacity, "get_workstation_schedule")
+	def test_overnight_interval_cannot_cross_into_a_holiday(self, get_schedule, _get_downtime):
+		def schedule(_workstation, date_value):
+			if date_value == date(2026, 11, 4):
+				return (
+					[(datetime(2026, 11, 4, 22), datetime(2026, 11, 5, 6))],
+					True,
+					None,
+					False,
+				)
+			if date_value == date(2026, 11, 5):
+				return [], True, "Workstation holiday.", True
+			return [], True, None, False
+
+		get_schedule.side_effect = schedule
+		result = capacity.validate_workstation_time_window(
+			"Extruder-1", date(2026, 11, 4), "23:00:00", 2
+		)
+		self.assertEqual(result["status"], "unavailable")
+
+	def test_capacity_override_does_not_bypass_working_hours(self):
+		entry = MagicMock()
+		entry.name = "PLAN-1"
+		entry.workstation = "Extruder-1"
+		entry.get.side_effect = lambda fieldname: {
+			"workstation": entry.workstation,
+			"planned_shift": None,
+		}.get(fieldname)
+		with (
+			patch.object(planning.frappe, "get_doc", return_value=entry),
+			patch.object(planning, "lock_plan_entry"),
+			patch.object(planning, "lock_workstation"),
+			patch.object(planning, "validate_plan_entry"),
+			patch.object(planning, "validate_workstation_reassignment_allowed"),
+			patch.object(planning, "validate_material_plan_released"),
+			patch.object(planning, "validate_material_scheduling_context"),
+			patch.object(planning, "validate_selected_workstation"),
+			patch.object(planning, "get_schedule_capacity_projection", return_value={"status": "overload"}),
+			patch.object(
+				planning,
+				"get_working_hours_projection",
+				return_value={
+					"working_hours_status": "after_close",
+					"working_hours_message": "The proposed operation is outside working hours.",
+				},
+			),
+			patch.object(
+				planning,
+				"get_workstation_booking_conflict_projection",
+				return_value={
+					"scheduling_conflict_blocked": 0,
+				},
+			),
+			patch.object(planning, "can_confirm_capacity_overload", return_value=True) as can_override,
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "outside working hours"):
+				planning.schedule_operation(
+					plan_entry="PLAN-1",
+					planned_date=date(2026, 11, 4),
+					workstation="Extruder-1",
+					planned_start="18:00:00",
+					duration_hours=2,
+					override_capacity=1,
+				)
+		can_override.assert_not_called()
+
+	@staticmethod
+	def _plan_booking(name="PLAN-OLD", start=datetime(2026, 11, 4, 9), end=datetime(2026, 11, 4, 15), status="Planned"):
+		return frappe._dict(
+			name=name,
+			work_order=None,
+			operation="Extrusion",
+			status=status,
+			planned_start_datetime=start,
+			planned_end_datetime=end,
+		)
+
+	def test_workstation_overlap_rule_allows_adjacent_slots_and_excludes_self(self):
+		booking = self._plan_booking()
+		with patch.object(
+			planning.frappe,
+			"get_all",
+			side_effect=lambda doctype, **kwargs: [booking]
+			if doctype == "SmartEdge Production Plan Entry"
+			else [],
+		):
+			self.assertEqual(
+				len(
+					planning.get_overlapping_entries(
+						"Extruder-1", datetime(2026, 11, 4, 11), datetime(2026, 11, 4, 13)
+					)
+				),
+				1,
+			)
+			self.assertEqual(
+				planning.get_overlapping_entries(
+					"Extruder-1", datetime(2026, 11, 4, 15), datetime(2026, 11, 4, 17)
+				),
+				[],
+			)
+			self.assertEqual(
+				planning.get_overlapping_entries(
+					"Extruder-1", datetime(2026, 11, 4, 11), datetime(2026, 11, 4, 13), "PLAN-OLD"
+				),
+				[],
+			)
+
+	def test_workstation_overlap_uses_active_statuses_and_full_datetimes(self):
+		booking = self._plan_booking(
+			name="PLAN-READY",
+			start=datetime(2026, 11, 4, 23, 30),
+			end=datetime(2026, 11, 5, 1, 30),
+			status="Ready",
+		)
+		captured = {}
+
+		def get_all(doctype, **kwargs):
+			if doctype == "SmartEdge Production Plan Entry":
+				captured.update(kwargs)
+				return [booking]
+			return []
+
+		with patch.object(planning.frappe, "get_all", side_effect=get_all):
+			conflicts = planning.get_overlapping_entries(
+				"Extruder-1", datetime(2026, 11, 5, 0), datetime(2026, 11, 5, 1)
+			)
+		self.assertEqual(conflicts[0]["name"], "PLAN-READY")
+		self.assertEqual(conflicts[0]["status"], "Ready")
+		self.assertEqual(captured["filters"]["status"], ["in", planning.ACTIVE_PLAN_STATUSES])
+
+	def test_workstation_booking_projection_contains_conflict_details(self):
+		booking = self._plan_booking()
+		with (
+			patch.object(
+				planning,
+				"get_overlapping_entries",
+				return_value=[
+					{
+						"name": booking.name,
+						"operation": booking.operation,
+						"status": booking.status,
+						"start": booking.planned_start_datetime,
+						"end": booking.planned_end_datetime,
+						"source": "SmartEdge Production Plan Entry",
+					}
+				],
+			),
+			patch.object(planning, "get_capacity", return_value=1),
+		):
+			projection = planning.get_workstation_booking_conflict_projection(
+				frappe._dict(name="PLAN-NEW"),
+				"Extruder-1",
+				date(2026, 11, 4),
+				"11:00:00",
+				2,
+			)
+		self.assertEqual(projection["scheduling_conflict"], 1)
+		self.assertEqual(projection["scheduling_conflict_blocked"], 1)
+		self.assertIn("PLAN-OLD", projection["scheduling_conflict_message"])
+		self.assertIn("09:00:00", projection["conflicting_time_interval"])
+
+	def test_single_capacity_overlap_cannot_be_overridden(self):
+		conflict = {
+			"name": "PLAN-OLD",
+			"operation": "Extrusion",
+			"status": "Planned",
+			"start": datetime(2026, 11, 4, 9),
+			"end": datetime(2026, 11, 4, 15),
+		}
+		with (
+			patch.object(planning, "lock_workstation"),
+			patch.object(planning, "get_workstation_capacity_hours", return_value=24),
+			patch.object(planning, "get_workstation_planned_minutes", return_value=0),
+			patch.object(planning, "get_overlapping_entries", return_value=[conflict]),
+			patch.object(planning, "get_capacity", return_value=1),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "Workstation Scheduling Conflict"):
+				planning.validate_capacity(
+					"Extruder-1",
+					"PLAN-NEW",
+					datetime(2026, 11, 4, 11),
+					datetime(2026, 11, 4, 13),
+					override=True,
+				)
+
 	def test_overlapping_blocked_intervals_are_counted_once(self):
 		intervals = capacity.merge_intervals(
 			[
@@ -430,6 +710,30 @@ class TestOperationCapacityPayload(TestCase):
 
 
 class TestBoardCapacityMetrics(TestCase):
+	def test_configured_allocation_uses_saved_slot_duration(self):
+		row = frappe._dict(
+			name="PLAN-A",
+			workstation="Extruder-1",
+			planning_category="Extrusion",
+			operation="Extrusion",
+			planned_kg=70,
+			planned_date=date(2026, 11, 4),
+			planned_start_datetime=datetime(2026, 11, 4, 8),
+			planned_end_datetime=datetime(2026, 11, 4, 14),
+			planned_shift=None,
+		)
+		rate_rows = [
+			frappe._dict(
+				name="RATE",
+				workstation="Extruder-1",
+				operation="Extrusion",
+				capacity_uom="Kg/Hour",
+				capacity_rate=35,
+			)
+		]
+		allocation = capacity.prepare_capacity_allocations([row], rate_rows)["PLAN-A"]
+		self.assertEqual(allocation.allocation_hours, 6)
+
 	def test_missing_applicable_rate_never_falls_back_to_scheduled_duration(self):
 		rows = [
 			frappe._dict(

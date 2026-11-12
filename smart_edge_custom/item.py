@@ -10,17 +10,27 @@ PVC_EDGE_BAND_NAME_FIELDS = (
 	"custom_type_short_code",
 	"product_code",
 )
-OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS = {
+PVC_EDGE_BAND_REQUIRED_NAME_FIELDS = PVC_EDGE_BAND_NAME_FIELDS[:-1]
+PVC_EDGE_BAND_NAME_SOURCE_FIELDS = PVC_EDGE_BAND_NAME_FIELDS + ("item_group",)
+
+SMARTEDGE_EXCLUDED_ITEM_GROUPS = {
 	"Additives",
 	"Compounds",
+	"Compound",
 	"Pigments",
 	"Base Colour",
+	"Base Color",
 }
-SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS = {"Products"}
-DYNAMIC_MANDATORY_ITEM_FIELDS = (
+PVC_EDGE_BAND_ITEM_GROUP_ROOTS = {
+	"PVC Edge Band",
+	"New PVC Profile Edge Band",
+}
+SMARTEDGE_MANDATORY_ITEM_FIELDS = (
 	("custom_size", "Size"),
-	("custom_type_short_code", "Type Short Code"),
 	("custom_color", "Color"),
+	("custom_product_category", "Product Category"),
+	("custom_product_type_design_category", "Product Type / Design Category"),
+	("custom_type_finish", "Type / Finish"),
 	("gst_hsn_code", "HSN/SAC"),
 )
 WOOD_GRAIN_PRINTING_FIELDS = (
@@ -49,14 +59,13 @@ def _has_pvc_edge_band_details(doc):
 
 
 def _validate_dynamic_mandatory_item_fields(doc):
-	if doc.get("item_group") in OPTIONAL_DYNAMIC_MANDATORY_ITEM_GROUPS:
-		return
-	if doc.get("item_group") not in SMARTEDGE_FINISHED_PRODUCT_ITEM_GROUPS:
+	item_group = doc.get("item_group")
+	if not item_group or _is_excluded_item_group(item_group):
 		return
 
 	missing_labels = [
 		label
-		for fieldname, label in DYNAMIC_MANDATORY_ITEM_FIELDS
+		for fieldname, label in SMARTEDGE_MANDATORY_ITEM_FIELDS
 		if doc.meta.has_field(fieldname) and not doc.get(fieldname)
 	]
 
@@ -67,15 +76,19 @@ def _validate_dynamic_mandatory_item_fields(doc):
 
 
 def _sync_item_name(doc):
-	if not all(doc.get(fieldname) for fieldname in PVC_EDGE_BAND_NAME_FIELDS):
+	if not _is_pvc_edge_band_item_group(doc.get("item_group")):
 		return
 
-	generated_item_name = "{0} EB {1} {2} ({3})".format(
+	if not all(doc.get(fieldname) for fieldname in PVC_EDGE_BAND_REQUIRED_NAME_FIELDS):
+		return
+
+	generated_item_name = "{0} EB {1} {2}".format(
 		doc.custom_size,
 		doc.custom_color,
 		doc.custom_type_short_code,
-		doc.product_code,
 	)
+	if doc.get("product_code"):
+		generated_item_name += " ({0})".format(doc.product_code)
 
 	if _should_update_item_name(doc):
 		doc.item_name = generated_item_name
@@ -92,8 +105,10 @@ def _should_update_item_name(doc):
 	if not previous_doc:
 		return False
 
-	source_changed = any(doc.has_value_changed(fieldname) for fieldname in PVC_EDGE_BAND_NAME_FIELDS)
+	source_changed = any(doc.has_value_changed(fieldname) for fieldname in PVC_EDGE_BAND_NAME_SOURCE_FIELDS)
 	item_name_changed = doc.has_value_changed("item_name")
+	if item_name_changed and doc.item_name != previous_doc.item_name:
+		return False
 
 	return source_changed and (
 		not item_name_changed
@@ -104,6 +119,44 @@ def _should_update_item_name(doc):
 
 def _looks_like_pvc_edge_band_name(item_name):
 	return bool(item_name and PVC_EDGE_BAND_NAME_PATTERN.match(item_name))
+
+
+def _is_excluded_item_group(item_group):
+	return _is_item_group_or_descendant(item_group, SMARTEDGE_EXCLUDED_ITEM_GROUPS)
+
+
+def _is_pvc_edge_band_item_group(item_group):
+	return _is_item_group_or_descendant(item_group, PVC_EDGE_BAND_ITEM_GROUP_ROOTS)
+
+
+def _is_item_group_or_descendant(item_group, roots):
+	if not item_group:
+		return False
+	if item_group in roots:
+		return True
+
+	group_bounds = frappe.db.get_value("Item Group", item_group, ["lft", "rgt"], as_dict=True)
+	if not group_bounds:
+		return False
+
+	return bool(
+		frappe.db.exists(
+			"Item Group",
+			{
+				"name": ["in", list(roots)],
+				"lft": ["<", group_bounds.lft],
+				"rgt": [">", group_bounds.rgt],
+			},
+		)
+	)
+
+
+@frappe.whitelist()
+def get_item_group_rules(item_group):
+	return {
+		"is_excluded": _is_excluded_item_group(item_group),
+		"is_pvc_edge_band": _is_pvc_edge_band_item_group(item_group),
+	}
 
 
 def _sync_type_short_code_from_finish(doc):

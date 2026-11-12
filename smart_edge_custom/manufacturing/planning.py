@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 import hashlib
 import json
 import re
@@ -7,16 +8,23 @@ import re
 import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, get_time, getdate, now_datetime, nowdate
+from erpnext.stock.doctype.item.item import get_uom_conv_factor
 
 from smart_edge_custom.manufacturing.fifo_batch_selection import (
 	get_fifo_batch_allocations,
 	get_kg_to_stock_factor,
 )
-from smart_edge_custom.manufacturing.final_bom_generator import get_prepared_component_batch_weight
+from smart_edge_custom.manufacturing.final_bom_generator import (
+	get_generator_lifecycle_status,
+	get_prepared_component_batch_weight,
+)
 from smart_edge_custom.manufacturing.machine_capacity import (
+	ACTIVE_PLAN_STATUSES,
+	ACTIVE_WORK_ORDER_STATUSES,
 	attach_board_capacity_details,
 	get_capacity_availability,
 	get_schedule_capacity_projection,
+	validate_workstation_time_window,
 )
 from smart_edge_custom.manufacturing.workstation_capacity import (
 	get_capacity,
@@ -911,6 +919,63 @@ def add_unique(values, value):
 		values.append(value)
 
 
+def get_working_hours_projection(entry, workstation, planned_date, planned_start, duration_hours):
+	result = validate_workstation_time_window(
+		workstation,
+		planned_date,
+		planned_start,
+		duration_hours,
+		shift=entry.get("planned_shift"),
+	)
+	return {
+		"working_hours_status": result.get("status"),
+		"working_hours_message": result.get("message"),
+		"working_hours": result.get("working_intervals_display"),
+		"working_intervals": result.get("working_intervals"),
+		"planned_start": result.get("planned_start"),
+		"planned_end": result.get("planned_end"),
+	}
+
+
+def get_workstation_booking_conflict_projection(entry, workstation, planned_date, planned_start, duration_hours):
+	start_dt = combine_date_time(planned_date, planned_start)
+	end_dt = start_dt + timedelta(hours=flt(duration_hours))
+	conflicts = get_overlapping_entries(workstation, start_dt, end_dt, entry.get("name"))
+	maximum_capacity = get_capacity(workstation)
+	conflict_details = [
+		{
+			"name": conflict["name"],
+			"operation": conflict.get("operation"),
+			"status": conflict.get("status"),
+			"start": get_datetime(conflict["start"]).strftime("%d-%m-%Y %H:%M:%S"),
+			"end": get_datetime(conflict["end"]).strftime("%d-%m-%Y %H:%M:%S"),
+			"source": conflict.get("source"),
+		}
+		for conflict in conflicts
+	]
+	return {
+		"scheduling_conflict": cint(bool(conflicts)),
+		"scheduling_conflict_blocked": cint(bool(conflicts and maximum_capacity <= 1)),
+		"scheduling_conflict_message": (
+			format_workstation_conflict_message(workstation, start_dt, end_dt, conflicts)
+			if conflicts
+			else None
+		),
+		"conflicting_operations": conflict_details,
+		"conflicting_operation": (
+			conflict_details[0]["name"] if conflict_details else None
+		),
+		"conflicting_time_interval": (
+			f"{conflict_details[0]['start']} – {conflict_details[0]['end']}"
+			if conflict_details
+			else None
+		),
+		"workstation_capacity": maximum_capacity,
+		"planned_start_datetime": start_dt.strftime("%d-%m-%Y %H:%M:%S"),
+		"planned_end_datetime": end_dt.strftime("%d-%m-%Y %H:%M:%S"),
+	}
+
+
 @frappe.whitelist()
 def check_schedule_capacity(
 	plan_entry,
@@ -918,6 +983,7 @@ def check_schedule_capacity(
 	workstation,
 	planned_start="09:00",
 	duration_hours=None,
+	override_capacity=0,
 ):
 	"""Return a read-only projection and a scoped token when overload confirmation is allowed."""
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
@@ -927,12 +993,23 @@ def check_schedule_capacity(
 	validate_selected_workstation(entry, workstation)
 	planned_start = normalize_schedule_time(planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
-	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
-	if flt(projection.get("new_operation_hours")) > 0:
-		duration_hours = flt(projection.get("new_operation_hours"))
+	projection = get_schedule_capacity_projection(
+		entry, workstation, planned_date, duration_hours=duration_hours
+	)
+	projection.update(
+		get_working_hours_projection(
+			entry, workstation, planned_date, planned_start, duration_hours
+		)
+	)
+	projection.update(
+		get_workstation_booking_conflict_projection(
+			entry, workstation, planned_date, planned_start, duration_hours
+		)
+	)
 	projection["planned_hours"] = duration_hours
 	projection["can_confirm"] = cint(can_confirm_capacity_overload())
-	if projection.get("requires_confirmation") and projection["can_confirm"]:
+	projection["override_requested"] = cint(override_capacity)
+	if projection.get("requires_confirmation") and projection["can_confirm"] and cint(override_capacity):
 		fingerprint = make_capacity_move_fingerprint(
 			entry.name, workstation, planned_date, planned_start, duration_hours
 		)
@@ -1041,9 +1118,47 @@ def schedule_operation(
 	planned_start = normalize_schedule_time(planned_start)
 	start_dt = combine_date_time(planned_date, planned_start)
 	duration_hours = flt(duration_hours) or get_entry_default_duration(entry)
-	projection = get_schedule_capacity_projection(entry, workstation, planned_date)
-	if flt(projection.get("new_operation_hours")) > 0:
-		duration_hours = flt(projection.get("new_operation_hours"))
+	projection = get_schedule_capacity_projection(
+		entry, workstation, planned_date, duration_hours=duration_hours
+	)
+	projection.update(
+		get_working_hours_projection(
+			entry, workstation, planned_date, planned_start, duration_hours
+		)
+	)
+	projection.update(
+		get_workstation_booking_conflict_projection(
+			entry, workstation, planned_date, planned_start, duration_hours
+		)
+	)
+	validation_messages = []
+	if projection.get("status") == "duration_insufficient":
+		validation_messages.append(
+			projection.get("message")
+			or _("Expected Duration is insufficient for the planned quantity.")
+		)
+	if projection.get("working_hours_status") != "ok":
+		validation_messages.append(
+			projection.get("working_hours_message")
+			or _("The proposed operation is outside the Workstation's configured Working Hours.")
+		)
+	if projection.get("scheduling_conflict_blocked"):
+		validation_messages.append(
+			projection.get("scheduling_conflict_message")
+			or _("The proposed operation overlaps an existing Workstation booking.")
+		)
+	if validation_messages:
+		frappe.throw(
+			"<br>".join(validation_messages),
+			title=_("Invalid Workstation Schedule"),
+		)
+	capacity_override_requested = cint(override_capacity)
+	if capacity_override_requested and not can_confirm_capacity_overload():
+		frappe.throw(
+			_("Only an authorized Manufacturing Manager can override Workstation capacity warnings."),
+			title=_("Capacity Override Not Allowed"),
+		)
+	capacity_override_used = bool(capacity_override_requested)
 	end_dt = start_dt + timedelta(hours=duration_hours)
 	validate_future_schedule(start_dt, end_dt)
 
@@ -1061,7 +1176,7 @@ def schedule_operation(
 		entry.name,
 		start_dt,
 		end_dt,
-		bool(int(override_capacity or 0)),
+		bool(capacity_override_requested),
 		confirmed_machine_overload=bool(confirmation_cache_key),
 	)
 
@@ -1073,6 +1188,18 @@ def schedule_operation(
 	if priority:
 		entry.priority = priority
 	entry.save()
+	if capacity_override_used:
+		entry.add_comment(
+			"Info",
+			text=_(
+				"Workstation capacity override used by {0} for {1} on {2}. Projected overload: {3} hours."
+			).format(
+				frappe.session.user,
+				workstation,
+				getdate(planned_date),
+				flt(projection.get("overload_hours")),
+			),
+		)
 	update_unstarted_production_jobs_for_schedule(entry, workstation_changed=workstation_changed)
 	if confirmation_cache_key:
 		frappe.cache.delete_value(confirmation_cache_key)
@@ -1357,9 +1484,14 @@ def validate_capacity(
 	planned = get_workstation_planned_minutes(workstation, getdate(start_dt), plan_entry)
 	new_minutes = (end_dt - start_dt).total_seconds() / 60
 	overlaps = get_overlapping_entries(workstation, start_dt, end_dt, plan_entry)
+	maximum = get_capacity(workstation)
+	if overlaps and maximum <= 1:
+		frappe.throw(
+			format_workstation_conflict_message(workstation, start_dt, end_dt, overlaps),
+			title=_("Workstation Scheduling Conflict"),
+		)
 	if overlaps and not override:
 		occupied = get_reserved_work_order_count(workstation) + len(overlaps)
-		maximum = get_capacity(workstation)
 		if occupied >= maximum:
 			frappe.throw(
 				_("""
@@ -1388,7 +1520,9 @@ def validate_capacity(
 		over_by = (planned + new_minutes - capacity_hours * 60) / 60
 		frappe.throw(_("Capacity exceeded by {0} hours.").format(flt(over_by, 2)))
 	if overlaps:
-		return _("Capacity override applied despite overlap: {0}.").format(", ".join(overlaps))
+		return _("Parallel Workstation capacity used for overlapping bookings: {0}.").format(
+			", ".join(conflict["name"] for conflict in overlaps)
+		)
 	return None
 
 
@@ -1415,7 +1549,7 @@ def get_workstation_planned_minutes(workstation, planned_date, exclude_entry=Non
 		filters={
 			"workstation": workstation,
 			"planned_date": planned_date,
-			"status": ["in", ["Planned", "In Progress"]],
+			"status": ["in", ACTIVE_PLAN_STATUSES],
 		},
 		fields=["name", "planned_start_datetime", "planned_end_datetime"],
 	)
@@ -1428,21 +1562,109 @@ def get_workstation_planned_minutes(workstation, planned_date, exclude_entry=Non
 
 
 def get_overlapping_entries(workstation, start_dt, end_dt, exclude_entry=None):
-	rows = frappe.get_all(
+	plan_rows = frappe.get_all(
 		"SmartEdge Production Plan Entry",
-		filters={"workstation": workstation, "status": ["in", ["Planned", "In Progress"]]},
-		fields=["name", "final_eb_bom_generator", "operation", "planned_start_datetime", "planned_end_datetime"],
-		limit_page_length=500,
+		filters={"workstation": workstation, "status": ["in", ACTIVE_PLAN_STATUSES]},
+		fields=[
+			"name",
+			"work_order",
+			"operation",
+			"status",
+			"planned_start_datetime",
+			"planned_end_datetime",
+		],
+		limit_page_length=5000,
 	)
 	overlaps = []
-	for row in rows:
+	represented_work_order_operations = set()
+	for row in plan_rows:
+		if row.work_order and row.operation:
+			represented_work_order_operations.add((row.work_order, row.operation))
 		if row.name == exclude_entry or not row.planned_start_datetime or not row.planned_end_datetime:
 			continue
 		existing_start = get_datetime(row.planned_start_datetime)
 		existing_end = get_datetime(row.planned_end_datetime)
 		if existing_start < end_dt and start_dt < existing_end:
-			overlaps.append(f"{row.final_eb_bom_generator} / {row.operation}")
+			overlaps.append(
+				{
+					"name": row.name,
+					"operation": row.operation,
+					"status": row.status,
+					"start": existing_start,
+					"end": existing_end,
+					"source": "SmartEdge Production Plan Entry",
+				}
+			)
+
+	operation_rows = frappe.get_all(
+		"Work Order Operation",
+		filters={"workstation": workstation, "status": ["!=", "Completed"]},
+		fields=["name", "parent", "operation", "status", "planned_start_time", "planned_end_time"],
+		limit_page_length=5000,
+	)
+	parents = list({row.parent for row in operation_rows if row.parent})
+	active_parents = set()
+	if parents:
+		active_parents = {
+			row.name
+			for row in frappe.get_all(
+				"Work Order",
+				filters={
+					"name": ["in", parents],
+					"docstatus": 1,
+					"status": ["in", ACTIVE_WORK_ORDER_STATUSES],
+				},
+				fields=["name"],
+				limit_page_length=len(parents),
+			)
+		}
+	for row in operation_rows:
+		if (
+			row.parent not in active_parents
+			or (row.parent, row.operation) in represented_work_order_operations
+			or not row.planned_start_time
+			or not row.planned_end_time
+		):
+			continue
+		existing_start = get_datetime(row.planned_start_time)
+		existing_end = get_datetime(row.planned_end_time)
+		if existing_start < end_dt and start_dt < existing_end:
+			overlaps.append(
+				{
+					"name": row.name,
+					"operation": row.operation,
+					"status": row.status,
+					"start": existing_start,
+					"end": existing_end,
+					"source": "Work Order Operation",
+				}
+			)
 	return overlaps
+
+
+def format_workstation_conflict_message(workstation, start_dt, end_dt, conflicts):
+	conflict_lines = []
+	for conflict in conflicts[:10]:
+		operation = f" / {conflict['operation']}" if conflict.get("operation") else ""
+		conflict_lines.append(
+			_("{0}{1} from {2} to {3}").format(
+				conflict["name"],
+				operation,
+				get_datetime(conflict["start"]).strftime("%d-%m-%Y %H:%M:%S"),
+				get_datetime(conflict["end"]).strftime("%d-%m-%Y %H:%M:%S"),
+			)
+		)
+	if len(conflicts) > len(conflict_lines):
+		conflict_lines.append(_("and {0} more booking(s)").format(len(conflicts) - len(conflict_lines)))
+	return _(
+		"Workstation Scheduling Conflict: {0} is already booked: {1}. "
+		"The requested operation from {2} to {3} overlaps this booking."
+	).format(
+		workstation,
+		"; ".join(conflict_lines),
+		get_datetime(start_dt).strftime("%d-%m-%Y %H:%M:%S"),
+		get_datetime(end_dt).strftime("%d-%m-%Y %H:%M:%S"),
+	)
 
 
 def update_generator_planning_status(production):
@@ -1453,7 +1675,7 @@ def update_generator_planning_status(production):
 	if status:
 		set_generator_status(production, status)
 		return
-	if frappe.db.get_value("Final EB BOM Generator", production, "status") == "Completed":
+	if get_generator_lifecycle_status(frappe.get_doc("Final EB BOM Generator", production)) == "Completed":
 		return
 
 	rows = frappe.get_all(
@@ -1503,7 +1725,7 @@ def get_completed_parent_status(production):
 
 
 def parent_allows_completed_status(production):
-	current_status = frappe.db.get_value("Final EB BOM Generator", production, "status")
+	current_status = get_generator_lifecycle_status(frappe.get_doc("Final EB BOM Generator", production))
 	if current_status == "Cancelled":
 		return False
 	status_field = frappe.get_meta("Final EB BOM Generator", cached=True).get_field("status")
@@ -1563,7 +1785,7 @@ def get_completed_job_for_plan_entry(entry):
 
 
 def set_generator_status(production, status):
-	current_status = frappe.db.get_value("Final EB BOM Generator", production, "status")
+	current_status = get_generator_lifecycle_status(frappe.get_doc("Final EB BOM Generator", production))
 	if current_status == "Cancelled":
 		return
 	if current_status == status and status != "Completed":
@@ -1571,7 +1793,9 @@ def set_generator_status(production, status):
 	doc = frappe.get_doc("Final EB BOM Generator", production)
 	if status == "Completed":
 		create_final_manufacturing_stock_entry(doc)
-	doc.db_set("status", status, update_modified=False)
+	doc.db_set("production_status", status, update_modified=False)
+	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+	refresh_material_readiness(production)
 
 
 def create_final_manufacturing_stock_entry(doc):
@@ -1770,8 +1994,10 @@ def link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry, finished_
 	# The stock link is the authoritative completion event.  Persist the
 	# generator status only for this exact linked document, after the submitted
 	# final Stock Entry has been validated and recorded.
-	if doc.get("status") != "Cancelled" and doc.meta.has_field("status"):
-		doc.db_set("status", "Completed", update_modified=False)
+	if get_generator_lifecycle_status(doc) != "Cancelled" and doc.meta.has_field("production_status"):
+		doc.db_set("production_status", "Completed", update_modified=False)
+		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+		refresh_material_readiness(doc.name)
 	job_meta = frappe.get_meta("SmartEdge Production Job", cached=True)
 	job_updates = {}
 	if job_meta.has_field("manufacturing_stock_entry"):
@@ -2436,7 +2662,7 @@ def get_complete_job_context(plan_entry):
 	production = frappe.db.get_value(
 		"Final EB BOM Generator",
 		job.final_eb_bom_generator,
-		["finished_item", "finished_item_name", "stock_uom"],
+		["finished_item", "finished_item_name", "stock_uom", "production_quantity", "total_eb_weight_kg"],
 		as_dict=True,
 	)
 	context = {
@@ -2466,6 +2692,8 @@ def get_complete_job_context(plan_entry):
 	context["scrap_uom"] = get_recovery_uom(production.finished_item if production else None)
 	context["unusable_scrap_uom"] = get_unusable_scrap_uom(production.finished_item if production else None)
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	completion_quantity_context = get_completion_quantity_context(entry, job, production=production)
+	context.update(completion_quantity_context)
 	from smart_edge_custom.manufacturing.packing import operation_qr_required
 	context["packing_qr_required"] = operation_qr_required(entry.operation)
 	if entry.get("plan_type") == "Required Material":
@@ -2494,6 +2722,210 @@ def get_complete_job_context(plan_entry):
 		)
 		context["show_batch_consumption"] = 1
 	return context
+
+
+def get_completion_quantity_context(entry, job, production=None):
+	"""Return the item/UOM context used by the Complete Process quantity editor.
+
+	The Production Job continues to store its established output-unit quantities.
+	This context only describes the kilogram calculation and the configured scrap
+	items; it does not change any persisted values.
+	"""
+	production = production or frappe.db.get_value(
+		"Final EB BOM Generator",
+		entry.final_eb_bom_generator,
+		["finished_item", "stock_uom", "production_quantity", "total_eb_weight_kg"],
+		as_dict=True,
+	)
+	is_material = entry.get("plan_type") == MATERIAL_PLAN_TYPE
+	output_item = entry.get("material_item") if is_material else (production.finished_item if production else None)
+	output_uom = entry.get("quantity_uom") if is_material else "Meter"
+	output_uom = output_uom or (production.stock_uom if production else None)
+	output_kg_factor = get_completion_output_kg_factor(entry, job, output_item, output_uom, production)
+	config = frappe.db.get_value(
+		"SmartEdge Recovery Material",
+		{"source_item": output_item, "disabled": 0},
+		["usable_scrap_item", "unusable_scrap_item"],
+		as_dict=True,
+	) if output_item and frappe.db.exists("DocType", "SmartEdge Recovery Material") else None
+
+	result = {
+		"completion_output_uom": output_uom,
+		"completion_output_item": output_item,
+		"completion_output_kg_factor": output_kg_factor,
+		"usable_scrap_item": config.usable_scrap_item if config else None,
+		"unusable_scrap_item": config.unusable_scrap_item if config else None,
+		"usable_scrap_uom_options": get_completion_uom_options(config.usable_scrap_item if config else None),
+		"unusable_scrap_uom_options": get_completion_uom_options(config.unusable_scrap_item if config else None),
+		"usable_scrap_uom": frappe.db.get_value("Item", config.usable_scrap_item, "stock_uom") if config and config.usable_scrap_item else None,
+		"unusable_scrap_uom": frappe.db.get_value("Item", config.unusable_scrap_item, "stock_uom") if config and config.unusable_scrap_item else None,
+	}
+	# These values are display-only previews. If an old job has quantities but
+	# its item has no valid Kg conversion, completion will report that explicitly
+	# when a quantity is submitted instead of making a silent assumption.
+	for source_field, target_field, item_code in (
+		("good_qty", "good_qty_kg", output_item),
+		("rejected_qty", "rejected_qty_kg", output_item),
+		("rework_qty", "rework_qty_kg", output_item),
+	):
+		value = flt(job.get(source_field))
+		result[target_field] = flt(value * output_kg_factor, 6) if output_kg_factor else 0
+	return result
+
+
+def get_completion_output_kg_factor(entry, job, output_item, output_uom, production=None):
+	if entry.get("plan_type") == MATERIAL_PLAN_TYPE:
+		return get_completion_item_uom_to_kg_factor(output_item, output_uom) if output_item and output_uom else 0
+	if flt(job.get("actual_qty_meter")) and flt(job.get("actual_qty_kg")):
+		return flt(job.actual_qty_kg) / flt(job.actual_qty_meter)
+	production = production or frappe.db.get_value(
+		"Final EB BOM Generator", entry.final_eb_bom_generator,
+		["production_quantity", "total_eb_weight_kg"], as_dict=True,
+	)
+	if production and flt(production.get("production_quantity")) and flt(production.get("total_eb_weight_kg")):
+		return flt(production.total_eb_weight_kg) / flt(production.production_quantity)
+	return 0
+
+
+def get_completion_uom_options(item_code):
+	if not item_code or not frappe.db.exists("Item", item_code):
+		return []
+	item = frappe.db.get_value("Item", item_code, ["stock_uom"], as_dict=True)
+	if not item:
+		return []
+	options = [item.stock_uom]
+	options.extend(frappe.get_all("UOM Conversion Detail", filters={"parent": item_code}, pluck="uom"))
+	# Include Kg only when this Item can actually convert to it. This avoids
+	# presenting a length/count UOM as a weight UOM without item evidence.
+	if "Kg" not in options:
+		try:
+			get_completion_item_uom_to_kg_factor(item_code, "Kg")
+			options.append("Kg")
+		except Exception:
+			pass
+	return list(dict.fromkeys(value for value in options if value))
+
+
+def get_completion_item_uom_to_stock_factor(item_code, uom):
+	item = validate_stock_item(item_code)
+	if not uom or uom == item.stock_uom:
+		return 1.0
+	factor = frappe.db.get_value(
+		"UOM Conversion Detail", {"parent": item_code, "uom": uom}, "conversion_factor"
+	)
+	if flt(factor) <= 0:
+		factor = get_uom_conv_factor(uom, item.stock_uom)
+	if flt(factor) <= 0:
+		frappe.throw(
+			_("Cannot convert {0} {1} to the stock UOM {2} for Item {3}. Configure an Item UOM conversion.").format(
+				uom, item_code, item.stock_uom, item_code
+		)
+		)
+	return flt(factor)
+
+
+def get_completion_item_uom_to_kg_factor(item_code, uom):
+	item = validate_stock_item(item_code)
+	if uom == "Kg":
+		if item.stock_uom == "Kg":
+			return 1.0
+		return 1.0 / get_completion_item_uom_to_stock_factor(item_code, "Kg")
+	input_to_stock = get_completion_item_uom_to_stock_factor(item_code, uom)
+	kg_to_stock = get_completion_item_uom_to_stock_factor(item_code, "Kg")
+	if flt(kg_to_stock) <= 0:
+		frappe.throw(
+			_("Cannot convert Item {0} from {1} to Kg. Configure a valid item-specific Kg conversion.").format(
+			item_code, item.stock_uom
+		)
+		)
+	return flt(input_to_stock) / flt(kg_to_stock)
+
+
+def convert_completion_quantity(item_code, quantity, uom, label):
+	quantity = parse_completion_quantity(quantity, label)
+	if not quantity:
+		return {"stock_quantity": 0.0, "kg_quantity": 0.0}
+	if not item_code:
+		frappe.throw(_("Configure a scrap Item before recording {0}.").format(label))
+	stock_factor = get_completion_item_uom_to_stock_factor(item_code, uom)
+	kg_factor = get_completion_item_uom_to_kg_factor(item_code, uom)
+	return {
+		"stock_quantity": flt(quantity * stock_factor, 6),
+		"kg_quantity": flt(quantity * kg_factor, 6),
+	}
+
+
+def parse_completion_quantity(value, label):
+	if value in (None, ""):
+		return 0.0
+	try:
+		value = float(value.replace(",", "") if isinstance(value, str) else value)
+	except (TypeError, ValueError, OverflowError):
+		frappe.throw(_("{0} must be a valid number.").format(label))
+	if value != value or value in (float("inf"), float("-inf")) or value < 0:
+		frappe.throw(_("{0} must be a finite number greater than or equal to zero.").format(label))
+	return flt(value, 6)
+
+
+@frappe.whitelist()
+def calculate_completion_quantities(
+	plan_entry,
+	actual_qty_kg=None,
+	rejected_qty_kg=None,
+	rework_qty_kg=None,
+	usable_scrap=None,
+	usable_scrap_uom=None,
+	unusable_scrap=None,
+	unusable_scrap_uom=None,
+):
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	entry.check_permission("read")
+	job = get_open_job(plan_entry, include_completed=True)
+	job.check_permission("read")
+	production = frappe.db.get_value(
+		"Final EB BOM Generator", entry.final_eb_bom_generator,
+		["finished_item", "stock_uom", "production_quantity", "total_eb_weight_kg"], as_dict=True,
+	)
+	context = get_completion_quantity_context(entry, job, production=production)
+	output_item = context.get("completion_output_item")
+	output_uom = context.get("completion_output_uom")
+	actual = parse_completion_quantity(actual_qty_kg, _("Actual Completed Quantity (Kg)"))
+	rejected = parse_completion_quantity(rejected_qty_kg, _("Rejected Output (Kg)"))
+	rework = parse_completion_quantity(rework_qty_kg, _("Rework (Kg)"))
+	usable = convert_completion_quantity(
+		context.get("usable_scrap_item"), usable_scrap, usable_scrap_uom, _("Usable Scrap")
+	)
+	unusable = convert_completion_quantity(
+		context.get("unusable_scrap_item"), unusable_scrap, unusable_scrap_uom, _("Unusable Scrap")
+	)
+	total = rejected + rework + usable["kg_quantity"] + unusable["kg_quantity"]
+	good = flt(actual - total, 6)
+	if total > actual + 0.000001:
+		frappe.throw(
+			_("Rejected Output, Rework, and Scrap cannot exceed Actual Completed Quantity. Good Output would be negative.")
+		)
+	output_factor = flt(context.get("completion_output_kg_factor"))
+	if output_item and output_uom and output_factor <= 0:
+		frappe.throw(
+			_("Cannot establish the existing Kg conversion for output Item {0} ({1}).").format(
+				output_item, output_uom
+			)
+		)
+	good_output = flt(good / output_factor, 6) if output_factor else 0
+	return {
+		"actual_qty_kg": actual,
+		"rejected_qty_kg": rejected,
+		"rework_qty_kg": rework,
+		"usable_scrap_kg": usable["kg_quantity"],
+		"usable_scrap_stock_qty": usable["stock_quantity"],
+		"unusable_scrap_kg": unusable["kg_quantity"],
+		"unusable_scrap_stock_qty": unusable["stock_quantity"],
+		"good_qty_kg": good,
+		"good_qty": good_output,
+		"rejected_qty": flt(rejected / output_factor, 6) if output_factor else 0,
+		"rework_qty": flt(rework / output_factor, 6) if output_factor else 0,
+		"output_uom": output_uom,
+	}
 
 
 def get_remaining_or_planned_quantity(entry):
@@ -2908,10 +3340,15 @@ def complete_production_job(
 	actual_qty_meter=None,
 	actual_qty_kg=None,
 	good_qty=None,
+	good_qty_kg=None,
 	rejected_qty=None,
+	rejected_qty_kg=None,
 	rework_qty=None,
+	rework_qty_kg=None,
 	usable_scrap=None,
+	usable_scrap_uom=None,
 	unusable_scrap=None,
+	unusable_scrap_uom=None,
 	remarks=None,
 ):
 	from smart_edge_custom.smart_edge_custom.doctype.smartedge_production_job.smartedge_production_job import (
@@ -2933,6 +3370,31 @@ def complete_production_job(
 
 	if is_qc_entry(entry) and not getattr(frappe.flags, "smartedge_qc_decision", False):
 		frappe.throw(_("Use Submit QC Decision to complete a mandatory QC checkpoint."))
+	completion_quantities = None
+	if any(value is not None for value in (
+		good_qty_kg, rejected_qty_kg, rework_qty_kg, usable_scrap_uom, unusable_scrap_uom
+	)):
+		completion_quantities = calculate_completion_quantities(
+			plan_entry,
+			actual_qty_kg=actual_qty_kg,
+			rejected_qty_kg=rejected_qty_kg,
+			rework_qty_kg=rework_qty_kg,
+			usable_scrap=usable_scrap,
+			usable_scrap_uom=usable_scrap_uom,
+			unusable_scrap=unusable_scrap,
+			unusable_scrap_uom=unusable_scrap_uom,
+		)
+		if good_qty_kg is not None and abs(
+			flt(parse_completion_quantity(good_qty_kg, _("Good Output (Kg)")))
+			- flt(completion_quantities["good_qty_kg"])
+		) > 0.000001:
+			frappe.throw(_("Good Output does not match the authoritative quantity calculation."))
+		job.actual_qty_kg = completion_quantities["actual_qty_kg"]
+		job.good_qty = completion_quantities["good_qty"]
+		job.rejected_qty = completion_quantities["rejected_qty"]
+		job.rework_qty = completion_quantities["rework_qty"]
+		job.usable_scrap = completion_quantities["usable_scrap_stock_qty"]
+		job.unusable_scrap = completion_quantities["unusable_scrap_stock_qty"]
 	if job.status == "Completed" and entry.get("plan_type") != MATERIAL_PLAN_TYPE:
 		return {"production_job": job.name, **job.complete_job(completion_type or "Full Completion")}
 	material_result = None
@@ -2950,9 +3412,17 @@ def complete_production_job(
 			)
 		if completion_type == "Partial Completion" and completed_batches >= planned_batches:
 			frappe.throw(_("Partial Completion must leave at least one batch remaining."))
+		if completion_quantities:
+			expected_material_quantity = flt(Decimal(str(completed_batches)) * Decimal(str(flt(entry.weight_per_batch))), 6)
+			if abs(flt(completion_quantities["actual_qty_kg"]) - expected_material_quantity) > 0.000001:
+				frappe.throw(
+					_("Actual Completed Quantity must match the selected Completed Batches ({0} {1}) before completion.").format(
+						expected_material_quantity, entry.quantity_uom or "Kg"
+					)
+				)
 		previous_completion_flag = getattr(frappe.flags, "smartedge_board_completion", False)
 		frappe.flags.smartedge_board_completion = True
-		if unusable_scrap is not None:
+		if unusable_scrap is not None and not completion_quantities:
 			field = job.meta.get_field("unusable_scrap")
 			job.unusable_scrap = parse_output_quantity(
 				unusable_scrap, field.label if field else _("Unusable Scrap"),
@@ -2977,6 +3447,10 @@ def complete_production_job(
 		"remarks": remarks,
 	}.items():
 		if value is not None:
+			if completion_quantities and fieldname in {
+				"actual_qty_kg", "good_qty", "rejected_qty", "rework_qty", "usable_scrap", "unusable_scrap"
+			}:
+				continue
 			if fieldname in OUTPUT_QUANTITY_FIELDS:
 				field = job.meta.get_field(fieldname)
 				value = parse_output_quantity(

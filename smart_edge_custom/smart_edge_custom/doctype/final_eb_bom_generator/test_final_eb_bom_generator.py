@@ -3,6 +3,7 @@ import unittest
 from frappe.tests.utils import FrappeTestCase
 
 from smart_edge_custom.manufacturing.final_bom_generator import (
+	apply_item_configuration_defaults,
 	build_eb_route,
 	calculate_bom_preview,
 )
@@ -145,6 +146,12 @@ class TestFinalEBBOMGenerator(FrappeTestCase):
 	def test_solid_single_mould_route(self):
 		operations = [row[0] for row in build_eb_route(self.get_generator().as_dict())]
 		self.assertEqual(operations, ["Single Mould Extrusion", "QC After Extrusion", "Packing"])
+
+	def test_weight_factor_uses_size_weight_master(self):
+		doc = self.get_generator()
+		doc.weight_factor = 99
+		apply_item_configuration_defaults(doc)
+		self.assertEqual(doc.weight_factor, frappe.db.get_value("Size Weight", "2x24", "factor"))
 
 	def test_solid_wide_sheet_route(self):
 		doc = self.get_generator(extrusion_type="Wide Sheet Extrusion")

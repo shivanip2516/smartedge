@@ -301,6 +301,166 @@ def get_workstation_schedule(workstation, date_value):
 	return merge_intervals(intervals), True, None, False
 
 
+def get_workstation_intervals_for_window(workstation, window_start, window_end, shift=None):
+	"""Return configured machine intervals covering a requested datetime window.
+
+	Workstation working-hour rows are date anchored, so include the previous day
+	to recognize an overnight interval that is already in progress at midnight.
+	The next day is included for a request that itself crosses midnight.
+	"""
+	window_start = get_datetime(window_start)
+	window_end = get_datetime(window_end)
+	first_date = window_start.date() - timedelta(days=1)
+	last_date = window_end.date() + timedelta(days=1)
+	configured_intervals = []
+	available_intervals = []
+	holidays = set()
+	configured = False
+	messages = []
+	current_date = first_date
+	while current_date <= last_date:
+		daily, daily_configured, daily_message, daily_holiday = get_workstation_schedule(
+			workstation, current_date
+		)
+		configured = configured or daily_configured
+		if daily_holiday:
+			holidays.add(str(current_date))
+		if daily_message and daily_message not in messages:
+			messages.append(daily_message)
+
+		intervals = daily
+		if shift:
+			shift_intervals, shift_configured, shift_message, shift_holiday = get_shift_schedule(
+				shift,
+				current_date,
+				frappe.db.get_value("Workstation", workstation, "holiday_list"),
+			)
+			if shift_configured:
+				intervals = intersect_intervals(shift_intervals, daily) if daily_configured else shift_intervals
+				configured = True
+			if shift_message and shift_message not in messages:
+				messages.append(shift_message)
+			if shift_holiday:
+				holidays.add(str(current_date))
+
+		configured_intervals.extend(intervals)
+		current_date += timedelta(days=1)
+
+	anchor_date = window_start.date()
+	configured_intervals = [
+		(start, end)
+		for start, end in merge_intervals(configured_intervals)
+		if start.date() == anchor_date or (start < window_end and end > window_start)
+	]
+	if configured_intervals:
+		downtime = get_downtime_intervals(workstation, window_start, window_end)
+		available_intervals = subtract_intervals(configured_intervals, downtime)
+	return {
+		"configured": cint(configured),
+		"configured_intervals": configured_intervals,
+		"available_intervals": available_intervals,
+		"holidays": sorted(holidays),
+		"messages": messages,
+	}
+
+
+def _format_workstation_interval(interval):
+	start, end = interval
+	return f"{start.strftime('%H:%M:%S')}–{end.strftime('%H:%M:%S')}"
+
+
+def validate_workstation_time_window(workstation, planned_date, planned_start, duration_hours, shift=None):
+	"""Validate one unsplittable operation against actual machine intervals."""
+	planned_date = getdate(planned_date)
+	start_dt = datetime.combine(planned_date, get_time(planned_start or time(9, 0)))
+	end_dt = start_dt + timedelta(hours=flt(duration_hours))
+	window = get_workstation_intervals_for_window(workstation, start_dt, end_dt, shift=shift)
+	configured_intervals = window["configured_intervals"]
+	available_intervals = window["available_intervals"]
+	interval_labels = [_format_workstation_interval(interval) for interval in configured_intervals]
+	base = {
+		"status": "not_configured",
+		"message": None,
+		"planned_start": start_dt.strftime("%H:%M:%S"),
+		"planned_end": end_dt.strftime("%H:%M:%S"),
+		"working_intervals": interval_labels,
+		"working_intervals_display": ", ".join(interval_labels),
+		"shift": shift,
+	}
+	if end_dt.date() != planned_date:
+		base["planned_end"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+	if not configured_intervals:
+		if window["holidays"]:
+			base.update(
+				status="unavailable",
+				message=_("Workstation is unavailable on the selected date."),
+			)
+		else:
+			base["message"] = (
+				window["messages"][0]
+				if window["messages"]
+				else _("Workstation working hours are not configured for the selected date.")
+			)
+		return base
+	interval_end_date = (end_dt - timedelta(microseconds=1)).date() if end_dt > start_dt else planned_date
+	interval_dates = set()
+	current_date = planned_date
+	while current_date <= interval_end_date:
+		interval_dates.add(str(current_date))
+		current_date += timedelta(days=1)
+	if interval_dates.intersection(window["holidays"]):
+		base.update(
+			status="unavailable",
+			message=_("Workstation is unavailable on one or more dates in the planned interval."),
+		)
+		return base
+
+	if any(start <= start_dt and end_dt <= end for start, end in available_intervals):
+		base["status"] = "ok"
+		return base
+
+	first_relevant = next(
+		((start, end) for start, end in available_intervals if end > start_dt),
+		None,
+	)
+	first_configured = configured_intervals[0]
+	last_configured = configured_intervals[-1]
+	if start_dt < first_configured[0]:
+		base.update(
+			status="before_open",
+			message=_(
+				"Planned Start is before the workstation's working hours. Available interval: {0}."
+			).format(_format_workstation_interval(first_relevant or first_configured)),
+		)
+		return base
+	start_interval = next(
+		((start, end) for start, end in configured_intervals if start <= start_dt < end),
+		None,
+	)
+	if start_dt >= last_configured[1] or (
+		start_interval == last_configured and end_dt > last_configured[1]
+	):
+		base.update(
+			status="after_close",
+			message=_(
+				"Workstation Working Hours Exceeded: {0} is available from {1}. The proposed operation ends at {2}."
+			).format(
+				workstation,
+				base["working_intervals_display"],
+				base["planned_end"],
+			),
+		)
+		return base
+
+	base.update(
+		status="outside_working_hours",
+		message=_(
+			"The proposed operation does not fit inside one continuous workstation working interval. Available intervals: {0}."
+		).format(base["working_intervals_display"]),
+	)
+	return base
+
+
 def get_shift_schedule(shift, date_value, workstation_holiday_list=None):
 	if not shift:
 		return [], False, _("Shift is not configured."), False
@@ -797,6 +957,7 @@ def prepare_capacity_allocations(rows, rate_rows):
 		applicable = cint(payload.get("applicable"))
 		required_hours = payload.get("required_hours") if payload.get("configured") else None
 		capacity_configured = cint(not applicable or required_hours is not None)
+		scheduled_hours = get_scheduled_duration_hours(row)
 		result[row.name] = frappe._dict(
 			name=row.name,
 			workstation=row.workstation,
@@ -805,9 +966,13 @@ def prepare_capacity_allocations(rows, rate_rows):
 			capacity_applicable=applicable,
 			capacity_configured=capacity_configured,
 			allocation_hours=(
-				flt(required_hours)
-				if required_hours is not None
-				else (get_scheduled_duration_hours(row) if not applicable else None)
+				scheduled_hours
+				if scheduled_hours > 0 and (not applicable or required_hours is not None)
+				else (
+					flt(required_hours)
+					if required_hours is not None
+					else (scheduled_hours if not applicable else None)
+				)
 			),
 		)
 	return result
@@ -868,7 +1033,7 @@ def get_context_capacity_metrics(context, allocation_by_name, excluded_plan_entr
 	}
 
 
-def get_schedule_capacity_projection(entry, workstation, planned_date, shift=None):
+def get_schedule_capacity_projection(entry, workstation, planned_date, shift=None, duration_hours=None):
 	"""Calculate the destination impact of moving one planning operation.
 
 	The current entry is removed from the destination totals before its proposed
@@ -944,7 +1109,9 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 			continue
 		other_hours += flt(hours)
 
-	new_hours = flt(rate_payload["required_hours"])
+	required_hours = flt(rate_payload["required_hours"])
+	new_hours = flt(duration_hours) if flt(duration_hours) > 0 else required_hours
+	duration_insufficient = duration_hours is not None and new_hours + 0.000001 < required_hours
 	net_hours = flt(metrics["net_available_hours"])
 	projected_hours = other_hours + new_hours
 	current_same_context = (
@@ -957,17 +1124,27 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 	baseline_overload = max(baseline_hours - net_hours, 0)
 	projected_overload = max(projected_hours - net_hours, 0)
 	requires_confirmation = projected_overload > baseline_overload + 0.000001
+	status = "duration_insufficient" if duration_insufficient else ("overload" if requires_confirmation else "ok")
+	message = None
+	if duration_insufficient:
+		message = _(
+			"Expected Duration is insufficient for the planned quantity. Required duration: {0} hours; entered duration: {1} hours."
+		).format(flt(required_hours, 2), flt(new_hours, 2))
 	return {
-		"status": "overload" if requires_confirmation else "ok",
+		"status": status,
 		"availability_status": "unavailable" if net_hours <= 0 and new_hours > 0 else (
 			"overloaded" if projected_overload > 0 else "available"
 		),
 		"requires_confirmation": cint(requires_confirmation),
+		"message": message,
 		"workstation": workstation,
 		"planned_date": str(planned_date),
 		"shift": shift,
 		"capacity_uom": rate_payload.get("capacity_uom"),
 		"capacity_rate": flt(rate_payload.get("capacity_rate")),
+		"quantity_uom": rate_payload.get("quantity_uom"),
+		"planned_quantity": flt(rate_payload.get("planned_quantity")),
+		"required_hours": required_hours,
 		"available_hours": net_hours,
 		"already_planned_hours": other_hours,
 		"new_operation_hours": new_hours,
@@ -1004,4 +1181,8 @@ def _unverified_projection(
 			or (rate_payload or {}).get("message")
 			or availability.get("message")
 		),
+		"capacity_rate": (rate_payload or {}).get("capacity_rate"),
+		"quantity_uom": (rate_payload or {}).get("quantity_uom"),
+		"planned_quantity": (rate_payload or {}).get("planned_quantity"),
+		"required_hours": (rate_payload or {}).get("required_hours"),
 	}
