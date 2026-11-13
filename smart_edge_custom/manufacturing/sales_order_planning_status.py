@@ -151,6 +151,7 @@ def get_planned_quantities(sales_order, items, exclude_generators=None):
 			"sales_order",
 			"sales_order_item",
 			"production_quantity",
+			"required_production_quantity",
 			"status",
 			"production_status",
 			"finished_item",
@@ -184,6 +185,7 @@ def get_planned_quantities(sales_order, items, exclude_generators=None):
 						"sales_order",
 						"sales_order_item",
 						"production_quantity",
+						"required_production_quantity",
 						"status",
 						"production_status",
 						"finished_item",
@@ -256,7 +258,7 @@ def add_legacy_quantity(planned, generator, sales_order, items):
 	if generator.finished_item and generator.finished_item != item["item_code"]:
 		return
 	planned[generator.sales_order_item] = planned.get(generator.sales_order_item, 0.0) + flt(
-		generator.production_quantity
+		generator.required_production_quantity or generator.production_quantity
 	)
 
 

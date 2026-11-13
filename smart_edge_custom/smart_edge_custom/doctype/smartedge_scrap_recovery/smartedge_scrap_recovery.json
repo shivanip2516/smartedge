@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "format:REC-.#####",
+ "autoname": "format:REC-{#####}",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": ["status", "company", "usable_scrap_lot", "material_configuration", "source_section", "source_item", "source_batch", "source_warehouse", "available_scrap_quantity", "uom", "grinder_section", "grinder_input_quantity", "grinder_workstation", "grinder_employee", "grinder_datetime", "ground_material_item", "ground_material_quantity", "grinder_process_loss", "grinder_remarks", "ground_material_batch", "grinder_stock_entry", "pulverizer_section", "pulverizer_input_quantity", "pulverizer_workstation", "pulverizer_employee", "pulverizer_datetime", "recovered_material_item", "recovered_material_quantity", "pulverizer_process_loss", "pulverizer_remarks", "recovered_material_batch", "pulverizer_stock_entry", "quality_section", "qc_required", "quality_inspection"],

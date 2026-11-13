@@ -69,6 +69,42 @@ class TestQualityControl(unittest.TestCase):
 			qc.validate_quality_inspection(doc)
 		self.assertEqual(doc.custom_accepted_qty, 85)
 
+	def test_start_review_allows_zero_result_quantities(self):
+		doc = frappe._dict(
+			custom_smartedge_qc_key="smartedge-qc:1",
+			custom_qc_plan_entry="PLAN-QC",
+			custom_smartedge_qc_status="Under Review",
+			custom_eligible_qty=100,
+			custom_inspected_qty=0,
+			custom_accepted_qty=0,
+			custom_rejected_qty=0,
+			custom_rework_qty=0,
+			flags=frappe._dict(smartedge_qc_api=True),
+		)
+		doc.is_new = lambda: True
+		with patch.object(qc, "is_qc_entry", return_value=True), patch.object(
+			qc.frappe, "get_doc", return_value=frappe._dict(name="PLAN-QC")
+		):
+			qc.validate_quality_inspection(doc)
+
+	def test_final_review_with_zero_inspected_quantity_is_rejected(self):
+		doc = frappe._dict(
+			custom_smartedge_qc_key="smartedge-qc:1",
+			custom_qc_plan_entry="PLAN-QC",
+			custom_smartedge_qc_status="Accepted",
+			custom_eligible_qty=100,
+			custom_inspected_qty=0,
+			custom_accepted_qty=0,
+			custom_rejected_qty=0,
+			custom_rework_qty=0,
+			flags=frappe._dict(smartedge_qc_api=True),
+		)
+		doc.is_new = lambda: True
+		with patch.object(qc, "is_qc_entry", return_value=True), patch.object(
+			qc.frappe, "get_doc", return_value=frappe._dict(name="PLAN-QC")
+		), self.assertRaisesRegex(frappe.ValidationError, "Inspected Quantity must be greater than zero"):
+			qc.validate_quality_inspection(doc)
+
 	def test_inspection_cannot_exceed_eligible_quantity(self):
 		with self.assertRaises(frappe.ValidationError):
 			qc.validate_quantities(100, 101, 101, 0, 0)

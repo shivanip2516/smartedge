@@ -94,10 +94,10 @@ def _get_existing_values(doctype, name, fields):
 
 def _job_context(job):
 	plan = _get_existing_values("SmartEdge Production Plan Entry", job.plan_entry, [
-		"planning_category", "material_item", "quantity_uom", "production_quantity", "planned_meter", "planned_kg", "custom_size",
+		"plan_type", "planning_category", "material_item", "quantity_uom", "production_quantity", "planned_meter", "planned_kg", "custom_size",
 	])
 	production = _get_existing_values("Final EB BOM Generator", job.final_eb_bom_generator, [
-		"finished_item", "custom_size", "total_eb_weight_kg", "stock_uom",
+		"finished_item", "custom_size", "selected_route", "total_eb_weight_kg", "stock_uom",
 	])
 	product = production.get("finished_item") or plan.get("material_item")
 	if product:
@@ -109,8 +109,9 @@ def _job_context(job):
 
 def _rate(job, plan, production, product):
 	row = frappe._dict(
-		planning_category=plan.get("planning_category"), operation=job.operation, workstation=job.workstation,
+		plan_type=plan.get("plan_type"), planning_category=plan.get("planning_category"), operation=job.operation, workstation=job.workstation,
 		company=job.company, custom_size=plan.get("custom_size") or production.get("custom_size"),
+		selected_route=production.get("selected_route"), material_item=plan.get("material_item"), quantity_uom=plan.get("quantity_uom"),
 		output_uom=plan.get("output_uom"),
 		finished_item=product, planned_kg=job.planned_qty_kg or plan.get("planned_kg") or production.get("total_eb_weight_kg"),
 		planned_meter=job.planned_qty_meter or plan.get("planned_meter"), production_quantity=plan.get("production_quantity"),

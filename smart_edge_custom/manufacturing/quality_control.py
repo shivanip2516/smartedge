@@ -731,7 +731,24 @@ def validate_quality_inspection(doc, method=None):
 		frappe.get_doc("SmartEdge Production Plan Entry", doc.custom_qc_plan_entry)
 	):
 		frappe.throw(_("SmartEdge QC must reference a valid QC plan entry."))
-	if doc.flags.get("smartedge_qc_api") and doc.get("custom_inspected_qty") not in (None, ""):
+	# Starting a review updates the workflow status before any inspection
+	# results exist.  Quantity validation belongs to the decision/finalization
+	# step, not to that status transition.  New Quality Inspection custom Float
+	# fields are represented as zero, so checking only for a non-empty inspected
+	# quantity incorrectly rejects the Start QC Review action.
+	active_review_without_results = (
+		doc.get("custom_smartedge_qc_status") in ACTIVE_STATUSES
+		and not any(
+			flt(doc.get(fieldname))
+			for fieldname in (
+				"custom_inspected_qty",
+				"custom_accepted_qty",
+				"custom_rejected_qty",
+				"custom_rework_qty",
+			)
+		)
+	)
+	if doc.flags.get("smartedge_qc_api") and not active_review_without_results:
 		values = validate_quantities(
 			doc.custom_eligible_qty,
 			doc.custom_inspected_qty,

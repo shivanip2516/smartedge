@@ -334,6 +334,50 @@ class TestMachineCapacityIntervals(TestCase):
 				)
 		can_override.assert_not_called()
 
+	def test_unverified_capacity_cannot_be_scheduled_with_override(self):
+		entry = MagicMock()
+		entry.name = "PLAN-UNVERIFIED"
+		entry.workstation = "Mixer-1"
+		entry.get.side_effect = lambda fieldname: {
+			"workstation": entry.workstation,
+			"planned_shift": None,
+		}.get(fieldname)
+		with (
+			patch.object(planning.frappe, "get_doc", return_value=entry),
+			patch.object(planning, "lock_plan_entry"),
+			patch.object(planning, "lock_workstation"),
+			patch.object(planning, "validate_plan_entry"),
+			patch.object(planning, "validate_workstation_reassignment_allowed"),
+			patch.object(planning, "validate_material_plan_released"),
+			patch.object(planning, "validate_material_scheduling_context"),
+			patch.object(planning, "validate_selected_workstation"),
+			patch.object(
+				planning,
+				"get_schedule_capacity_projection",
+				return_value={"status": "not_configured", "message": "Capacity is not configured."},
+			),
+			patch.object(
+				planning,
+				"get_working_hours_projection",
+				return_value={"working_hours_status": "ok"},
+			),
+			patch.object(
+				planning,
+				"get_workstation_booking_conflict_projection",
+				return_value={"scheduling_conflict_blocked": 0},
+			),
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "Capacity is not configured"):
+				planning.schedule_operation(
+					plan_entry="PLAN-UNVERIFIED",
+					planned_date=date(2026, 11, 4),
+					workstation="Mixer-1",
+					planned_start="09:00:00",
+					duration_hours=1,
+					override_capacity=1,
+				)
+		entry.save.assert_not_called()
+
 	@staticmethod
 	def _plan_booking(name="PLAN-OLD", start=datetime(2026, 11, 4, 9), end=datetime(2026, 11, 4, 15), status="Planned"):
 		return frappe._dict(
@@ -415,7 +459,7 @@ class TestMachineCapacityIntervals(TestCase):
 					}
 				],
 			),
-			patch.object(planning, "get_capacity", return_value=1),
+			patch.object(planning, "get_capacity", return_value=5),
 		):
 			projection = planning.get_workstation_booking_conflict_projection(
 				frappe._dict(name="PLAN-NEW"),
@@ -558,6 +602,84 @@ class TestMachineCapacityIntervals(TestCase):
 
 
 class TestOperationCapacityPayload(TestCase):
+	def test_mixing_uses_kg_capacity_and_size_or_general_rate(self):
+		rate_rows = [
+			frappe._dict(
+				name="MIXER-GENERAL",
+				workstation="Mixer-1",
+				company="Smartedge Industries",
+				capacity_uom="Kg/Hour",
+				capacity_rate=200,
+			),
+			frappe._dict(
+				name="MIXER-SIZE",
+				parent="MIXER-GENERAL",
+				workstation="Mixer-1",
+				company="Smartedge Industries",
+				product_size="0.45x22",
+				capacity_uom="Kg/Hour",
+				capacity_rate=200,
+			),
+		]
+		row = frappe._dict(
+			plan_type="Required Material",
+			planning_category="Mixing",
+			operation="Mixing",
+			workstation="Mixer-1",
+			company="Smartedge Industries",
+			custom_size="0.45x22",
+			production_quantity=600,
+			planned_kg=600,
+			quantity_uom="Kg",
+		)
+		payload = capacity.get_rate_payload(row, "Mixer-1", rate_rows)
+		self.assertEqual(payload["capacity_rate"], 200)
+		self.assertEqual(payload["planned_quantity"], 600)
+		self.assertEqual(payload["required_hours"], 3)
+
+	def test_material_quantity_is_converted_to_capacity_uom(self):
+		row = frappe._dict(
+			plan_type="Required Material",
+			planning_category="Mixing",
+			operation="Mixing",
+			workstation="Mixer-1",
+			material_item="MIX-ITEM",
+			production_quantity=2100,
+			planned_kg=2100,
+			quantity_uom="Gram",
+		)
+		rate_rows = [
+			frappe._dict(
+				name="MIXER",
+				workstation="Mixer-1",
+				capacity_uom="Kg/Hour",
+				capacity_rate=200,
+			)
+		]
+		with patch.object(capacity, "_item_uom_to_target_factor", return_value=0.001):
+			payload = capacity.get_rate_payload(row, "Mixer-1", rate_rows)
+		self.assertEqual(payload["planned_quantity"], 2.1)
+		self.assertAlmostEqual(payload["required_hours"], 0.0105, places=6)
+
+	def test_packing_uses_meter_capacity(self):
+		row = frappe._dict(
+			planning_category="Packing",
+			operation="Packing",
+			workstation="Packing",
+			planned_meter=600,
+		)
+		rate_rows = [
+			frappe._dict(
+				name="PACKER",
+				workstation="Packing",
+				capacity_uom="Meter/Hour",
+				capacity_rate=200,
+			)
+		]
+		payload = capacity.get_rate_payload(row, "Packing", rate_rows)
+		self.assertEqual(payload["quantity_uom"], "Meter")
+		self.assertEqual(payload["required_hours"], 3)
+
 	def test_printing_and_slitting_use_each_workstations_configured_meter_rate(self):
 		rates = [
 			frappe._dict(

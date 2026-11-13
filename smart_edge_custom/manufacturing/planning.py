@@ -28,7 +28,6 @@ from smart_edge_custom.manufacturing.machine_capacity import (
 )
 from smart_edge_custom.manufacturing.workstation_capacity import (
 	get_capacity,
-	get_reserved_work_order_count,
 	lock_workstation,
 )
 
@@ -837,17 +836,18 @@ def get_production_plan(production):
 
 
 @frappe.whitelist()
-def get_compatible_workstations(operation, operation_row=None, include_default=1, include_routes=1):
+def get_compatible_workstations(
+	operation, operation_row=None, include_default=1, include_routes=1, include_all_active=1
+):
 	frappe.has_permission("Workstation", "read", throw=True)
 	if not operation or not frappe.db.exists("Operation", operation):
 		return []
 	workstations = []
+	explicit_workstations = []
 	default_workstation = frappe.db.get_value("Operation", operation, "workstation")
 	if operation_row:
-		add_unique(
-			workstations,
-			frappe.db.get_value("Final EB BOM Operation", operation_row, "workstation"),
-		)
+		operation_row_workstation = frappe.db.get_value("Final EB BOM Operation", operation_row, "workstation")
+		add_unique(workstations, operation_row_workstation)
 
 	if frappe.db.exists("DocType", "SmartEdge Operation Workstation"):
 		rows = frappe.get_all(
@@ -858,6 +858,7 @@ def get_compatible_workstations(operation, operation_row=None, include_default=1
 		)
 		for row in rows:
 			add_unique(workstations, row.workstation)
+			add_unique(explicit_workstations, row.workstation)
 
 	if cint(include_routes) and frappe.db.exists("DocType", "SmartEdge Route Operation"):
 		route_rows = frappe.get_all(
@@ -881,6 +882,7 @@ def get_compatible_workstations(operation, operation_row=None, include_default=1
 		for row in route_rows:
 			if row.parent in enabled_routes:
 				add_unique(workstations, row.workstation)
+				add_unique(explicit_workstations, row.workstation)
 
 	if cint(include_default):
 		add_unique(workstations, default_workstation)
@@ -889,7 +891,7 @@ def get_compatible_workstations(operation, operation_row=None, include_default=1
 	# machines without making every workstation selectable for the operation.
 	representative = frappe.db.get_value("Final EB BOM Operation", operation_row, "workstation") if operation_row else None
 	representative = representative or default_workstation
-	if representative:
+	if representative and not explicit_workstations:
 		workstation_type = frappe.db.get_value("Workstation", representative, "workstation_type")
 		if workstation_type:
 			for row in frappe.get_all(
@@ -897,6 +899,17 @@ def get_compatible_workstations(operation, operation_row=None, include_default=1
 				fields=["name"], order_by="name asc", limit_page_length=500,
 			):
 				add_unique(workstations, row.name)
+		elif cint(include_all_active):
+			# Operation/BOM/route workstation values are defaults unless an
+			# explicit SmartEdge compatibility mapping exists. In that default
+			# case, expose all active Workstations the current user may read.
+			active_workstations = get_active_workstations()
+			workstations = []
+			add_unique(workstations, representative)
+			for workstation in active_workstations:
+				add_unique(workstations, workstation)
+	elif cint(include_all_active) and not explicit_workstations and not representative:
+		workstations = get_active_workstations()
 	return filter_enabled_workstations(workstations)
 
 
@@ -904,7 +917,7 @@ def filter_enabled_workstations(workstations):
 	if not workstations:
 		return []
 	enabled = set(
-		frappe.get_all(
+		frappe.get_list(
 			"Workstation",
 			filters={"name": ["in", workstations], "disabled": 0},
 			pluck="name",
@@ -912,6 +925,17 @@ def filter_enabled_workstations(workstations):
 		)
 	)
 	return [workstation for workstation in workstations if workstation in enabled]
+
+
+def get_active_workstations():
+	"""Return enabled Workstations visible to the current user in master order."""
+	return frappe.get_list(
+		"Workstation",
+		filters={"disabled": 0},
+		pluck="name",
+		order_by="name asc",
+		limit_page_length=500,
+	)
 
 
 def add_unique(values, value):
@@ -955,7 +979,7 @@ def get_workstation_booking_conflict_projection(entry, workstation, planned_date
 	]
 	return {
 		"scheduling_conflict": cint(bool(conflicts)),
-		"scheduling_conflict_blocked": cint(bool(conflicts and maximum_capacity <= 1)),
+		"scheduling_conflict_blocked": cint(bool(conflicts)),
 		"scheduling_conflict_message": (
 			format_workstation_conflict_message(workstation, start_dt, end_dt, conflicts)
 			if conflicts
@@ -1132,6 +1156,12 @@ def schedule_operation(
 		)
 	)
 	validation_messages = []
+	capacity_status = projection.get("status")
+	if capacity_status not in {"ok", "overload", "not_applicable"}:
+		validation_messages.append(
+			projection.get("message")
+			or _("Machine capacity could not be verified for the selected Workstation and operation.")
+		)
 	if projection.get("status") == "duration_insufficient":
 		validation_messages.append(
 			projection.get("message")
@@ -1484,33 +1514,11 @@ def validate_capacity(
 	planned = get_workstation_planned_minutes(workstation, getdate(start_dt), plan_entry)
 	new_minutes = (end_dt - start_dt).total_seconds() / 60
 	overlaps = get_overlapping_entries(workstation, start_dt, end_dt, plan_entry)
-	maximum = get_capacity(workstation)
-	if overlaps and maximum <= 1:
+	if overlaps:
 		frappe.throw(
 			format_workstation_conflict_message(workstation, start_dt, end_dt, overlaps),
 			title=_("Workstation Scheduling Conflict"),
 		)
-	if overlaps and not override:
-		occupied = get_reserved_work_order_count(workstation) + len(overlaps)
-		if occupied >= maximum:
-			frappe.throw(
-				_("""
-				<p><b>Workstation Job Capacity Exceeded</b></p>
-				<p>
-					Workstation: {0}<br>
-					Maximum Job Capacity: {1}<br>
-					Occupied Capacity: {2}<br>
-					Available Capacity: {3}
-				</p>
-				<p>Cannot plan or start another production job because this Workstation has reached its maximum Job Capacity.</p>
-				""").format(
-					frappe.bold(workstation),
-					maximum,
-					occupied,
-					max(maximum - occupied, 0),
-				),
-				title=_("Workstation Job Capacity Exceeded"),
-			)
 	if (
 		capacity_hours
 		and planned + new_minutes > capacity_hours * 60
@@ -2705,7 +2713,14 @@ def get_complete_job_context(plan_entry):
 	production = frappe.db.get_value(
 		"Final EB BOM Generator",
 		job.final_eb_bom_generator,
-		["finished_item", "finished_item_name", "stock_uom", "production_quantity", "total_eb_weight_kg"],
+		[
+			"finished_item",
+			"finished_item_name",
+			"stock_uom",
+			"production_quantity",
+			"total_eb_weight_kg",
+			"weight_per_meter_kg",
+		],
 		as_dict=True,
 	)
 	context = {
@@ -2774,10 +2789,17 @@ def get_completion_quantity_context(entry, job, production=None):
 	This context only describes the kilogram calculation and the configured scrap
 	items; it does not change any persisted values.
 	"""
+	production_name = get_completion_production_name(entry, job)
 	production = production or frappe.db.get_value(
 		"Final EB BOM Generator",
-		entry.final_eb_bom_generator,
-		["finished_item", "stock_uom", "production_quantity", "total_eb_weight_kg"],
+		production_name,
+		[
+			"finished_item",
+			"stock_uom",
+			"production_quantity",
+			"total_eb_weight_kg",
+			"weight_per_meter_kg",
+		],
 		as_dict=True,
 	)
 	is_material = entry.get("plan_type") == MATERIAL_PLAN_TYPE
@@ -2785,6 +2807,11 @@ def get_completion_quantity_context(entry, job, production=None):
 	output_uom = entry.get("quantity_uom") if is_material else "Meter"
 	output_uom = output_uom or (production.stock_uom if production else None)
 	output_kg_factor = get_completion_output_kg_factor(entry, job, output_item, output_uom, production)
+	# Meter is a valid production-reporting UOM for final EB scrap even when the
+	# configured scrap Item has no Item UOM row for Meter.  The authoritative
+	# factor is stored on this exact linked FEBG; do not borrow it from another
+	# product or production.
+	meter_to_kg_factor = None if is_material else flt(production.get("weight_per_meter_kg")) if production else 0
 	config = frappe.db.get_value(
 		"SmartEdge Recovery Material",
 		{"source_item": output_item, "disabled": 0},
@@ -2796,10 +2823,15 @@ def get_completion_quantity_context(entry, job, production=None):
 		"completion_output_uom": output_uom,
 		"completion_output_item": output_item,
 		"completion_output_kg_factor": output_kg_factor,
+		"completion_meter_to_kg_factor": meter_to_kg_factor,
 		"usable_scrap_item": config.usable_scrap_item if config else None,
 		"unusable_scrap_item": config.unusable_scrap_item if config else None,
-		"usable_scrap_uom_options": get_completion_uom_options(config.usable_scrap_item if config else None),
-		"unusable_scrap_uom_options": get_completion_uom_options(config.unusable_scrap_item if config else None),
+		"usable_scrap_uom_options": get_completion_uom_options(
+			config.usable_scrap_item if config else None, meter_to_kg_factor
+		),
+		"unusable_scrap_uom_options": get_completion_uom_options(
+			config.unusable_scrap_item if config else None, meter_to_kg_factor
+		),
 		"usable_scrap_uom": frappe.db.get_value("Item", config.usable_scrap_item, "stock_uom") if config and config.usable_scrap_item else None,
 		"unusable_scrap_uom": frappe.db.get_value("Item", config.unusable_scrap_item, "stock_uom") if config and config.unusable_scrap_item else None,
 	}
@@ -2819,18 +2851,37 @@ def get_completion_quantity_context(entry, job, production=None):
 def get_completion_output_kg_factor(entry, job, output_item, output_uom, production=None):
 	if entry.get("plan_type") == MATERIAL_PLAN_TYPE:
 		return get_completion_item_uom_to_kg_factor(output_item, output_uom) if output_item and output_uom else 0
+	production = production or frappe.db.get_value(
+		"Final EB BOM Generator",
+		get_completion_production_name(entry, job),
+		["production_quantity", "total_eb_weight_kg", "weight_per_meter_kg"],
+		as_dict=True,
+	)
+	if production and flt(production.get("weight_per_meter_kg")) > 0:
+		return flt(production.get("weight_per_meter_kg"))
 	if flt(job.get("actual_qty_meter")) and flt(job.get("actual_qty_kg")):
 		return flt(job.actual_qty_kg) / flt(job.actual_qty_meter)
-	production = production or frappe.db.get_value(
-		"Final EB BOM Generator", entry.final_eb_bom_generator,
-		["production_quantity", "total_eb_weight_kg"], as_dict=True,
-	)
 	if production and flt(production.get("production_quantity")) and flt(production.get("total_eb_weight_kg")):
 		return flt(production.total_eb_weight_kg) / flt(production.production_quantity)
 	return 0
 
 
-def get_completion_uom_options(item_code):
+def get_completion_production_name(entry, job):
+	"""Resolve the FEBG attached to the actual job, rejecting mismatched context."""
+	entry_production = entry.get("final_eb_bom_generator")
+	job_production = job.get("final_eb_bom_generator")
+	if entry_production and job_production and entry_production != job_production:
+		frappe.throw(
+			_("Production Plan Entry and Production Job reference different Final EB BOM Generators.")
+		)
+	return job_production or entry_production
+
+
+def is_meter_uom(uom):
+	return str(uom or "").strip().lower() in {"m", "meter", "meters", "metre", "metres"}
+
+
+def get_completion_uom_options(item_code, meter_to_kg_factor=None):
 	if not item_code or not frappe.db.exists("Item", item_code):
 		return []
 	item = frappe.db.get_value("Item", item_code, ["stock_uom"], as_dict=True)
@@ -2846,6 +2897,8 @@ def get_completion_uom_options(item_code):
 			options.append("Kg")
 		except Exception:
 			pass
+	if meter_to_kg_factor is not None and flt(meter_to_kg_factor) > 0 and "Meter" not in options:
+		options.append("Meter")
 	return list(dict.fromkeys(value for value in options if value))
 
 
@@ -2884,17 +2937,95 @@ def get_completion_item_uom_to_kg_factor(item_code, uom):
 	return flt(input_to_stock) / flt(kg_to_stock)
 
 
-def convert_completion_quantity(item_code, quantity, uom, label):
+def convert_completion_quantity(item_code, quantity, uom, label, meter_to_kg_factor=None):
 	quantity = parse_completion_quantity(quantity, label)
 	if not quantity:
 		return {"stock_quantity": 0.0, "kg_quantity": 0.0}
 	if not item_code:
 		frappe.throw(_("Configure a scrap Item before recording {0}.").format(label))
+	item = validate_stock_item(item_code)
+	if is_meter_uom(uom) and meter_to_kg_factor is not None:
+		meter_to_kg_factor = flt(meter_to_kg_factor)
+		if meter_to_kg_factor <= 0:
+			frappe.throw(
+				_("Cannot convert {0} entered in Meter because the linked Final EB BOM Generator has no valid Weight / Meter (Kg) value.").format(label)
+			)
+		kg_quantity = flt(quantity * meter_to_kg_factor, 6)
+		if item.stock_uom == "Kg":
+			stock_quantity = kg_quantity
+		elif is_meter_uom(item.stock_uom):
+			stock_quantity = quantity
+		else:
+			# The production-specific factor establishes the physical Kg amount;
+			# ERPNext still requires a valid Kg -> stock-UOM conversion for posting.
+			kg_to_stock = get_completion_item_uom_to_stock_factor(item_code, "Kg")
+			stock_quantity = flt(kg_quantity * kg_to_stock, 6)
+		return {"stock_quantity": stock_quantity, "kg_quantity": kg_quantity}
 	stock_factor = get_completion_item_uom_to_stock_factor(item_code, uom)
 	kg_factor = get_completion_item_uom_to_kg_factor(item_code, uom)
 	return {
 		"stock_quantity": flt(quantity * stock_factor, 6),
 		"kg_quantity": flt(quantity * kg_factor, 6),
+	}
+
+
+def calculate_completion_quantity_values(
+	context,
+	actual_qty_kg=None,
+	rejected_qty_kg=None,
+	rework_qty_kg=None,
+	usable_scrap=None,
+	usable_scrap_uom=None,
+	unusable_scrap=None,
+	unusable_scrap_uom=None,
+):
+	"""Calculate completion quantities from an already-resolved production context."""
+	output_item = context.get("completion_output_item")
+	output_uom = context.get("completion_output_uom")
+	actual = parse_completion_quantity(actual_qty_kg, _("Actual Completed Quantity (Kg)"))
+	rejected = parse_completion_quantity(rejected_qty_kg, _("Rejected Output (Kg)"))
+	rework = parse_completion_quantity(rework_qty_kg, _("Rework (Kg)"))
+	usable = convert_completion_quantity(
+		context.get("usable_scrap_item"),
+		usable_scrap,
+		usable_scrap_uom,
+		_("Usable Scrap"),
+		context.get("completion_meter_to_kg_factor"),
+	)
+	unusable = convert_completion_quantity(
+		context.get("unusable_scrap_item"),
+		unusable_scrap,
+		unusable_scrap_uom,
+		_("Unusable Scrap"),
+		context.get("completion_meter_to_kg_factor"),
+	)
+	total = rejected + rework + usable["kg_quantity"] + unusable["kg_quantity"]
+	good = flt(actual - total, 6)
+	if total > actual + 0.000001:
+		frappe.throw(
+			_("Rejected Output, Rework, and Scrap cannot exceed Actual Completed Quantity. Good Output would be negative.")
+		)
+	output_factor = flt(context.get("completion_output_kg_factor"))
+	if output_item and output_uom and output_factor <= 0:
+		frappe.throw(
+			_("Cannot establish the existing Kg conversion for output Item {0} ({1}).").format(
+				output_item, output_uom
+			)
+		)
+	good_output = flt(good / output_factor, 6) if output_factor else 0
+	return {
+		"actual_qty_kg": actual,
+		"rejected_qty_kg": rejected,
+		"rework_qty_kg": rework,
+		"usable_scrap_kg": usable["kg_quantity"],
+		"usable_scrap_stock_qty": usable["stock_quantity"],
+		"unusable_scrap_kg": unusable["kg_quantity"],
+		"unusable_scrap_stock_qty": unusable["stock_quantity"],
+		"good_qty_kg": good,
+		"good_qty": good_output,
+		"rejected_qty": flt(rejected / output_factor, 6) if output_factor else 0,
+		"rework_qty": flt(rework / output_factor, 6) if output_factor else 0,
+		"output_uom": output_uom,
 	}
 
 
@@ -2925,50 +3056,29 @@ def calculate_completion_quantities(
 	entry.check_permission("read")
 	job = get_open_job(plan_entry, include_completed=True)
 	job.check_permission("read")
+	production_name = get_completion_production_name(entry, job)
 	production = frappe.db.get_value(
-		"Final EB BOM Generator", entry.final_eb_bom_generator,
-		["finished_item", "stock_uom", "production_quantity", "total_eb_weight_kg"], as_dict=True,
+		"Final EB BOM Generator", production_name,
+		[
+			"finished_item",
+			"stock_uom",
+			"production_quantity",
+			"total_eb_weight_kg",
+			"weight_per_meter_kg",
+		],
+		as_dict=True,
 	)
 	context = get_completion_quantity_context(entry, job, production=production)
-	output_item = context.get("completion_output_item")
-	output_uom = context.get("completion_output_uom")
-	actual = parse_completion_quantity(actual_qty_kg, _("Actual Completed Quantity (Kg)"))
-	rejected = parse_completion_quantity(rejected_qty_kg, _("Rejected Output (Kg)"))
-	rework = parse_completion_quantity(rework_qty_kg, _("Rework (Kg)"))
-	usable = convert_completion_quantity(
-		context.get("usable_scrap_item"), usable_scrap, usable_scrap_uom, _("Usable Scrap")
+	return calculate_completion_quantity_values(
+		context,
+		actual_qty_kg=actual_qty_kg,
+		rejected_qty_kg=rejected_qty_kg,
+		rework_qty_kg=rework_qty_kg,
+		usable_scrap=usable_scrap,
+		usable_scrap_uom=usable_scrap_uom,
+		unusable_scrap=unusable_scrap,
+		unusable_scrap_uom=unusable_scrap_uom,
 	)
-	unusable = convert_completion_quantity(
-		context.get("unusable_scrap_item"), unusable_scrap, unusable_scrap_uom, _("Unusable Scrap")
-	)
-	total = rejected + rework + usable["kg_quantity"] + unusable["kg_quantity"]
-	good = flt(actual - total, 6)
-	if total > actual + 0.000001:
-		frappe.throw(
-			_("Rejected Output, Rework, and Scrap cannot exceed Actual Completed Quantity. Good Output would be negative.")
-		)
-	output_factor = flt(context.get("completion_output_kg_factor"))
-	if output_item and output_uom and output_factor <= 0:
-		frappe.throw(
-			_("Cannot establish the existing Kg conversion for output Item {0} ({1}).").format(
-				output_item, output_uom
-			)
-		)
-	good_output = flt(good / output_factor, 6) if output_factor else 0
-	return {
-		"actual_qty_kg": actual,
-		"rejected_qty_kg": rejected,
-		"rework_qty_kg": rework,
-		"usable_scrap_kg": usable["kg_quantity"],
-		"usable_scrap_stock_qty": usable["stock_quantity"],
-		"unusable_scrap_kg": unusable["kg_quantity"],
-		"unusable_scrap_stock_qty": unusable["stock_quantity"],
-		"good_qty_kg": good,
-		"good_qty": good_output,
-		"rejected_qty": flt(rejected / output_factor, 6) if output_factor else 0,
-		"rework_qty": flt(rework / output_factor, 6) if output_factor else 0,
-		"output_uom": output_uom,
-	}
 
 
 def get_remaining_or_planned_quantity(entry):

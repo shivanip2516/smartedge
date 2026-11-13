@@ -16,6 +16,7 @@ from smart_edge_custom.manufacturing.final_bom_generator import (
 	convert_stock_qty_to_kg,
 	get_prepared_component_batch_weight,
 	get_generator_lifecycle_status,
+	validate_production_quantity_requirement,
 )
 
 MATERIAL_PLAN_TYPE = "Required Material"
@@ -337,7 +338,9 @@ def get_material_workstation_context(bom_no, operation):
 	# and BOM workstation values are defaults, not one-item allow-lists.
 	# EB process-route assignments are route-specific and must not constrain a
 	# standalone Compound/Base Colour material operation.
-	workstations = get_compatible_workstations(operation, include_default=0, include_routes=0)
+	workstations = get_compatible_workstations(
+		operation, include_default=0, include_routes=0, include_all_active=0
+	)
 	workstations = filter_enabled_workstations(workstations)
 	restricted = bool(workstations)
 	if not restricted:
@@ -544,6 +547,7 @@ def create_required_material_plans(production, plans):
 	requested = {row.get("material_type"): row for row in plans}
 	lock_material_requirement(doc.name)
 	doc.reload()
+	validate_production_quantity_requirement(doc)
 	reconcile_material_plans(doc)
 	context = build_material_planning_context(doc)
 	created = []
@@ -562,6 +566,7 @@ def reconcile_required_material_plans(production):
 	doc.check_permission("write")
 	lock_material_requirement(doc.name)
 	doc.reload()
+	validate_production_quantity_requirement(doc)
 	created = reconcile_material_plans(doc)
 	context = refresh_material_readiness(doc.name)
 	return {"created": created, "context": context}
@@ -615,6 +620,7 @@ def reconcile_material_plans(doc):
 
 
 def reconcile_work_order_plan(doc, requirement, work_order_name):
+	validate_production_quantity_requirement(doc)
 	if not work_order_name or not frappe.db.exists("Work Order", work_order_name):
 		return None
 	if frappe.db.exists(
@@ -655,6 +661,7 @@ def reconcile_work_order_plan(doc, requirement, work_order_name):
 
 
 def create_material_plan(doc, requirement, values):
+	validate_production_quantity_requirement(doc)
 	batches = validate_number_of_batches(requirement["batches_to_plan"], _("Batches to Plan"))
 	if not requirement.get("bom_no"):
 		frappe.throw(_("No active submitted one-batch BOM found for Item {0}.").format(requirement["item_code"]))

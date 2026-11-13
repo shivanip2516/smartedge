@@ -5,13 +5,21 @@ from datetime import datetime, time, timedelta
 import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, get_time, getdate
+from erpnext.stock.doctype.item.item import get_uom_conv_factor
 
 
 CAPACITY_DOCTYPE = "SmartEdge Workstation Capacity Rate"
 CAPACITY_BY_CATEGORY = {
 	"Extrusion": ("Kg/Hour", "planned_kg", "Kg"),
+	"Mixing": ("Kg/Hour", "planned_kg", "Kg"),
 	"Printing": ("Meter/Hour", "planned_meter", "Meter"),
 	"Slitting": ("Meter/Hour", "planned_meter", "Meter"),
+	"Packing": ("Meter/Hour", "planned_meter", "Meter"),
+}
+NON_CAPACITY_CATEGORIES = {"QC"}
+CAPACITY_UNITS = {
+	"Kg/Hour": ("planned_kg", "Kg"),
+	"Meter/Hour": ("planned_meter", "Meter"),
 }
 ACTIVE_PLAN_STATUSES = ("Ready", "Planned", "In Progress", "On Hold")
 ACTIVE_WORK_ORDER_STATUSES = ("Not Started", "In Process")
@@ -76,15 +84,29 @@ def _get_workstation_capacity_rows(workstations):
 		except Exception:
 			child_rows = []
 		if child_rows:
-			rows.extend({**dict(row), "workstation": parent.workstation, "company": parent.company, "parent": parent.name} for row in child_rows)
+			rows.extend(
+				{
+					**dict(row),
+					"workstation": parent.workstation,
+					"operation": parent.operation,
+					"company": parent.company,
+					"product_item": parent.product_item,
+					"process_route": parent.process_route,
+					"parent": parent.name,
+				}
+				for row in child_rows
+			)
 			if parent.capacity_rate and parent.capacity_uom:
 				rows.append({
 					"name": parent.name,
 					"workstation": parent.workstation,
+					"operation": parent.operation,
 					"product_size": None,
 					"capacity_rate": parent.capacity_rate,
 					"capacity_uom": parent.capacity_uom,
 					"company": parent.company,
+					"product_item": parent.product_item,
+					"process_route": parent.process_route,
 					"parent": parent.name,
 				})
 		else:
@@ -94,6 +116,125 @@ def _get_workstation_capacity_rows(workstations):
 
 def get_expected_capacity(category):
 	return CAPACITY_BY_CATEGORY.get(category)
+
+
+def _capacity_context(row):
+	return {
+		"operation": _value(row, "operation"),
+		"product_size": _value(row, "custom_size"),
+		"product_item": _value(row, "material_item") or _value(row, "finished_item"),
+		"process_route": _value(row, "selected_route"),
+		"company": _value(row, "company"),
+	}
+
+
+def _select_capacity_rate_for_unit(rows, row, workstation, capacity_uom):
+	context = _capacity_context(row)
+	return select_capacity_rate(
+		[
+			candidate
+			for candidate in rows
+			if _value(candidate, "workstation") == workstation
+			and _value(candidate, "capacity_uom") == capacity_uom
+		],
+		**context,
+	)
+
+
+def _uom_family(value):
+	value = str(value or "").strip().lower()
+	if value in {"kg", "kilogram", "kilograms", "g", "gram", "grams", "mg", "lb", "lbs", "pound", "pounds"}:
+		return "Kg"
+	if value in {"m", "meter", "meters", "metre", "metres"}:
+		return "Meter"
+	return None
+
+
+def _infer_capacity_definition(row, workstation, rows):
+	category = _value(row, "planning_category")
+	expected = get_expected_capacity(category)
+	if expected:
+		return {"capacity_uom": expected[0], "quantity_field": expected[1], "quantity_uom": expected[2]}
+	if category in NON_CAPACITY_CATEGORIES:
+		return None
+
+	# Custom categories are supported when the configured master has one
+	# unambiguous capacity unit. If both units are configured, use the item's
+	# authoritative UOM where it identifies the unit; otherwise fail closed.
+	family = _uom_family(_value(row, "quantity_uom") or _value(row, "stock_uom"))
+	unit_candidates = []
+	for capacity_uom, (quantity_field, quantity_uom) in CAPACITY_UNITS.items():
+		if _select_capacity_rate_for_unit(rows, row, workstation, capacity_uom):
+			unit_candidates.append((capacity_uom, quantity_field, quantity_uom))
+	if family:
+		family_candidates = [candidate for candidate in unit_candidates if candidate[2] == family]
+		if family_candidates:
+			unit_candidates = family_candidates
+	if len(unit_candidates) == 1:
+		capacity_uom, quantity_field, quantity_uom = unit_candidates[0]
+		return {"capacity_uom": capacity_uom, "quantity_field": quantity_field, "quantity_uom": quantity_uom}
+	return None
+
+
+def _item_uom_to_target_factor(item_code, source_uom, target_uom):
+	if not source_uom or not target_uom or source_uom == target_uom:
+		return 1.0
+	if item_code and frappe.db.exists("Item", item_code):
+		item = frappe.db.get_value("Item", item_code, ["stock_uom"], as_dict=True)
+		stock_uom = item.stock_uom if item else None
+		if stock_uom:
+			def to_stock(uom):
+				if uom == stock_uom:
+					return 1.0
+				factor = frappe.db.get_value(
+					"UOM Conversion Detail",
+					{"parent": item_code, "uom": uom},
+					"conversion_factor",
+				)
+				return flt(factor) or flt(get_uom_conv_factor(uom, stock_uom))
+
+			source_to_stock = to_stock(source_uom)
+			target_to_stock = to_stock(target_uom)
+			if source_to_stock > 0 and target_to_stock > 0:
+				return source_to_stock / target_to_stock
+
+	# Fall back to the standard UOM conversion table when no item-specific
+	# conversion is needed or the item does not have a usable conversion.
+	factor = get_uom_conv_factor(target_uom, source_uom)
+	return flt(1 / factor) if flt(factor) > 0 else 0
+
+
+def _resolve_operation_quantity(row, quantity_uom):
+	plan_type = _value(row, "plan_type")
+	if plan_type == "Required Material":
+		value = _value(row, "production_quantity")
+		if flt(value) <= 0:
+			value = _value(row, "planned_kg")
+		if flt(value) <= 0:
+			return None, _("Planned quantity is not available for this operation.")
+		source_uom = _value(row, "quantity_uom")
+		if not source_uom:
+			return None, _("Quantity UOM is not configured for this material operation.")
+		factor = _item_uom_to_target_factor(
+			_value(row, "material_item"), source_uom, quantity_uom
+		)
+		if factor <= 0:
+			return None, _(
+				"Cannot convert the planned quantity from {0} to {1} for this operation."
+			).format(source_uom, quantity_uom)
+		return flt(value * factor), None
+
+	if quantity_uom == "Kg":
+		value = _value(row, "planned_kg")
+		if flt(value) <= 0:
+			value = _value(row, "total_eb_weight_kg")
+	else:
+		value = _value(row, "planned_meter")
+		if flt(value) <= 0:
+			value = _value(row, "production_quantity")
+	if flt(value) <= 0:
+		return None, _("Planned quantity is not available for this operation.")
+	return flt(value), None
 
 
 def _match_rank(row):
@@ -120,22 +261,24 @@ def select_capacity_rate(rows, operation=None, product_size=None, product_item=N
 	choosing by creation order.
 	"""
 	eligible = []
-	legacy_rows = not any(_value(row, "parent") for row in rows)
-	context = {"product_size": product_size}
-	if legacy_rows:
-		context.update({
-			"operation": operation,
-			"product_item": product_item,
-			"process_route": process_route,
-		})
+	context = {
+		"operation": operation,
+		"product_size": product_size,
+		"product_item": product_item,
+		"process_route": process_route,
+	}
 	for row in rows:
 		row_company = _value(row, "company")
 		if row_company and row_company != company:
 			continue
-		if _value(row, "product_size") and _normalize_product_size(_value(row, "product_size")) != _normalize_product_size(product_size):
-			continue
-		if legacy_rows and any(
-			fieldname != "product_size" and _value(row, fieldname) and _value(row, fieldname) != value
+		if any(
+			_value(row, fieldname)
+			and (
+				_normalize_product_size(_value(row, fieldname))
+				!= _normalize_product_size(value)
+				if fieldname == "product_size"
+				else _value(row, fieldname) != value
+			)
 			for fieldname, value in context.items()
 		):
 			continue
@@ -183,10 +326,7 @@ def get_capacity_rate(
 		return cache[cache_key]
 	rows = _get_workstation_capacity_rows([workstation])
 	rows = [row for row in rows if not row.get("capacity_uom") or row.get("capacity_uom") == capacity_uom]
-	if any(_value(row, "operation") or _value(row, "product_item") or _value(row, "process_route") for row in rows):
-		match = select_capacity_rate(rows, operation, product_size, product_item, process_route, company)
-	else:
-		match = select_capacity_rate(rows, product_size=product_size)
+	match = select_capacity_rate(rows, operation, product_size, product_item, process_route, company)
 	cache[cache_key] = match
 	return match
 
@@ -203,11 +343,6 @@ def get_capacity_rate_rows(workstations):
 
 
 def select_capacity_rate_for_row(rows, row, workstation, capacity_uom):
-	legacy = any(
-		_value(candidate, fieldname)
-		for candidate in rows
-		for fieldname in ("operation", "product_item", "process_route", "company")
-	)
 	return select_capacity_rate(
 		[
 			candidate
@@ -215,11 +350,11 @@ def select_capacity_rate_for_row(rows, row, workstation, capacity_uom):
 			if _value(candidate, "workstation") == workstation
 			and _value(candidate, "capacity_uom") == capacity_uom
 		],
-		operation=_value(row, "operation") if legacy else None,
+		operation=_value(row, "operation"),
 		product_size=_value(row, "custom_size"),
-		product_item=_value(row, "finished_item") if legacy else None,
-		process_route=_value(row, "selected_route") if legacy else None,
-		company=_value(row, "company") if legacy else None,
+		product_item=_value(row, "material_item") or _value(row, "finished_item"),
+		process_route=_value(row, "selected_route"),
+		company=_value(row, "company"),
 	)
 
 
@@ -662,40 +797,62 @@ def add_rate_capacity(availability, rate):
 
 def get_rate_payload(row, workstation=None, rate_rows=None):
 	category = _value(row, "planning_category")
-	expected = get_expected_capacity(category)
 	workstation = workstation or _value(row, "workstation")
-	if not expected or not workstation or workstation == _("Unassigned"):
+	if not workstation or workstation == _("Unassigned"):
 		return {"applicable": 0}
-	capacity_uom, quantity_field, quantity_uom = expected
-	if rate_rows is None:
-		match = get_capacity_rate(
-			workstation,
-			capacity_uom,
-			operation=_value(row, "operation"),
-			product_size=_value(row, "custom_size"),
-			product_item=_value(row, "finished_item"),
-			process_route=_value(row, "selected_route"),
-			company=_value(row, "company"),
-		)
+	expected = get_expected_capacity(category)
+	match = None
+	if expected:
+		definition = {
+			"capacity_uom": expected[0],
+			"quantity_field": expected[1],
+			"quantity_uom": expected[2],
+		}
+		if rate_rows is None:
+			match = get_capacity_rate(
+				workstation,
+				definition["capacity_uom"],
+				operation=_value(row, "operation"),
+				product_size=_value(row, "custom_size"),
+				product_item=_value(row, "material_item") or _value(row, "finished_item"),
+				process_route=_value(row, "selected_route"),
+				company=_value(row, "company"),
+			)
+		else:
+			match = _select_capacity_rate_for_unit(rate_rows, row, workstation, definition["capacity_uom"])
 	else:
-		match = select_capacity_rate_for_row(rate_rows, row, workstation, capacity_uom)
-	planned_quantity_value = _value(row, quantity_field)
-	if flt(planned_quantity_value) <= 0:
-		# Final EB route rows carry their authoritative production quantity on
-		# the generator.  Use that value when the planning-entry convenience
-		# field has not been populated yet.
-		fallback_field = "total_eb_weight_kg" if quantity_field == "planned_kg" else "production_quantity"
-		planned_quantity_value = _value(row, fallback_field)
-	planned_quantity = flt(planned_quantity_value)
+		if rate_rows is None:
+			rate_rows = get_capacity_rate_rows([workstation])
+		definition = _infer_capacity_definition(row, workstation, rate_rows)
+	if not definition:
+		if category in NON_CAPACITY_CATEGORIES:
+			return {"applicable": 0}
+		return {
+			"applicable": 1,
+			"configured": 0,
+			"configuration_status": "Invalid Capacity Unit",
+			"message": _(
+				"Capacity unit is not configured unambiguously for this Workstation and operation."
+			),
+		}
+	capacity_uom = definition["capacity_uom"]
+	quantity_uom = definition["quantity_uom"]
+	if match is None:
+		match = _select_capacity_rate_for_unit(rate_rows or [], row, workstation, capacity_uom)
+	planned_quantity, quantity_error = _resolve_operation_quantity(row, quantity_uom)
 	base = {
 		"applicable": 1,
 		"capacity_uom": capacity_uom,
 		"quantity_uom": quantity_uom,
 		"planned_quantity": planned_quantity,
-		"planned_quantity_available": cint(planned_quantity_value is not None and planned_quantity > 0),
-		"planned_kg": flt(_value(row, "planned_kg")) if _value(row, "planned_kg") is not None else None,
+		"planned_quantity_available": cint(planned_quantity is not None and planned_quantity > 0),
+		"planned_kg": flt(planned_quantity) if quantity_uom == "Kg" and planned_quantity else (
+			flt(_value(row, "planned_kg")) if _value(row, "planned_kg") is not None else None
+		),
 		"planned_meter": (
-			flt(_value(row, "planned_meter")) if _value(row, "planned_meter") is not None else None
+			flt(planned_quantity) if quantity_uom == "Meter" and planned_quantity else (
+				flt(_value(row, "planned_meter")) if _value(row, "planned_meter") is not None else None
+			)
 		),
 	}
 	if not match:
@@ -717,14 +874,23 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 			}
 		)
 		return base
+	if quantity_error and planned_quantity is None and "Planned quantity is not available" not in str(quantity_error):
+		base.update(
+			{
+				"configured": 0,
+				"configuration_status": "Invalid Quantity",
+				"message": quantity_error,
+			}
+		)
+		return base
 	base.update(
 		{
 			"configured": 1,
 			"configuration_status": "Configured",
 			"configuration": _value(match, "name"),
 			"capacity_rate": rate,
-			"required_hours": planned_quantity / rate if planned_quantity > 0 else None,
-			"planned_hours_status": "Available" if planned_quantity > 0 else "Not Available",
+			"required_hours": planned_quantity / rate if planned_quantity else None,
+			"planned_hours_status": "Available" if planned_quantity else "Not Available",
 		}
 	)
 	return base
@@ -771,8 +937,7 @@ def attach_board_capacity_details(rows):
 	eligible = [
 		row
 		for row in rows
-		if _value(row, "plan_type") != "Required Material"
-		and get_expected_capacity(_value(row, "planning_category"))
+		if _value(row, "planning_category") not in NON_CAPACITY_CATEGORIES
 		and (_value(row, "job_workstation") or _value(row, "workstation"))
 	]
 	if not eligible:
@@ -894,6 +1059,10 @@ def get_capacity_allocation_rows(workstations, date_from, date_to):
 			"name",
 			"creation",
 			"final_eb_bom_generator",
+			"plan_type",
+			"material_item",
+			"production_quantity",
+			"quantity_uom",
 			"operation_row",
 			"operation",
 			"sequence",
@@ -917,14 +1086,14 @@ def get_capacity_allocation_rows(workstations, date_from, date_to):
 		for row in frappe.get_all(
 			"Final EB BOM Generator",
 			filters={"name": ["in", generator_names]},
-			fields=["name", "company", "finished_item", "custom_size", "selected_route"],
+			fields=["name", "company", "finished_item", "custom_size", "selected_route", "stock_uom"],
 			limit_page_length=len(generator_names),
 		)
 	}
 	for row in rows:
 		generator = generators.get(row.final_eb_bom_generator)
 		if generator:
-			for fieldname in ("company", "finished_item", "custom_size", "selected_route"):
+			for fieldname in ("company", "finished_item", "custom_size", "selected_route", "stock_uom"):
 				row[fieldname] = generator.get(fieldname)
 	return rows
 
@@ -1042,8 +1211,6 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 	"""
 	planned_date = getdate(planned_date)
 	shift = shift or _value(entry, "planned_shift") or None
-	if _value(entry, "plan_type") == "Required Material":
-		return {"status": "not_applicable", "requires_confirmation": 0}
 
 	as_dict = getattr(entry, "as_dict", None)
 	row = frappe._dict(as_dict() if callable(as_dict) else dict(entry))
@@ -1052,19 +1219,36 @@ def get_schedule_capacity_projection(entry, workstation, planned_date, shift=Non
 		generator = frappe.db.get_value(
 			"Final EB BOM Generator",
 			generator_name,
-			["company", "finished_item", "custom_size", "selected_route"],
+			["company", "finished_item", "custom_size", "selected_route", "stock_uom"],
 			as_dict=True,
 		)
 		if generator:
-			for fieldname in ("company", "finished_item", "custom_size", "selected_route"):
+			for fieldname in ("company", "finished_item", "custom_size", "selected_route", "stock_uom"):
 				row[fieldname] = generator.get(fieldname)
 
 	rate_rows = get_capacity_rate_rows([workstation])
 	rate_payload = get_rate_payload(row, workstation, rate_rows)
 	if not rate_payload.get("applicable"):
-		return {"status": "not_applicable", "requires_confirmation": 0}
+		return {
+			"status": "not_applicable",
+			"requires_confirmation": 0,
+			"workstation": workstation,
+			"planned_date": str(planned_date),
+			"shift": shift,
+		}
 	if not rate_payload.get("configured") or rate_payload.get("required_hours") is None:
-		return _unverified_projection(workstation, planned_date, shift, rate_payload)
+		configuration_status = rate_payload.get("configuration_status", "Not Configured")
+		if configuration_status == "Not Configured":
+			status = "not_configured"
+		elif configuration_status == "Invalid Quantity":
+			status = "invalid_quantity"
+		elif configuration_status == "Invalid Capacity Unit":
+			status = "invalid_capacity_unit"
+		elif not rate_payload.get("planned_quantity_available"):
+			status = "quantity_not_available"
+		else:
+			status = configuration_status.lower().replace(" ", "_")
+		return _unverified_projection(workstation, planned_date, shift, rate_payload, status=status)
 
 	allocation_rows = get_capacity_allocation_rows([workstation], planned_date, planned_date)
 	allocations = prepare_capacity_allocations(allocation_rows, rate_rows)
@@ -1184,5 +1368,6 @@ def _unverified_projection(
 		"capacity_rate": (rate_payload or {}).get("capacity_rate"),
 		"quantity_uom": (rate_payload or {}).get("quantity_uom"),
 		"planned_quantity": (rate_payload or {}).get("planned_quantity"),
+		"planned_quantity_available": (rate_payload or {}).get("planned_quantity_available"),
 		"required_hours": (rate_payload or {}).get("required_hours"),
 	}

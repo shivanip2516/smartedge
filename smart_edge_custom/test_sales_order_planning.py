@@ -153,7 +153,7 @@ class TestSalesOrderManufacturingPlanning(TestCase):
 		}
 		generator = MagicMock()
 		generator.name = "FEBG-1"
-		generator.production_quantity = 1500
+		generator.required_production_quantity = 1500
 		generator.stock_uom = "Meter"
 		new_doc.return_value = generator
 

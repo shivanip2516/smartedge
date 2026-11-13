@@ -10,7 +10,8 @@ frappe.pages["smartedge-production-planning"].on_page_show = function (wrapper) 
 
 frappe.provide("smart_edge_custom");
 
-function get_qr_verification_error_message(error) {
+function get_server_error_message(error, fallback) {
+	if (typeof error === "string" && error.trim()) return error;
 	const response = error?.responseJSON || error?.response || error || {};
 	let server_messages = response._server_messages || error?._server_messages;
 	if (server_messages) {
@@ -30,7 +31,11 @@ function get_qr_verification_error_message(error) {
 			// Fall through to the normal response message.
 		}
 	}
-	return response.message || error?.message || __("The scanned QR could not be verified.");
+	return response.message || error?.message || fallback;
+}
+
+function get_qr_verification_error_message(error) {
+	return get_server_error_message(error, __("The scanned QR could not be verified."));
 }
 
 smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
@@ -815,24 +820,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			});
 			return false;
 		}
-		if (projection.status === "not_configured") {
-			const proceed = await this.show_capacity_decision(
-				__("Machine Capacity Not Configured"),
-				`<p>${frappe.utils.escape_html(projection.message || __("Capacity cannot be verified for this Workstation, product size and selected date/shift."))}</p>`,
-				true
-			);
-			if (!proceed) return false;
-		}
-		if (["availability_not_configured", "schedule_not_configured"].includes(projection.status)) {
-			const title = projection.status === "availability_not_configured"
-				? __("Workstation Availability Not Configured")
-				: __("Capacity Schedule Not Configured");
-			const proceed = await this.show_capacity_decision(
-				title,
-				`<p>${frappe.utils.escape_html(projection.message || projection.configuration_message || "")}</p>`,
-				true
-			);
-			if (!proceed) return false;
+		if (!capacity_projection_is_schedulable(projection)) {
+			frappe.msgprint({
+				title: __("Capacity Verification Required"),
+				indicator: "red",
+				message: capacity_summary_html(projection),
+			});
+			return false;
 		}
 		if (projection.requires_confirmation) {
 			if (!args.override_capacity) {
@@ -1160,6 +1154,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			args: {
 				operation: card.operation,
 				operation_row: card.operation_row,
+				include_all_active: 1,
 			},
 		});
 		const workstations = response.message || [];
@@ -1240,6 +1235,17 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		dialog.fields_dict.duration_hours.$input?.on("change", update_end);
 		update_end();
 		let capacity_request = 0;
+		const set_schedule_button_state = (projection) => {
+			const primary_button = dialog.get_primary_btn && dialog.get_primary_btn();
+			if (!primary_button) return;
+			const enabled = capacity_projection_is_schedulable(projection);
+			primary_button.prop("disabled", !enabled);
+			primary_button.attr(
+				"title",
+				enabled ? "" : __("Capacity must be verified before scheduling this operation.")
+			);
+		};
+		set_schedule_button_state({ status: "not_verified" });
 		const refresh_capacity_summary = frappe.utils.debounce(async () => {
 			const request_id = ++capacity_request;
 			const values = dialog.get_values(true) || {};
@@ -1256,23 +1262,30 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					},
 				});
 				if (request_id !== capacity_request) return;
-				dialog.fields_dict.capacity_summary.$wrapper.html(capacity_summary_html(response.message || {}));
+				const projection = response.message || {};
+				dialog.fields_dict.capacity_summary.$wrapper.html(capacity_summary_html(projection));
+				set_schedule_button_state(projection);
 			} catch (error) {
 				if (request_id !== capacity_request) return;
+				set_schedule_button_state({ status: "not_verified" });
 				dialog.fields_dict.capacity_summary.$wrapper.html(
 					`<p class="text-danger">${frappe.utils.escape_html(error?.message || __("Capacity could not be calculated."))}</p>`
 				);
 			}
 		}, 180);
+		const invalidate_capacity_summary = () => {
+			set_schedule_button_state({ status: "not_verified" });
+			refresh_capacity_summary();
+		};
 		for (const fieldname of ["planned_date", "workstation", "planned_start", "duration_hours", "override_capacity"]) {
 			const field = dialog.fields_dict[fieldname];
 			if (!field) continue;
 			const existing_onchange = field.df.onchange;
 			field.df.onchange = function (...args) {
 				if (typeof existing_onchange === "function") existing_onchange.apply(this, args);
-				refresh_capacity_summary();
+				invalidate_capacity_summary();
 			};
-			field.$input?.on("input change", refresh_capacity_summary);
+			field.$input?.on("input change", invalidate_capacity_summary);
 		}
 		refresh_capacity_summary();
 	}
@@ -1536,6 +1549,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const output_label = (label) => `${__(label)}${output_uom ? ` (${frappe.utils.escape_html(output_uom)})` : ""}`;
 		const scrap_uom = context.usable_scrap_uom || context.scrap_uom || output_uom;
 		const unusable_scrap_uom = context.unusable_scrap_uom || scrap_uom;
+		const meter_to_kg_factor = flt(context.completion_meter_to_kg_factor);
 		const uom_options = (values, fallback) => {
 			const options = Array.from(new Set([...(values || []), fallback].filter(Boolean)));
 			return options.join("\n");
@@ -1544,6 +1558,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const quantity_calculation_enabled = is_material || kg_required;
 		let completing = false;
 		let verified_qr = null;
+		let completion_quantity_request = 0;
+		let completion_quantity_error = quantity_calculation_enabled;
+		let completion_quantity_error_message = null;
 		const dialog = new frappe.ui.Dialog({
 			title: __("Complete Process"),
 			fields: [
@@ -1599,8 +1616,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Section Break" },
 				{ fieldtype: "Float", fieldname: "usable_scrap", label: __("Usable Scrap"), precision: 6, hidden: !quantity_calculation_enabled, default: context.usable_scrap || 0 },
 				{ fieldtype: "Select", fieldname: "usable_scrap_uom", label: __("Usable Scrap UOM"), hidden: !quantity_calculation_enabled, options: uom_options(context.usable_scrap_uom_options, scrap_uom), default: scrap_uom },
+				{ fieldtype: "Float", fieldname: "usable_scrap_kg", label: __("Usable Scrap (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, read_only: 1, default: 0 },
 				{ fieldtype: "Float", fieldname: "unusable_scrap", label: __("Unusable Scrap"), precision: 6, hidden: !quantity_calculation_enabled, default: context.unusable_scrap || 0 },
 				{ fieldtype: "Select", fieldname: "unusable_scrap_uom", label: __("Unusable Scrap UOM"), hidden: !quantity_calculation_enabled, options: uom_options(context.unusable_scrap_uom_options, unusable_scrap_uom), default: unusable_scrap_uom },
+				{ fieldtype: "Float", fieldname: "unusable_scrap_kg", label: __("Unusable Scrap (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, read_only: 1, default: 0 },
 				{ fieldtype: "Small Text", fieldname: "remarks", label: __("Remarks"), default: context.remarks || "" },
 			],
 			primary_action_label: __("Confirm Completion"),
@@ -1612,6 +1631,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						message: __("{0} must be a valid number greater than or equal to zero.", [__(invalid_output)]),
 						indicator: "red",
 					});
+					return;
+				}
+				if (quantity_calculation_enabled && completion_quantity_error) {
+					set_completion_quantity_message(
+						completion_quantity_error_message || __("Resolve the scrap quantity conversion before completing this process."),
+						"danger"
+					);
 					return;
 				}
 				if (completing) {
@@ -1687,13 +1713,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			return verified_qr;
 		};
 		dialog.show();
-		let completion_quantity_request = 0;
 		const set_completion_quantity_message = (message, indicator = "muted") => {
 			const $help = dialog.fields_dict.good_qty_kg?.$wrapper?.find(".help-box");
 			if ($help?.length) {
 				$help.attr("class", `help-box text-${indicator}`).text(message || "");
 			}
 		};
+		if (meter_to_kg_factor > 0) {
+			set_completion_quantity_message(__("Meter scrap uses {0} Kg/m from the linked Final EB BOM Generator.", [meter_to_kg_factor.toFixed(6)]));
+		}
 		const refresh_completion_quantities = frappe.utils.debounce(async (request_id) => {
 			const values = dialog.get_values() || {};
 			try {
@@ -1712,16 +1740,28 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				});
 				if (request_id !== completion_quantity_request) return;
 				const result = response.message || {};
+				dialog.set_value("usable_scrap_kg", result.usable_scrap_kg || 0);
+				dialog.set_value("unusable_scrap_kg", result.unusable_scrap_kg || 0);
 				dialog.set_value("good_qty_kg", result.good_qty_kg || 0);
 				dialog.set_value("good_qty", result.good_qty || 0);
+				completion_quantity_error = false;
+				completion_quantity_error_message = null;
 				set_completion_quantity_message(__("Calculated from Actual Completed Quantity and entered loss quantities."));
 			} catch (error) {
 				if (request_id !== completion_quantity_request) return;
-				dialog.set_value("good_qty_kg", 0);
-				set_completion_quantity_message(error?.message || __("Enter valid scrap UOMs configured for their Items."), "danger");
+				completion_quantity_error = true;
+				completion_quantity_error_message = get_server_error_message(
+					error,
+						__("Scrap quantity conversion could not be calculated. Check the linked Final EB BOM Generator and configured scrap Items.")
+				);
+				set_completion_quantity_message(completion_quantity_error_message, "danger");
 			}
 		}, 180);
-		const schedule_completion_refresh = () => refresh_completion_quantities(++completion_quantity_request);
+		const schedule_completion_refresh = () => {
+			completion_quantity_error = true;
+			completion_quantity_error_message = __("Recalculating completion quantities…");
+			return refresh_completion_quantities(++completion_quantity_request);
+		};
 		if (quantity_calculation_enabled) {
 			for (const fieldname of [
 				"actual_qty_kg", "rejected_qty_kg", "rework_qty_kg", "usable_scrap", "usable_scrap_uom", "unusable_scrap", "unusable_scrap_uom",
@@ -2387,11 +2427,15 @@ function capacity_summary_html(projection = {}) {
 		overload: __("Capacity Exceeded"),
 		duration_insufficient: __("Duration Insufficient"),
 		not_configured: __("Not Configured"),
+		invalid_quantity: __("Invalid Quantity"),
+		quantity_not_available: __("Quantity Not Available"),
+		invalid_capacity_unit: __("Invalid Capacity Unit"),
 		availability_not_configured: __("Availability Not Configured"),
 		schedule_not_configured: __("Schedule Not Configured"),
+		not_applicable: __("Capacity Not Applicable"),
 	};
 	const status = status_labels[projection.status] || __("Not Verified");
-	const status_class = projection.status === "ok" ? "text-success" : "text-warning";
+	const status_class = ["ok", "not_applicable"].includes(projection.status) ? "text-success" : "text-warning";
 	const scheduling_conflict_label = scheduling_conflict
 		? scheduling_conflict_blocked ? __("Yes — Scheduling Blocked") : __("Yes — Parallel Capacity")
 		: __("No");
@@ -2430,6 +2474,12 @@ function capacity_summary_html(projection = {}) {
 	return `<div class="se-capacity-summary">${message}<div class="table-responsive"><table class="table table-bordered table-sm mb-0">
 		<tbody>${rows.map(([label, value]) => `<tr><th>${frappe.utils.escape_html(label)}</th><td>${typeof value === "string" && value.startsWith("<span") ? value : frappe.utils.escape_html(value)}</td></tr>`).join("")}</tbody>
 	</table></div></div>`;
+}
+
+function capacity_projection_is_schedulable(projection = {}) {
+	if (projection.working_hours_status && projection.working_hours_status !== "ok") return false;
+	if (projection.scheduling_conflict_blocked) return false;
+	return ["ok", "overload", "not_applicable"].includes(projection.status);
 }
 
 function get_utilization_status(utilization) {
@@ -2630,8 +2680,10 @@ if (typeof module !== "undefined" && module.exports) {
 		get_machine_capacity_labels,
 		capacity_projection_html,
 		capacity_summary_html,
+		capacity_projection_is_schedulable,
 		get_utilization_status,
 		get_invalid_completion_output,
+		get_server_error_message,
 		get_operation_display_label,
 		resolve_item_group_placement,
 		can_change_workstation,

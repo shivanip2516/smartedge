@@ -30,7 +30,7 @@ class TestSalesOrderListGeneration(unittest.TestCase):
 			"manufacturing_shortage": 250, "stock_uom": "Meter", "uom": "Meter",
 			"conversion_factor": 1, "delivery_date": "2026-11-01",
 		}]}
-		created = frappe._dict(name="FEBG-1", production_quantity=250, stock_uom="Meter")
+		created = frappe._dict(name="FEBG-1", required_production_quantity=250, stock_uom="Meter")
 		meta = Mock()
 		meta.has_field.return_value = True
 		with patch.object(integration.frappe, "has_permission"), patch.object(integration, "lock_sales_orders"), patch.object(integration, "get_valid_sales_order", return_value=order), patch.object(integration, "build_manufacturing_overview", return_value=overview), patch.object(integration, "allocate_finished_stock"), patch.object(integration.frappe, "get_meta", return_value=meta), patch.object(integration, "create_final_eb_bom_generator_from_sources", return_value=created) as create:
@@ -49,7 +49,7 @@ class TestSalesOrderListGeneration(unittest.TestCase):
 			"SO-1": {"items": [{"sales_order_item": "ROW-1", "item_code": "IT-1", "item_name": "FG", "manufacturing_shortage": 250, "stock_uom": "Meter", "uom": "Meter", "conversion_factor": 1}]},
 			"SO-2": {"items": [{"sales_order_item": "ROW-2", "item_code": "IT-1", "item_name": "FG", "manufacturing_shortage": 300, "stock_uom": "Meter", "uom": "Meter", "conversion_factor": 1}]},
 		}
-		created = frappe._dict(name="FEBG-1", production_quantity=550, stock_uom="Meter")
+		created = frappe._dict(name="FEBG-1", required_production_quantity=550, stock_uom="Meter")
 		meta = Mock()
 		meta.has_field.return_value = True
 		with patch.object(integration.frappe, "has_permission"), patch.object(integration, "lock_sales_orders"), patch.object(integration, "get_valid_sales_order", side_effect=lambda name: orders[name]), patch.object(integration, "build_manufacturing_overview", side_effect=lambda order: overviews[order.name]), patch.object(integration, "allocate_finished_stock"), patch.object(integration.frappe, "get_meta", return_value=meta), patch.object(integration, "create_final_eb_bom_generator_from_sources", return_value=created) as create:
@@ -75,7 +75,7 @@ class TestSalesOrderListGeneration(unittest.TestCase):
 			"SO-1": {"items": [{"sales_order_item": "ROW-1", "item_code": "IT-1", "manufacturing_shortage": 250, "stock_uom": "Meter", "uom": "Meter", "conversion_factor": 1}]},
 			"SO-2": {"items": [{"sales_order_item": "ROW-2", "item_code": "IT-2", "manufacturing_shortage": 300, "stock_uom": "Meter", "uom": "Meter", "conversion_factor": 1}]},
 		}
-		created = frappe._dict(name="FEBG-1", production_quantity=250, stock_uom="Meter")
+		created = frappe._dict(name="FEBG-1", required_production_quantity=250, stock_uom="Meter")
 		meta = Mock()
 		meta.has_field.return_value = True
 		with patch.object(integration.frappe, "has_permission"), patch.object(integration, "lock_sales_orders"), patch.object(integration, "get_valid_sales_order", side_effect=lambda name: orders[name]), patch.object(integration, "build_manufacturing_overview", side_effect=lambda order: overviews[order.name]), patch.object(integration, "allocate_finished_stock"), patch.object(integration.frappe, "get_meta", return_value=meta), patch.object(integration, "create_final_eb_bom_generator_from_sources", return_value=created) as create:

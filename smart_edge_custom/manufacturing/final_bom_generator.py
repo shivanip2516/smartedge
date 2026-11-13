@@ -47,10 +47,80 @@ WEIGHT_FACTOR_LOCKED_STATUSES = {
 ALREADY_SENT_TO_PLANNING_MESSAGE = _(
 	"This Finished Product has already been sent to Production Planning. Duplicate planning is not allowed."
 )
+PRODUCTION_QUANTITY_TOLERANCE = 0.000001
 
 
 class InsufficientMaterialQuantityError(frappe.ValidationError):
 	pass
+
+
+def validate_production_quantity_requirement(doc):
+	"""Require calculated production quantity to cover an authoritative SO allocation."""
+	reference_rows = doc.get("sales_order_references") or []
+	sales_order_linked = bool(doc.get("sales_order") or reference_rows)
+
+	if reference_rows:
+		required_quantity = 0
+		for row in reference_rows:
+			converted_quantity = flt(row.get("converted_production_quantity"))
+			if converted_quantity <= PRODUCTION_QUANTITY_TOLERANCE:
+				frappe.throw(
+					_("A valid Converted Production Quantity is required for every Sales Order reference before planning."),
+					title=_("Production Quantity Requirement Unavailable"),
+				)
+			required_quantity += converted_quantity
+	else:
+		required_quantity = flt(doc.get("required_production_quantity"))
+
+	if required_quantity <= PRODUCTION_QUANTITY_TOLERANCE:
+		if sales_order_linked:
+			frappe.throw(
+				_("Required Production Quantity could not be determined from the linked Sales Order allocation."),
+				title=_("Production Quantity Requirement Unavailable"),
+			)
+		return {
+			"required_production_quantity": 0,
+			"production_quantity": flt(doc.get("production_quantity")),
+			"shortfall": 0,
+			"uom": doc.get("stock_uom") or "",
+		}
+
+	uom = doc.get("stock_uom")
+	if not uom and doc.get("finished_item"):
+		uom = frappe.db.get_value("Item", doc.finished_item, "stock_uom")
+	if not uom:
+		frappe.throw(
+			_("Production Quantity UOM could not be determined for the required Sales Order allocation."),
+			title=_("Production Quantity Requirement Unavailable"),
+		)
+
+	production_quantity = flt(doc.get("production_quantity"))
+	shortfall = max(required_quantity - production_quantity, 0)
+	if shortfall <= PRODUCTION_QUANTITY_TOLERANCE:
+		return {
+			"required_production_quantity": required_quantity,
+			"production_quantity": production_quantity,
+			"shortfall": 0,
+			"uom": uom,
+		}
+
+	format_quantity = lambda value: f"{flt(value):,.6f}".rstrip("0").rstrip(".")
+	frappe.throw(
+		_(
+			"Production Quantity is less than Required Production Quantity.\n\n"
+			"Required Production Quantity: {0} {3}\n"
+			"Current Production Quantity: {1} {3}\n"
+			"Shortfall: {2} {3}\n\n"
+			"Please increase the Production Quantity to at least the required quantity before sending this BOM to Production Planning."
+		).format(
+			format_quantity(required_quantity),
+			format_quantity(production_quantity),
+			format_quantity(shortfall),
+			uom,
+		),
+		title=_("Insufficient Production Quantity"),
+	)
+
 
 def get_finished_item_configuration(finished_item):
 	if not finished_item:
@@ -1035,6 +1105,7 @@ def validate_ready_for_planning(doc):
 	doc.check_permission("write")
 	preview = calculate_bom_preview(doc.as_dict())
 	apply_preview_to_doc(doc, preview)
+	validate_production_quantity_requirement(doc)
 
 	required = {
 		"finished_item": _("Finished Product Item"),
@@ -1134,6 +1205,7 @@ def validate_material_availability_for_release(doc, materials):
 def send_generator_to_planning(doc):
 	lock_generator_for_planning(doc.name)
 	doc.reload()
+	validate_production_quantity_requirement(doc)
 	existing_entries = get_existing_final_planning_entries(doc.name)
 	if existing_entries:
 		frappe.msgprint(ALREADY_SENT_TO_PLANNING_MESSAGE, alert=True, indicator="blue")

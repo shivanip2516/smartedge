@@ -55,7 +55,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Formulation Masters",
-   "link_count": 3,
+   "link_count": 10,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -82,8 +82,88 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "Size Weight",
+   "link_count": 0,
+   "link_to": "Size Weight",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Shade",
+   "link_count": 0,
+   "link_to": "Shade",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Base Shade",
+   "link_count": 0,
+   "link_to": "Base Shade",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Item Category",
+   "link_count": 0,
+   "link_to": "Item Category",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Material Type",
+   "link_count": 0,
+   "link_to": "Material Type",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "PVC Type Finish",
+   "link_count": 0,
+   "link_to": "PVC Type Finish",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Printing Design",
+   "link_count": 0,
+   "link_to": "Printing Design",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Customer Order Code",
+   "link_count": 0,
+   "link_to": "Customer Order Code",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Process Configuration",
-   "link_count": 5,
+   "link_count": 6,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -120,16 +200,6 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Workstation Capacity Rates",
-   "link_count": 0,
-   "link_to": "SmartEdge Workstation Capacity Rate",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
    "label": "SmartEdge Cost Head",
    "link_count": 0,
    "link_to": "SmartEdge Cost Head",
@@ -140,8 +210,28 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "Workstation Capacity Rates",
+   "link_count": 0,
+   "link_to": "SmartEdge Workstation Capacity Rate",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Downtime Reason",
+   "link_count": 0,
+   "link_to": "SmartEdge Downtime Reason",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Manufacturing Execution",
-   "link_count": 4,
+   "link_count": 7,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -181,6 +271,36 @@
    "label": "Final EB BOM Generator",
    "link_count": 0,
    "link_to": "Final EB BOM Generator",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Production Lot",
+   "link_count": 0,
+   "link_to": "SmartEdge Production Lot",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Packing Session",
+   "link_count": 0,
+   "link_to": "SmartEdge Packing Session",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "WIP Ledger Entry",
+   "link_count": 0,
+   "link_to": "SmartEdge WIP Ledger Entry",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
@@ -275,7 +395,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Reports / Utilities",
-   "link_count": 8,
+   "link_count": 9,
    "onboard": 0,
    "type": "Card Break"
   },

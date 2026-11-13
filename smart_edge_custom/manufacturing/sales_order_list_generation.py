@@ -98,7 +98,7 @@ def generate_fg_and_bom(requirements):
 		results.append(
 			{
 				"name": created.name,
-				"quantity": flt(created.production_quantity),
+				"quantity": flt(created.required_production_quantity),
 				"stock_uom": created.stock_uom or summary["production_uom"],
 				"finished_item": summary["finished_item"],
 				"sales_orders": summary["sales_orders"],

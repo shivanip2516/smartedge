@@ -58,7 +58,7 @@ def create_final_eb_bom_generator(sales_order, sales_order_item, quantity):
 
 	return {
 		"name": generator.name,
-		"quantity": flt(generator.production_quantity),
+		"quantity": flt(generator.required_production_quantity),
 		"stock_uom": generator.stock_uom or requirement["stock_uom"],
 		"shortage_before": shortage,
 		"remaining_shortage": max(shortage - quantity, 0),
@@ -109,7 +109,7 @@ def create_final_eb_bom_generator_from_sources(sources):
 	generator = frappe.new_doc("Final EB BOM Generator")
 	generator.company = first["company"]
 	generator.finished_item = first["finished_item"]
-	generator.production_quantity = flt(
+	generator.required_production_quantity = flt(
 		sum(flt(source["converted_production_quantity"]) for source in sources)
 	)
 	# Preserve the original single-reference fields for existing integrations.
@@ -228,6 +228,7 @@ def get_existing_coverage(sales_order):
 		"sales_order",
 		"sales_order_item",
 		"production_quantity",
+		"required_production_quantity",
 		"status",
 		"production_status",
 		"finished_item",
@@ -289,11 +290,15 @@ def get_existing_coverage(sales_order):
 					if reference.sales_order_item:
 						coverage[reference.sales_order_item] += flt(reference.converted_production_quantity)
 			elif row.name in primary_names and row.sales_order_item:
-				coverage[row.sales_order_item] += flt(row.production_quantity)
+				coverage[row.sales_order_item] += flt(
+					row.required_production_quantity or row.production_quantity
+				)
 	else:
 		for row in active_rows.values():
 			if row.name in primary_names and row.sales_order_item:
-				coverage[row.sales_order_item] += flt(row.production_quantity)
+				coverage[row.sales_order_item] += flt(
+					row.required_production_quantity or row.production_quantity
+				)
 	return coverage, rows
 
 

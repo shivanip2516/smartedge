@@ -11,6 +11,7 @@ const {
 	get_card_status,
 	get_group_qc_status,
 	get_invalid_completion_output,
+	get_server_error_message,
 	get_operation_display_label,
 	resolve_item_group_placement,
 	can_change_workstation,
@@ -34,6 +35,13 @@ assert.equal(get_invalid_completion_output({
 }), null);
 assert.equal(get_invalid_completion_output({ rejected_qty: -5 }), "Rejected Output");
 assert.equal(get_invalid_completion_output({ usable_scrap: "not-a-number" }), "Usable Scrap");
+assert.equal(
+	get_server_error_message(
+		{ _server_messages: JSON.stringify([JSON.stringify({ message: "Configure a scrap Item before recording Unusable Scrap." })]) },
+		"fallback"
+	),
+	"Configure a scrap Item before recording Unusable Scrap."
+);
 
 assert.equal(
 	get_card_status({ status: "Completed", job_status: "Completed", qc_display_status: "QC Pending" }),

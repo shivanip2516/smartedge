@@ -14,6 +14,7 @@ global.frappe = {
 const {
 	capacity_projection_html,
 	capacity_summary_html,
+	capacity_projection_is_schedulable,
 	get_machine_capacity_labels,
 	get_utilization_status,
 } = require("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js");
@@ -114,3 +115,8 @@ assert.match(scheduling_conflict, /09:00:00/);
 assert.match(scheduling_conflict, /Expected duration is insufficient/);
 assert.match(scheduling_conflict, /Workstation Scheduling Conflict/);
 assert.match(scheduling_conflict, /Not Bookable/);
+
+assert.equal(capacity_projection_is_schedulable({ status: "ok", working_hours_status: "ok" }), true);
+assert.equal(capacity_projection_is_schedulable({ status: "overload", working_hours_status: "ok" }), true);
+assert.equal(capacity_projection_is_schedulable({ status: "not_configured", working_hours_status: "ok" }), false);
+assert.equal(capacity_projection_is_schedulable({ status: "ok", working_hours_status: "after_close" }), false);

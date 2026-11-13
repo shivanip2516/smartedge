@@ -405,6 +405,74 @@ function format_number(value, precision) {
 	return flt(value, precision).toFixed(precision);
 }
 
+function format_requirement_quantity(value) {
+	return Number(flt(value, 6).toFixed(6)).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+function validate_production_quantity_requirement(frm) {
+	const reference_rows = frm.doc.sales_order_references || [];
+	const sales_order_linked = Boolean(frm.doc.sales_order || reference_rows.length);
+	let required_quantity = flt(frm.doc.required_production_quantity);
+
+	if (reference_rows.length) {
+		required_quantity = 0;
+		for (const row of reference_rows) {
+			const converted_quantity = flt(row.converted_production_quantity);
+			if (converted_quantity <= 0) {
+				frappe.msgprint({
+					title: __("Production Quantity Requirement Unavailable"),
+					indicator: "red",
+					message: __("A valid Converted Production Quantity is required for every Sales Order reference before planning."),
+				});
+				return false;
+			}
+			required_quantity += converted_quantity;
+		}
+	}
+
+	if (required_quantity <= 0) {
+		if (sales_order_linked) {
+			frappe.msgprint({
+				title: __("Production Quantity Requirement Unavailable"),
+				indicator: "red",
+				message: __("Required Production Quantity could not be determined from the linked Sales Order allocation."),
+			});
+			return false;
+		}
+		return true;
+	}
+
+	const production_quantity = flt(frm.doc.production_quantity);
+	const shortfall = required_quantity - production_quantity;
+	if (shortfall <= 0.000001) {
+		return true;
+	}
+
+	const uom = frm.doc.stock_uom || "";
+	if (!uom) {
+		frappe.msgprint({
+			title: __("Production Quantity Requirement Unavailable"),
+			indicator: "red",
+			message: __("Production Quantity UOM could not be determined for the required Sales Order allocation."),
+		});
+		return false;
+	}
+	frappe.msgprint({
+		title: __("Insufficient Production Quantity"),
+		indicator: "red",
+		message: [
+			__("Production Quantity is less than Required Production Quantity."),
+			"",
+			__("Required Production Quantity: {0} {1}", [format_requirement_quantity(required_quantity), uom]),
+			__("Current Production Quantity: {0} {1}", [format_requirement_quantity(production_quantity), uom]),
+			__("Shortfall: {0} {1}", [format_requirement_quantity(shortfall), uom]),
+			"",
+			__("Please increase the Production Quantity to at least the required quantity before sending this BOM to Production Planning."),
+		].join("<br>"),
+	});
+	return false;
+}
+
 async function send_to_planning(frm) {
 	if (frm.__sending_to_planning) return;
 	frm.__sending_to_planning = true;
@@ -412,6 +480,7 @@ async function send_to_planning(frm) {
 	let sent = false;
 	try {
 		await refresh_preview(frm, true);
+		if (!validate_production_quantity_requirement(frm)) return;
 		await frm.save();
 		const response = await frm.call({
 			method: "send_to_planning",
@@ -617,6 +686,7 @@ function add_material_navigation(frm, context) {
 }
 
 async function open_material_planning_dialog(frm) {
+	if (!validate_production_quantity_requirement(frm)) return;
 	if (frm.is_dirty()) await frm.save();
 	const response = await frappe.call({
 		method: "smart_edge_custom.manufacturing.material_production.get_material_planning_context",
@@ -691,6 +761,7 @@ async function open_material_planning_dialog(frm) {
 		fields,
 		primary_action_label: __("Create Production Plans"),
 		primary_action: async (values) => {
+			if (!validate_production_quantity_requirement(frm)) return;
 			const plans = shortages.map((row) => {
 				const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
 				return {

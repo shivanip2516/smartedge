@@ -67,6 +67,39 @@ class TestScrapRecovery(unittest.TestCase):
 		self.assertEqual(result["stock_entry"], "STE-GRINDER")
 		stock_entry.assert_not_called()
 
+	def test_draft_grinder_completion_runs_the_existing_workflow(self):
+		doc = frappe._dict(
+			name="REC-1", status="Draft", material_configuration="CFG-1", usable_scrap_lot="LOT-1",
+			company="Company 1", grinder_employee="EMP-1", grinder_workstation="WS-1",
+			grinder_input_quantity=6, ground_material_quantity=5.5, grinder_process_loss=0.5,
+			source_item="SCRAP-1", source_batch="BATCH-1", source_warehouse="Stores - SE",
+			ground_material_item="GROUND-1", grinder_datetime="2026-11-13 10:00:00",
+		)
+		doc.check_permission = Mock()
+		doc.update = Mock()
+		doc.save = Mock()
+		config = frappe._dict(ground_material_warehouse="Ground - SE")
+		lot = frappe._dict(
+			production_job="JOB-1", production_lot="LOT-1", operation="Grinding",
+			source_workstation="WS-SOURCE", source_employee="EMP-SOURCE",
+		)
+		with patch.object(scrap_recovery, "_require_recovery_user"), patch.object(
+			scrap_recovery.frappe.db, "get_value", return_value="JOB-1"
+		), patch.object(scrap_recovery.frappe, "get_doc", side_effect=[doc, config, lot]), patch.object(
+			scrap_recovery, "_validate_employee_workstation"
+		), patch.object(scrap_recovery, "_validate_balance", return_value=(6, 5.5, 0.5)), patch.object(
+			scrap_recovery, "_assert_available", return_value=6
+		), patch.object(scrap_recovery, "_create_recovery_batch", return_value="GROUND-BATCH"), patch.object(
+			scrap_recovery, "_stock_entry", return_value="STE-GRINDER"
+			) as stock_entry, patch.object(scrap_recovery, "_batch_available", return_value=0), patch.object(
+				scrap_recovery, "_update_scrap_lot_status"
+			), patch.object(scrap_recovery, "now_datetime", return_value="2026-11-13 10:05:00"):
+			result = scrap_recovery.complete_grinder("REC-1")
+
+		self.assertEqual(result, {"stock_entry": "STE-GRINDER", "ground_material_batch": "GROUND-BATCH"})
+		stock_entry.assert_called_once()
+		doc.save.assert_called_once_with(ignore_permissions=True)
+
 	def test_existing_scrap_collection_is_idempotent(self):
 		job = frappe._dict(name="JOB-1", usable_scrap=40)
 		lot = frappe._dict(name="LOT-1", quantity=40, status="Active", stock_entry="STE-1")

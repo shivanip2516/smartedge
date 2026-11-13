@@ -19,6 +19,7 @@
   "finished_item_name",
   "custom_size",
   "production_quantity",
+  "required_production_quantity",
   "priority",
   "weight_per_meter_kg",
   "fp_col_2",
@@ -223,6 +224,15 @@
    "non_negative": 1,
    "read_only": 1,
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "required_production_quantity",
+   "fieldtype": "Float",
+   "label": "Required Production Quantity",
+   "non_negative": 1,
+   "precision": "6",
+   "read_only": 1
   },
   {
    "default": "Normal",
