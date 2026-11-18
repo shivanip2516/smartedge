@@ -108,10 +108,10 @@ def get_work_order_batch_details(item_code, bom_no):
 
 def calculate_manufacturing_quantity(number_of_batches, weight_per_batch):
 	batches = validate_number_of_batches(number_of_batches)
-	weight_per_batch = flt(weight_per_batch)
-	if weight_per_batch <= 0:
+	weight = Decimal(str(weight_per_batch or 0))
+	if weight <= 0:
 		frappe.throw(_("Weight per Batch must be greater than zero."))
-	return batches * weight_per_batch
+	return flt(Decimal(batches) * weight)
 
 
 def validate_number_of_batches(number_of_batches, label="No. of Batches"):

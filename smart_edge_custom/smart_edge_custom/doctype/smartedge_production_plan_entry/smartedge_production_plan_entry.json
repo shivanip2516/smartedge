@@ -168,21 +168,21 @@
    "fieldname": "production_quantity",
    "fieldtype": "Float",
    "label": "Production Quantity",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {
    "fieldname": "planned_meter",
    "fieldtype": "Float",
    "label": "Planned Meter",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {
    "fieldname": "released_qty_meter",
    "fieldtype": "Float",
    "label": "Released Qty Meter",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {

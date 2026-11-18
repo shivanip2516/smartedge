@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 
@@ -10,6 +10,7 @@ from smart_edge_custom.manufacturing.production_lot import (
 	get_operation_lot_name,
 	get_final_stock_lot_names,
 	make_movement_key,
+	record_release_movement,
 )
 
 
@@ -96,6 +97,84 @@ class TestProductionLot(unittest.TestCase):
 		self.assertEqual(balance["available"], 100)
 		self.assertEqual(balance["held_for_qc"], 5)
 		self.assertEqual(balance["stages"]["Packing"], 75)
+
+	def test_qc_release_appends_initial_accepted_quantity(self):
+		job = frappe._dict(
+			name="JOB-QC", operation="QC After Extrusion", released_to_plan_entry="PLAN-PACK",
+			released_qty_meter=10000, released_qty_kg=50, final_eb_bom_generator="GEN",
+		)
+		fake_frappe = MagicMock()
+		fake_frappe.db.get_value.return_value = frappe._dict(operation="Packing")
+		fake_frappe.db.exists.return_value = False
+		fake_frappe.get_all.return_value = []
+		with patch("smart_edge_custom.manufacturing.production_lot.frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.production_lot.ensure_available_for_transfer") as ensure, \
+			patch("smart_edge_custom.manufacturing.production_lot.record_movement", return_value="LEDGER-1") as record:
+			result = record_release_movement(
+				job, frappe._dict(name="PLAN-QC"), frappe._dict(finished_item="FG", stock_uom="Meter"), "LOT-1", qc_release=True
+			)
+		self.assertEqual(result, "LEDGER-1")
+		self.assertEqual(record.call_args.args[0], "QC Release")
+		self.assertEqual(record.call_args.kwargs["quantity"], 10000)
+		self.assertEqual(record.call_args.kwargs["quantity_kg"], 50)
+		ensure.assert_called_once_with("LOT-1", "QC After Extrusion", 10000)
+
+	def test_qc_release_appends_only_new_reinspection_acceptance(self):
+		job = frappe._dict(
+			name="JOB-QC", operation="QC After Extrusion", released_to_plan_entry="PLAN-PACK",
+			released_qty_meter=13000, released_qty_kg=65, final_eb_bom_generator="GEN",
+		)
+		fake_frappe = MagicMock()
+		fake_frappe.db.get_value.return_value = frappe._dict(operation="Packing")
+		fake_frappe.db.exists.return_value = False
+		fake_frappe.get_all.return_value = [frappe._dict(name="LEDGER-1", quantity=10000, quantity_kg=50)]
+		with patch("smart_edge_custom.manufacturing.production_lot.frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.production_lot.ensure_available_for_transfer") as ensure, \
+			patch("smart_edge_custom.manufacturing.production_lot.record_movement", return_value="LEDGER-2") as record:
+			record_release_movement(
+				job, frappe._dict(name="PLAN-QC"), frappe._dict(finished_item="FG", stock_uom="Meter"), "LOT-1", qc_release=True
+			)
+		self.assertEqual(record.call_args.kwargs["quantity"], 3000)
+		self.assertEqual(record.call_args.kwargs["quantity_kg"], 15)
+		ensure.assert_called_once_with("LOT-1", "QC After Extrusion", 3000)
+
+	def test_qc_release_appends_only_partial_reinspection_acceptance(self):
+		job = frappe._dict(
+			name="JOB-QC", operation="QC After Extrusion", released_to_plan_entry="PLAN-PACK",
+			released_qty_meter=12500, released_qty_kg=62.5, final_eb_bom_generator="GEN",
+		)
+		fake_frappe = MagicMock()
+		fake_frappe.db.get_value.return_value = frappe._dict(operation="Packing")
+		fake_frappe.db.exists.return_value = False
+		fake_frappe.get_all.return_value = [frappe._dict(name="LEDGER-1", quantity=10000, quantity_kg=50)]
+		with patch("smart_edge_custom.manufacturing.production_lot.frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.production_lot.ensure_available_for_transfer") as ensure, \
+			patch("smart_edge_custom.manufacturing.production_lot.record_movement", return_value="LEDGER-2") as record:
+			record_release_movement(
+				job, frappe._dict(name="PLAN-QC"), frappe._dict(finished_item="FG", stock_uom="Meter"), "LOT-1", qc_release=True
+			)
+		self.assertEqual(record.call_args.kwargs["quantity"], 2500)
+		self.assertEqual(record.call_args.kwargs["quantity_kg"], 12.5)
+		ensure.assert_called_once_with("LOT-1", "QC After Extrusion", 2500)
+
+	def test_repeated_qc_release_does_not_append_duplicate_movement(self):
+		job = frappe._dict(
+			name="JOB-QC", operation="QC After Extrusion", released_to_plan_entry="PLAN-PACK",
+			released_qty_meter=13000, released_qty_kg=65, final_eb_bom_generator="GEN",
+		)
+		fake_frappe = MagicMock()
+		fake_frappe.db.get_value.return_value = frappe._dict(operation="Packing")
+		fake_frappe.get_all.return_value = [
+			frappe._dict(name="LEDGER-1", quantity=10000, quantity_kg=50),
+			frappe._dict(name="LEDGER-2", quantity=3000, quantity_kg=15),
+		]
+		with patch("smart_edge_custom.manufacturing.production_lot.frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.production_lot.record_movement") as record:
+			result = record_release_movement(
+				job, frappe._dict(name="PLAN-QC"), frappe._dict(finished_item="FG", stock_uom="Meter"), "LOT-1", qc_release=True
+			)
+		self.assertEqual(result, "LEDGER-2")
+		record.assert_not_called()
 
 	def test_append_only_reversal_restores_available_without_inventing_stage_stock(self):
 		rows = [

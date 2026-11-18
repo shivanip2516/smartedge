@@ -1,0 +1,23 @@
+{
+ "doctype": "DocType",
+ "name": "SmartEdge Roll Operation History",
+ "module": "smart_edge_custom",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"event_datetime","fieldtype":"Datetime","label":"Event Time","reqd":1},
+  {"fieldname":"event_type","fieldtype":"Select","label":"Event","options":"Created\nQC Decision\nRework Completed\nRe-QC Decision\nReserved for Packing\nPacking Completed\nReleased","reqd":1},
+  {"fieldname":"operation","fieldtype":"Link","label":"Operation","options":"Operation"},
+  {"fieldname":"operation_job","fieldtype":"Link","label":"Production Job","options":"SmartEdge Production Job"},
+  {"fieldname":"operation_plan_entry","fieldtype":"Link","label":"Plan Entry","options":"SmartEdge Production Plan Entry"},
+  {"fieldname":"previous_status","fieldtype":"Data","label":"Previous Status"},
+  {"fieldname":"new_status","fieldtype":"Data","label":"New Status","reqd":1},
+  {"fieldname":"previous_meter_quantity","fieldtype":"Float","label":"Previous Meter Quantity","precision":"0"},
+  {"fieldname":"new_meter_quantity","fieldtype":"Float","label":"New Meter Quantity","precision":"0","reqd":1},
+  {"fieldname":"meter_loss","fieldtype":"Float","label":"Meter Loss","precision":"0"},
+  {"fieldname":"related_quality_inspection","fieldtype":"Link","label":"Quality Inspection","options":"Quality Inspection"},
+  {"fieldname":"employee","fieldtype":"Link","label":"Employee","options":"Employee"},
+  {"fieldname":"reason","fieldtype":"Small Text","label":"Reason"},
+  {"fieldname":"remarks","fieldtype":"Small Text","label":"Remarks"}
+ ],
+ "permissions": []
+}

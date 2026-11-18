@@ -350,7 +350,7 @@
         "fieldname": "custom_operation_output_quantity",
         "label": "Operation Output Quantity (Meter)",
         "fieldtype": "Float",
-        "precision": "6",
+        "precision": "0",
         "in_list_view": 1,
         "doctype": "Custom Field",
         "name": "Batch-custom_operation_output_quantity",

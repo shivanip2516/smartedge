@@ -10,7 +10,92 @@ const context = vm.createContext({
 	frappe: { pages: { "smartedge-production-planning": {}, "smartedge-batch-genealogy": {} }, provide() {} },
 });
 const read = (path) => fs.readFileSync(require.resolve(path), "utf8");
-vm.runInContext(read("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js"), context);
+const planningSource = read("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js");
+assert.doesNotMatch(planningSource, /Whole-meter presentation|actual_qty_meter_summary|render_completion_meter_summary/);
+const qcDialogStart = planningSource.indexOf("async open_qc_decision_dialog");
+const qcResubmitStart = planningSource.indexOf("async resubmit_qc_rework", qcDialogStart);
+const qcDialogSource = planningSource.slice(qcDialogStart, qcResubmitStart);
+assert.match(qcDialogSource, /read_meter_field_value\(field\)/);
+assert.doesNotMatch(qcDialogSource, /field\?\.\$input\?\.val\(\)/);
+vm.runInContext(planningSource, context);
+assert.equal(context.se_format_meter(3289.89899), "3,290");
+assert.equal(context.se_format_meter(3290.40404), "3,290");
+assert.equal(context.se_format_meter(-1.6), "-2");
+assert.equal(context.se_format_meter(null), "0");
+assert.equal(context.se_round_meter(2.5), 3);
+assert.equal(context.se_round_meter(9856.060606), 9856);
+assert.equal(context.se_floor_meter(3289.89899), 3289);
+assert.deepEqual(JSON.parse(JSON.stringify(context.get_completion_quantity_defaults({
+	qc_release_applicable: true,
+	released_qty_meter: 3289.89899,
+	released_qty_kg: 65.14,
+	planned_qty_meter: 3290.40404,
+	planned_qty_kg: 65.15,
+}, { qty: 3290.40404, planned_weight_kg: 65.15 }))), {
+	actual_qty_meter: 3289,
+	actual_qty_kg: 65.14,
+	good_qty: 3289,
+	good_qty_kg: 65.14,
+});
+assert.deepEqual(JSON.parse(JSON.stringify(context.get_completion_quantity_defaults({
+	qc_release_applicable: true,
+	released_qty_meter: 0,
+	released_qty_kg: 0,
+	planned_qty_meter: 1000,
+	planned_qty_kg: 20,
+}, { qty: 1000, planned_weight_kg: 20 }))), {
+	actual_qty_meter: 1000,
+	actual_qty_kg: 20,
+	good_qty: 1000,
+	good_qty_kg: 0,
+});
+assert.deepEqual(JSON.parse(JSON.stringify(context.get_completion_quantity_defaults({
+	qc_release_applicable: true,
+	released_qty_meter: 3289,
+	released_qty_kg: 65,
+	actual_qty_meter: 1200,
+	actual_qty_kg: 23.76,
+	good_qty: 1200,
+	good_qty_kg: 23.76,
+}, { qty: 3290, planned_weight_kg: 65.15 }))), {
+	actual_qty_meter: 1200,
+	actual_qty_kg: 23.76,
+	good_qty: 1200,
+	good_qty_kg: 23.76,
+});
+assert.deepEqual(JSON.parse(JSON.stringify(context.get_completion_quantity_defaults({
+	qc_release_applicable: true,
+	released_qty_meter: 3289.89899,
+	released_qty_kg: 65.14,
+	actual_qty_meter: 3289,
+	actual_qty_kg: 65.15,
+	good_qty: 3289.89899,
+	planned_qty_meter: 3290.40404,
+	planned_qty_kg: 65.15,
+}, { qty: 3290.40404, planned_weight_kg: 65.15 }))), {
+	actual_qty_meter: 3289,
+	actual_qty_kg: 65.14,
+	good_qty: 3289,
+	good_qty_kg: 65.14,
+});
+assert.deepEqual(JSON.parse(JSON.stringify(context.get_completion_quantity_defaults({
+	planned_qty_meter: 500,
+	planned_qty_kg: 10,
+}, { qty: 500, planned_weight_kg: 10 }))), {
+	actual_qty_meter: 500,
+	actual_qty_kg: 10,
+	good_qty: 500,
+	good_qty_kg: 0,
+});
+assert.equal(context.get_completion_quantity_defaults({
+	actual_qty_meter: "0",
+	planned_qty_meter: 13146,
+}, { qty: 13146 }).actual_qty_meter, 13146);
+assert.equal(context.sum_roll_quantities(["10000", "100", "2000"]), 12100);
+assert.equal(context.sum_roll_quantities(["10000", "", "not-a-number"]), 10000);
+assert.equal(context.read_meter_field_value({ get_value: () => "13,146" }), 13146);
+assert.equal(context.read_meter_field_value({ get_value: () => "" }), undefined);
+assert.ok(Number.isNaN(context.read_meter_field_value({ get_value: () => "not-a-number" })));
 const board = Object.create(context.smart_edge_custom.ProductionPlanningBoard.prototype);
 const final = ["Extrusion", "Printing", "Packing"].map((operation, index) => ({
 	id: "PLAN-" + index, production: "GEN", execution_key: "production:GEN:PLAN-0", plan_type: "Final EB",

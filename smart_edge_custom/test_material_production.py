@@ -20,6 +20,7 @@ from smart_edge_custom.manufacturing.material_production import (
 	get_material_status,
 	get_overall_material_status,
 	reconcile_work_order_plan,
+	ensure_material_transfer,
 	validate_material_completion_bom,
 )
 
@@ -572,6 +573,22 @@ class TestRequiredMaterialProduction(IntegrationTestCase):
 		stock_entry.submit.assert_not_called()
 		entry.db_set.assert_called_once_with(
 			"material_transfer_stock_entry", "STE-TRANSFER-1", update_modified=False
+		)
+
+	@patch("smart_edge_custom.manufacturing.material_production.ensure_work_order_stock_entry")
+	def test_material_transfer_uses_decimal_planned_quantity(self, ensure_stock_entry):
+		entry = frappe._dict(
+			{
+				"work_order": "MFG-WO-2026-00042",
+				"production_quantity": 195,
+				"planned_kg": 194.55,
+			}
+		)
+
+		ensure_material_transfer(entry)
+
+		ensure_stock_entry.assert_called_once_with(
+			entry, "Material Transfer for Manufacture", 194.55
 		)
 
 	@patch("smart_edge_custom.manufacturing.material_production.get_raw_material_availability")

@@ -27,7 +27,7 @@
 	<div class="grid">
 		<div class="cell"><span class="key">Size</span><span class="value">{{ size or 'N/A' }}</span></div>
 		<div class="cell"><span class="key">Color</span><span class="value">{{ color or 'N/A' }}</span></div>
-		<div class="cell"><span class="key">Accepted Meter</span><span class="value qty">{{ '{:,.3f}'.format(accepted|float) }} m</span></div>
+		<div class="cell"><span class="key">Accepted Meter</span><span class="value qty">{{ '{:,.0f}'.format(accepted|float) }} m</span></div>
 		<div class="cell"><span class="key">Accepted Weight</span><span class="value qty">{{ '{:,.3f}'.format((doc.produced_quantity_kg or 0)|float) }} kg</span></div>
 		<div class="cell"><span class="key">Batch</span><span class="value">{{ batch or 'N/A' }}</span></div>
 		<div class="cell"><span class="key">Production Date</span><span class="value">{{ doc.actual_end.strftime('%d %b %Y') if doc.actual_end else 'N/A' }}</span></div>

@@ -4,6 +4,7 @@
  "module": "smart_edge_custom",
  "istable": 1,
  "editable_grid": 1,
+ "field_order": ["product_size", "capacity_rate", "capacity_uom"],
  "fields": [
   {"fieldname":"product_size","fieldtype":"Link","label":"Product Size","options":"Size Weight","reqd":1,"in_list_view":1},
   {"fieldname":"capacity_rate","fieldtype":"Float","label":"Capacity Rate","precision":"6","reqd":1,"non_negative":1,"in_list_view":1},

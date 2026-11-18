@@ -15,6 +15,7 @@ frappe.ui.form.on("Final EB BOM Generator", {
 	},
 
 	async refresh(frm) {
+		install_meter_display_formatters(frm);
 		render_configurator_summary(frm);
 		frm.add_custom_button(__("Refresh Route"), () => refresh_preview(frm, true));
 		frm.add_custom_button(__("Refresh Batch Allocation"), () => refresh_preview(frm, true, true));
@@ -93,6 +94,16 @@ frappe.ui.form.on("Final EB BOM Generator", {
 		frm.preview_debounced();
 	},
 });
+
+function install_meter_display_formatters(frm) {
+	for (const fieldname of ["production_quantity", "required_production_quantity"]) {
+		const field = frm.fields_dict[fieldname];
+		if (!field?.df?.read_only) continue;
+		field.df.precision = "0";
+		field.df.formatter = (value) => format_meter(value);
+		frm.refresh_field(fieldname);
+	}
+}
 
 async function fetch_finished_item_details(frm) {
 	if (!frm.doc.finished_item) {
@@ -295,7 +306,7 @@ function render_configurator_summary(frm, route_summary = {}) {
 				[__("Width"), format_number(frm.doc.width_mm, 3)],
 				[__("Product Type"), frm.doc.custom_product_type_design_category],
 				[__("Finish"), frm.doc.custom_type_finish],
-				[__("Production Qty"), format_number(frm.doc.production_quantity, 3)],
+				[__("Production Qty"), format_uom_quantity(frm.doc.production_quantity, frm.doc.stock_uom)],
 				[__("Weight / Meter"), `${format_number(frm.doc.weight_per_meter_kg, 6)} Kg/m`],
 				[__("Total Weight"), `${format_number(frm.doc.total_eb_weight_kg, 3)} Kg`],
 			],
@@ -405,7 +416,21 @@ function format_number(value, precision) {
 	return flt(value, precision).toFixed(precision);
 }
 
-function format_requirement_quantity(value) {
+function format_meter(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "0";
+	return number.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function format_uom_quantity(value, uom) {
+	const normalized_uom = String(uom || "").toLowerCase();
+	if (normalized_uom === "meter" || normalized_uom === "m") return `${format_meter(value)} ${uom || ""}`.trim();
+	return `${format_requirement_quantity(value)} ${uom || ""}`.trim();
+}
+
+function format_requirement_quantity(value, uom) {
+	const normalized_uom = String(uom || "").toLowerCase();
+	if (normalized_uom === "meter" || normalized_uom === "m") return format_meter(value);
 	return Number(flt(value, 6).toFixed(6)).toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
@@ -458,19 +483,19 @@ function validate_production_quantity_requirement(frm) {
 		return false;
 	}
 	frappe.msgprint({
-		title: __("Insufficient Production Quantity"),
-		indicator: "red",
+		title: __("Production Quantity Mismatch"),
+		indicator: "orange",
 		message: [
 			__("Production Quantity is less than Required Production Quantity."),
 			"",
-			__("Required Production Quantity: {0} {1}", [format_requirement_quantity(required_quantity), uom]),
-			__("Current Production Quantity: {0} {1}", [format_requirement_quantity(production_quantity), uom]),
-			__("Shortfall: {0} {1}", [format_requirement_quantity(shortfall), uom]),
+			__("Required Production Quantity: {0} {1}", [format_requirement_quantity(required_quantity, uom), uom]),
+			__("Current Production Quantity: {0} {1}", [format_requirement_quantity(production_quantity, uom), uom]),
+			__("Shortfall: {0} {1}", [format_requirement_quantity(shortfall, uom), uom]),
 			"",
-			__("Please increase the Production Quantity to at least the required quantity before sending this BOM to Production Planning."),
+			__("Please review the quantity before proceeding. Planning can continue."),
 		].join("<br>"),
 	});
-	return false;
+	return true;
 }
 
 async function send_to_planning(frm) {
@@ -535,10 +560,10 @@ function show_insufficient_material_dialog(error, frm) {
 			return `<tr>
 				<td><strong>${escape(row.item_name || row.item_code || "")}</strong></td>
 				<td>${escape(row.warehouse || "")}</td>
-				<td class="text-right">${format_number(row.required, 3)} ${uom}</td>
-				<td class="text-right">${format_number(row.available, 3)} ${uom}</td>
-				<td class="text-right">${format_number(planned, 3)} ${uom}</td>
-				<td class="text-right text-danger"><strong>${format_number(additional, 3)} ${uom}</strong></td>
+				<td class="text-right">${format_uom_quantity(row.required, row.uom)}</td>
+				<td class="text-right">${format_uom_quantity(row.available, row.uom)}</td>
+				<td class="text-right">${format_uom_quantity(planned, row.uom)}</td>
+				<td class="text-right text-danger"><strong>${format_uom_quantity(additional, row.uom)}</strong></td>
 			</tr>`;
 		})
 		.join("");
@@ -706,6 +731,7 @@ async function open_material_planning_dialog(frm) {
 	const material_states = {};
 	for (const row of shortages) {
 		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";
+		const quantity_precision = ["meter", "metre", "m"].includes(String(row.stock_uom || "").trim().toLowerCase()) ? "0" : 6;
 		material_states[prefix] = {
 			row,
 			operation_valid: Boolean(row.operation && (row.operation_options || []).includes(row.operation)),
@@ -723,8 +749,8 @@ async function open_material_planning_dialog(frm) {
 			{ fieldtype: "Column Break" },
 			{ fieldtype: "Int", fieldname: `${prefix}_already_planned`, label: __("Already Planned Batches"), read_only: 1, default: row.already_planned_batches },
 			{ fieldtype: "Int", fieldname: `${prefix}_batches`, label: __("Batches to Plan"), read_only: 1, default: row.batches_to_plan },
-			{ fieldtype: "Float", fieldname: `${prefix}_weight`, label: __("Weight per Batch ({0})", [row.stock_uom]), precision: 6, read_only: 1, default: row.weight_per_batch },
-			{ fieldtype: "Float", fieldname: `${prefix}_total`, label: __("Total Manufacturing Quantity ({0})", [row.stock_uom]), precision: 6, read_only: 1, default: row.total_manufacturing_quantity },
+			{ fieldtype: "Float", fieldname: `${prefix}_weight`, label: __("Weight per Batch ({0})", [row.stock_uom]), precision: quantity_precision, read_only: 1, default: row.weight_per_batch },
+			{ fieldtype: "Float", fieldname: `${prefix}_total`, label: __("Total Manufacturing Quantity ({0})", [row.stock_uom]), precision: quantity_precision, read_only: 1, default: row.total_manufacturing_quantity },
 			{ fieldtype: "Section Break" },
 			{ fieldtype: "Link", fieldname: `${prefix}_bom`, label: __("BOM"), options: "BOM", read_only: 1, default: row.bom_no },
 			{

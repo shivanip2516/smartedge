@@ -93,6 +93,7 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def start_job(self):
+		self.require_operator_access(_("start"))
 		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
 		from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
 		from smart_edge_custom.manufacturing.planning import validate_predecessor_release
@@ -120,6 +121,7 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def pause_job(self, downtime_reason=None, downtime_remarks=None):
+		self.require_operator_access(_("pause"))
 		if self.status != "In Progress":
 			frappe.throw(_("Only in-progress jobs can be paused."))
 		self.validate_pause_reason(downtime_reason)
@@ -145,6 +147,7 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def resume_job(self):
+		self.require_operator_access(_("resume"))
 		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
 		from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
 		from smart_edge_custom.manufacturing.planning import validate_predecessor_release
@@ -166,6 +169,7 @@ class SmartEdgeProductionJob(Document):
 
 	@frappe.whitelist()
 	def complete_job(self, completion_type="Full Completion"):
+		self.require_operator_access(_("complete"))
 		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
 		if plan_type == "Required Material":
 			return self._complete_job(completion_type)
@@ -180,6 +184,23 @@ class SmartEdgeProductionJob(Document):
 		frappe.db.release_savepoint(savepoint)
 		return result
 
+	def require_operator_access(self, action):
+		from smart_edge_custom.manufacturing.operator_access import require_plan_entry_access
+
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		# Mandatory QC completion is finalized by the QC decision service.  That
+		# service already enforces the QC role and inspection employee, so retain
+		# that established authorization without treating the QC reviewer as the
+		# manufacturing operator.  This bypass is only active for the narrowly
+		# scoped internal QC decision flag and QC plan entries.
+		if getattr(frappe.flags, "smartedge_qc_decision", False):
+			from smart_edge_custom.manufacturing.quality_control import is_qc_entry, require_qc_authority
+
+			if is_qc_entry(entry):
+				require_qc_authority()
+				return
+		require_plan_entry_access(entry, action)
+
 	def _complete_job(self, completion_type):
 		if self.name and not self.is_new():
 			current_status = frappe.db.get_value("SmartEdge Production Job", self.name, "status", for_update=True)
@@ -187,6 +208,12 @@ class SmartEdgeProductionJob(Document):
 				self.reload()
 		plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
 		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.plan_entry)
+		if plan_type != "Required Material":
+			from smart_edge_custom.manufacturing.quantity import round_meter_quantity
+
+			self.actual_qty_meter = round_meter_quantity(self.actual_qty_meter)
+			for fieldname in ("good_qty", "rejected_qty", "rework_qty"):
+				self.set(fieldname, round_meter_quantity(self.get(fieldname)))
 		from smart_edge_custom.manufacturing.quality_control import (
 			is_qc_entry,
 			validate_downstream_quantity,

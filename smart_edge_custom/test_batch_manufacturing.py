@@ -30,6 +30,21 @@ class TestBatchManufacturing(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			get_complete_batch_count(100, 65)
 
+	def test_decimal_batch_quantity_matches_complete_batch_validation(self):
+		for batches, expected_quantity in (
+			(1, 64.85),
+			(2, 129.70),
+			(3, 194.55),
+			(4, 259.40),
+		):
+			quantity = calculate_manufacturing_quantity(batches, 64.85)
+			self.assertEqual(quantity, expected_quantity)
+			self.assertEqual(get_complete_batch_count(quantity, 64.85), batches)
+
+		for quantity in (194.00, 194.56, 194.54, 195.00):
+			with self.assertRaises(frappe.ValidationError):
+				get_complete_batch_count(quantity, 64.85)
+
 	@patch("smart_edge_custom.manufacturing.batch_manufacturing.get_item_batch_details")
 	def test_single_batch_bom_uses_compound_total(self, get_details):
 		get_details.return_value = {

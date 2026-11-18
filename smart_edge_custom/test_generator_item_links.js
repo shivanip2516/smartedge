@@ -27,6 +27,20 @@ handlers.base_colour_item(frm);
 assert.equal(previews, 2);
 handlers.printing_route(frm);
 assert.equal(previews, 3);
+
+const meterFields = {
+	production_quantity: { df: { read_only: 1 } },
+	required_production_quantity: { df: { read_only: 1 } },
+};
+const meterRefreshes = [];
+install_meter_display_formatters({
+	fields_dict: meterFields,
+	refresh_field: (fieldname) => meterRefreshes.push(fieldname),
+});
+assert.equal(meterFields.production_quantity.df.formatter(13946.83), "13,947");
+assert.equal(meterFields.required_production_quantity.df.formatter(13946.83), "13,947");
+assert.deepEqual(meterRefreshes, ["production_quantity", "required_production_quantity"]);
+
 frm.__applying_preview = true;
 handlers.compound_item(frm);
 handlers.base_colour_item(frm);

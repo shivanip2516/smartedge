@@ -38,11 +38,11 @@ const frm = { is_new: () => false, doc: { name: "EXT", item: "FG", item_name: "<
 	} } });
 	await handlers.refresh(frm);
 	assert.equal(frm.doc.batch_qty, 39.784206);
-	assert.ok((markup.match(/39\.784206 Meter/g) || []).length >= 2);
+	assert.ok((markup.match(/40 Meter/g) || []).length >= 2);
 	frm.doc.batch_qty = 0;
 	await handlers.refresh(frm);
 	assert.ok(markup.includes("0 Meter"));
-	assert.ok(markup.includes("39.784206 Meter"));
+	assert.ok(markup.includes("40 Meter"));
 	assert.equal(frm.doc.custom_operation_output_quantity, 39.784206);
 	frm.doc = { name: "CMP", item: "COMPOUND", item_name: "Compound", batch_qty: 0, custom_batch_purpose: "Physical Stock" };
 	context.frappe.call = async () => ({ message: { root: { events: [{ stock_entry: "STE-MIX", children: [{ batch_no: "ADDITIVE" }] }] } } });

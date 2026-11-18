@@ -6,9 +6,15 @@ from frappe import _
 from frappe.utils import flt, now_datetime, today
 from frappe.model.naming import make_autoname
 
+from smart_edge_custom.manufacturing.quantity import round_meter_quantity
+
 QR_PREFIX = "SE-LOT:"
 PACK_SESSION = "SmartEdge Packing Session"
 PACK_DETAIL = "SmartEdge Pack Detail"
+
+
+def _is_meter_uom(uom):
+	return str(uom or "").strip().lower() in {"m", "meter", "meters", "metre", "metres"}
 
 def operation_qr_required(operation):
 	if not operation or not frappe.get_meta("Operation", cached=True).has_field("custom_require_input_qr_scan"):
@@ -118,6 +124,11 @@ def confirm_pack(session, sales_order_item, item_code, fg_batch, production_lot,
 	# Lock the order row so concurrent operators cannot over-allocate it.
 	frappe.db.sql("select name from `tabSales Order Item` where name=%s for update", (sales_order_item,))
 	so_row, order = _validate_sales_order_item(sales_order_item, item_code)
+	stock_uom = so_row.stock_uom or so_row.uom
+	if _is_meter_uom(stock_uom):
+		qty = round_meter_quantity(qty)
+		if qty <= 0:
+			frappe.throw(_("Packed quantity must be at least one whole meter."))
 	if doc.sales_order and doc.sales_order != so_row.parent:
 		frappe.throw(_("Sales Order Item belongs to {0}, not this session's Sales Order.").format(so_row.parent))
 	if doc.customer != order.customer:
@@ -125,13 +136,41 @@ def confirm_pack(session, sales_order_item, item_code, fg_batch, production_lot,
 	batch = frappe.db.get_value("Batch", fg_batch, ["item", "disabled"], as_dict=True)
 	if not batch or batch.item != item_code or batch.disabled:
 		frappe.throw(_("FG Batch {0} is not an active batch for Item {1}.").format(fg_batch, item_code))
-	lot = frappe.db.get_value("SmartEdge Production Lot", production_lot, ["name", "finished_item", "quality_inspection"], as_dict=True)
+	lot = frappe.db.get_value(
+		"SmartEdge Production Lot",
+		production_lot,
+		["name", "finished_item", "quality_inspection", "quantity_uom"],
+		as_dict=True,
+	)
 	if not lot or lot.finished_item != item_code:
 		frappe.throw(_("Production Lot {0} does not match Item {1}.").format(production_lot, item_code))
 	if lot.quality_inspection:
-		qc = frappe.db.get_value("Quality Inspection", lot.quality_inspection, ["docstatus", "custom_smartedge_qc_status"], as_dict=True)
+		qc = frappe.db.get_value(
+			"Quality Inspection",
+			lot.quality_inspection,
+			["docstatus", "custom_smartedge_qc_status", "custom_accepted_qty"],
+			as_dict=True,
+		)
 		if not qc or qc.docstatus != 1 or qc.custom_smartedge_qc_status != "Accepted":
 			frappe.throw(_("Production Lot {0} is not QC released.").format(production_lot))
+		if _is_meter_uom(stock_uom) and _is_meter_uom(lot.quantity_uom):
+			already_packed = sum(
+				flt(row.packed_qty)
+				for row in frappe.get_all(
+					PACK_DETAIL,
+					filters={
+						"production_lot": production_lot,
+						"status": ["in", ["Confirmed", "Delivered"]],
+					},
+					fields=["packed_qty"],
+				)
+			)
+			if already_packed + qty > flt(qc.custom_accepted_qty) + 0.000001:
+				frappe.throw(
+					_("QC accepted quantity is {0} m; packing {1} m would exceed the precise approved quantity.").format(
+						flt(qc.custom_accepted_qty), already_packed + qty
+					)
+				)
 	available = _batch_balance(item_code, fg_batch, warehouse)
 	available -= _reserved_quantity(item_code, fg_batch, warehouse)
 	allocated = sum(flt(row.packed_qty) for row in frappe.get_all(PACK_DETAIL, filters={"sales_order_item": sales_order_item, "item_code": item_code, "fg_batch": fg_batch, "warehouse": warehouse, "status": ["in", ["Confirmed", "Delivered"]]}, fields=["packed_qty"]))
@@ -144,7 +183,6 @@ def confirm_pack(session, sales_order_item, item_code, fg_batch, production_lot,
 	pack_id = pack_id or make_autoname("PACK-.#####")
 	if frappe.db.exists(PACK_DETAIL, {"pack_id": pack_id}):
 		frappe.throw(_("Pack {0} already exists.").format(pack_id))
-	stock_uom = so_row.stock_uom or so_row.uom
 	converted = _pack_uom_quantities(item_code, qty, stock_uom)
 	row = doc.append("packs", {"pack_id": pack_id, "sales_order": so_row.parent, "sales_order_item": sales_order_item, "customer": order.customer, "item_code": item_code, "fg_batch": fg_batch, "production_lot": production_lot, "packed_qty": qty, "meter_quantity": converted["meter_quantity"], "kg_quantity": converted["kg_quantity"], "stock_uom": stock_uom, "warehouse": warehouse, "status": "Confirmed", "operator": frappe.session.user, "packed_at": now_datetime()})
 	doc.save()
@@ -237,7 +275,7 @@ def verify_packing_qr(plan_entry, payload=None, quantity=None):
 		qc = frappe.db.get_value("Quality Inspection", lot.quality_inspection, ["docstatus", "custom_smartedge_qc_status"], as_dict=True)
 		if not qc or qc.docstatus != 1 or qc.custom_smartedge_qc_status != "Accepted":
 			frappe.throw(_("The scanned Production Lot is not QC released."))
-	qty = flt(quantity)
+	qty = round_meter_quantity(quantity) if _is_meter_uom(lot.quantity_uom) else flt(quantity)
 	if qty <= 0 or qty > flt(lot.produced_quantity) + 0.000001:
 		frappe.throw(_("Packing quantity exceeds the eligible source Production Lot quantity."))
 	batch = None

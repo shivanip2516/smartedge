@@ -45,6 +45,8 @@
   "actual_qty_kg",
   "quantity_col_3",
   "completion_type",
+  "roll_packing_section",
+  "roll_packing_details",
   "remaining_qty_meter",
   "remaining_qty_kg",
   "released_qty_meter",
@@ -165,20 +167,20 @@
    "fieldname": "planned_qty_meter",
    "fieldtype": "Float",
    "label": "Planned Qty Meter",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {
    "fieldname": "actual_qty_meter",
    "fieldtype": "Float",
    "label": "Actual Qty Meter",
-   "precision": "6"
+	   "precision": "0"
   },
   {
    "fieldname": "planned_qty_kg",
    "fieldtype": "Float",
    "label": "Planned Qty Kg",
-   "precision": "6",
+	   "precision": "6",
    "read_only": 1
   },
   {
@@ -195,24 +197,37 @@
    "read_only": 1
   },
   {
+   "fieldname": "roll_packing_section",
+   "fieldtype": "Section Break",
+   "label": "Roll Packing Details",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "roll_packing_details",
+   "fieldtype": "Table",
+   "label": "Roll Packing Details",
+   "options": "SmartEdge Roll Packing Detail",
+   "read_only": 1
+  },
+  {
    "fieldname": "remaining_qty_meter",
    "fieldtype": "Float",
    "label": "Remaining Qty Meter",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {
    "fieldname": "remaining_qty_kg",
    "fieldtype": "Float",
    "label": "Remaining Qty Kg",
-   "precision": "6",
+	   "precision": "6",
    "read_only": 1
   },
   {
    "fieldname": "released_qty_meter",
    "fieldtype": "Float",
    "label": "Released Qty Meter",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {
@@ -514,7 +529,7 @@
    "fieldname": "packing_qr_verified_qty",
    "fieldtype": "Float",
    "label": "Packing QR Verified Quantity",
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1,
    "hidden": 1
   },

@@ -800,7 +800,8 @@ def is_material_plan(entry):
 
 
 def ensure_material_transfer(entry):
-	return ensure_work_order_stock_entry(entry, "Material Transfer for Manufacture", flt(entry.production_quantity))
+	quantity = flt(entry.get("planned_kg") or entry.production_quantity)
+	return ensure_work_order_stock_entry(entry, "Material Transfer for Manufacture", quantity)
 
 
 def complete_material_production(entry, completed_batches, production_job=None):

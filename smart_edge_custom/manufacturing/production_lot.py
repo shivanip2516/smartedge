@@ -446,20 +446,56 @@ def record_release_movement(job, entry, production, lot_name, qc_release=False):
 	quantity = flt(job.released_qty_meter)
 	if not destination or quantity <= 0:
 		return None
-	movement_key = make_movement_key("release", job.name, job.released_to_plan_entry, lot_name)
+	quantity_kg = flt(job.released_qty_kg)
+	movement_key_parts = ("release", job.name, job.released_to_plan_entry, lot_name)
+	if qc_release:
+		# A QC checkpoint can release accepted output in more than one decision:
+		# the initial accepted portion and later reinspection approvals.  The WIP
+		# ledger is append-only, so only append the delta that has not already been
+		# transferred to the downstream operation.  This also makes the final QC
+		# completion idempotent after an earlier partial release.
+		release_rows = frappe.get_all(
+			LEDGER_DOCTYPE,
+			filters={
+				"status": ACTIVE,
+				"movement_type": "QC Release",
+				"production_job": job.name,
+				"destination_plan_entry": job.released_to_plan_entry,
+				"source_production_lot": lot_name,
+			},
+			fields=["name", "quantity"],
+			limit_page_length=10000,
+		)
+		released_meter = sum(flt(row.quantity) for row in release_rows)
+		if released_meter >= quantity - 0.000001:
+			return release_rows[-1].name if release_rows else None
+		remaining_meter = quantity - released_meter
+		# Meter is the authoritative append-only ledger quantity. Derive the Kg
+		# delta from the current release ratio so mixed historical rows cannot
+		# duplicate or overstate the downstream weight.
+		quantity_kg = quantity_kg * remaining_meter / quantity
+		quantity = remaining_meter
+		movement_key = make_movement_key(
+			"qc-release", job.name, job.released_to_plan_entry, lot_name, f"{flt(job.released_qty_meter):.6f}"
+		)
+		movement_key_parts = (
+			"qc-release", job.name, job.released_to_plan_entry, lot_name, f"{flt(job.released_qty_meter):.6f}"
+		)
+	else:
+		movement_key = make_movement_key("release", job.name, job.released_to_plan_entry, lot_name)
 	existing = frappe.db.exists(LEDGER_DOCTYPE, movement_key)
 	if existing:
 		return existing
 	ensure_available_for_transfer(lot_name, job.operation, quantity)
 	return record_movement(
 		"QC Release" if qc_release else "Transfer to Next Operation",
-		("release", job.name, job.released_to_plan_entry, lot_name),
+		movement_key_parts,
 		job,
 		entry,
 		production,
 		quantity=quantity,
 		uom=production.stock_uom,
-		quantity_kg=job.released_qty_kg,
+		quantity_kg=quantity_kg,
 		source_lot=lot_name,
 		destination_lot=lot_name,
 		source_operation=job.operation,

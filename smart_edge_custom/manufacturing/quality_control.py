@@ -6,10 +6,15 @@ quantity information that ERPNext's purchase/delivery inspection workflow does
 not model.
 """
 
+import json
+import math
+
 import frappe
 from frappe import _
 from frappe.utils import escape_html, flt, format_datetime, now_datetime
 from erpnext.stock.doctype.quality_inspection.quality_inspection import QualityInspection
+
+from smart_edge_custom.manufacturing.quantity import round_meter_quantity, whole_meter_not_exceeding
 
 QC_ROLE = "Quality Manager"
 SOURCE_QC_CONTEXT_FIELDS = {
@@ -69,6 +74,28 @@ def require_qc_authority():
 	if frappe.session.user == "Administrator" or QC_ROLE in frappe.get_roles():
 		return
 	frappe.throw(_("Only users with the Quality Manager role may perform this QC action."), frappe.PermissionError)
+
+
+def _require_qc_plan_access(plan_entry, action):
+	from smart_edge_custom.manufacturing.operator_access import (
+		can_access_company,
+		can_access_plan_entry,
+		get_entry_company,
+		require_plan_entry_access,
+	)
+
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	# QC has its own role and employee validation.  Keep the normal operator
+	# assignment path first, but do not make a Quality Manager's QC decision
+	# depend on the manufacturing operator assigned to the checkpoint.
+	if can_access_plan_entry(entry):
+		return entry
+	if (
+		frappe.session.user == "Administrator"
+		or QC_ROLE in frappe.get_roles()
+	) and can_access_company(get_entry_company(entry)):
+		return entry
+	require_plan_entry_access(entry, action)
 
 
 def get_current_employee(user=None):
@@ -205,6 +232,7 @@ def begin_review(quality_inspection, qc_employee=None):
 	require_qc_authority()
 	doc = _lock_inspection(quality_inspection)
 	_validate_smartedge_inspection(doc)
+	_require_qc_plan_access(doc.custom_qc_plan_entry, _("begin review for"))
 	if doc.custom_smartedge_qc_status == "Under Review":
 		return inspection_context(doc)
 	if doc.custom_smartedge_qc_status != "Pending":
@@ -220,10 +248,19 @@ def begin_review(quality_inspection, qc_employee=None):
 
 
 def validate_quantities(eligible, inspected, accepted=None, rejected=0, rework=0):
+	def whole_meter_input(value, label):
+		try:
+			number = float(str(value or 0).replace(",", ""))
+		except (TypeError, ValueError, OverflowError):
+			frappe.throw(_("{0} must be a valid number.").format(label))
+		if not math.isfinite(number):
+			frappe.throw(_("{0} must be a valid number.").format(label))
+		return round_meter_quantity(number)
+
 	values = {
-		_("Inspected Quantity"): flt(inspected),
-		_("Rejected Quantity"): flt(rejected),
-		_("Rework Quantity"): flt(rework),
+		_("Inspected Quantity"): whole_meter_input(inspected, _("Inspected Quantity")),
+		_("Rejected Quantity"): whole_meter_input(rejected, _("Rejected Quantity")),
+		_("Rework Quantity"): whole_meter_input(rework, _("Rework Quantity")),
 	}
 	for label, value in values.items():
 		if value < 0:
@@ -234,14 +271,13 @@ def validate_quantities(eligible, inspected, accepted=None, rejected=0, rework=0
 		frappe.throw(_("Inspected Quantity cannot exceed the eligible quantity {0}.").format(flt(eligible)))
 	if values[_("Rejected Quantity")] + values[_("Rework Quantity")] > values[_("Inspected Quantity")] + EPSILON:
 		frappe.throw(_("Rejected Quantity plus Rework Quantity cannot exceed Inspected Quantity."))
-	values[_("Accepted Quantity")] = round(
+	values[_("Accepted Quantity")] = round_meter_quantity(
 		max(
 			values[_("Inspected Quantity")]
 			- values[_("Rejected Quantity")]
 			- values[_("Rework Quantity")],
 			0,
-		),
-		6,
+		)
 	)
 	return values
 
@@ -276,6 +312,7 @@ def submit_decision(
 	require_qc_authority()
 	doc = _lock_inspection(quality_inspection)
 	_validate_smartedge_inspection(doc)
+	_require_qc_plan_access(doc.custom_qc_plan_entry, _("submit a decision for"))
 	if doc.custom_smartedge_qc_status != "Under Review":
 		frappe.throw(_("QC must be Under Review before a decision is submitted."))
 	employee = validate_qc_employee(qc_employee or doc.custom_qc_employee or get_current_employee())
@@ -331,10 +368,86 @@ def submit_decision(
 
 
 @frappe.whitelist()
+def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=None, qc_employee=None):
+	"""Submit whole-roll QC while keeping the existing aggregate QC authority.
+
+	The roll rows are validated server-side, converted into the exact aggregate
+	quantities expected by ``submit_decision``, and only then recorded on the new
+	Roll masters.  No Quality Inspection schema is changed.
+	"""
+	require_qc_authority()
+	try:
+		decisions = json.loads(decisions) if isinstance(decisions, str) else decisions
+	except (TypeError, ValueError):
+		frappe.throw(_("Roll decisions must be valid JSON."))
+	if not isinstance(decisions, list) or not decisions:
+		frappe.throw(_("At least one whole-roll QC decision is required."))
+	doc = _lock_inspection(quality_inspection)
+	_validate_smartedge_inspection(doc)
+	if doc.custom_smartedge_qc_status != "Under Review":
+		frappe.throw(_("QC must be Under Review before a decision is submitted."))
+	roll_job = doc.custom_source_production_job
+	if not roll_job:
+		frappe.throw(_("This QC inspection is not linked to an Extrusion Production Job."))
+	from smart_edge_custom.manufacturing.roll_tracking import get_rolls_for_qc_source
+	available = {
+		row.name: row for row in get_rolls_for_qc_source(roll_job, doc.custom_source_production_lot)
+		if row.qc_status in {"Pending", "Awaiting Re-QC"}
+	}
+	seen = set()
+	accepted = rejected = rework = inspected = 0
+	normalized = []
+	for item in decisions:
+		roll_id = str(item.get("roll_id") or item.get("roll") or "").strip()
+		decision = str(item.get("decision") or "").strip()
+		if roll_id in seen or roll_id not in available:
+			frappe.throw(_("Roll {0} is not eligible for this QC inspection or was repeated.").format(roll_id or _("(empty)")))
+		if decision not in {"Passed", "Rework Required", "Rejected"}:
+			frappe.throw(_("Invalid QC decision for Roll {0}.").format(roll_id))
+		seen.add(roll_id)
+		qty = round_meter_quantity(available[roll_id].current_meter_quantity)
+		inspected += qty
+		if decision == "Passed":
+			accepted += qty
+		elif decision == "Rejected":
+			rejected += qty
+		else:
+			rework += qty
+		normalized.append((roll_id, decision))
+	if abs(inspected - flt(doc.custom_eligible_qty)) > EPSILON:
+		frappe.throw(_("All eligible whole rolls must be classified; selected rolls total {0} m but the QC inspection is eligible for {1} m.").format(inspected, doc.custom_eligible_qty))
+	result = submit_decision(
+		quality_inspection=quality_inspection, inspected_qty=inspected,
+		accepted_qty=accepted, rejected_qty=rejected, rework_qty=rework,
+		reason=reason, remarks=remarks, qc_employee=qc_employee,
+	)
+	employee = qc_employee or doc.custom_qc_employee
+	from smart_edge_custom.manufacturing.roll_tracking import set_roll_qc_decision
+	for roll_id, decision in normalized:
+		set_roll_qc_decision(roll_id, decision, quality_inspection=quality_inspection, employee=employee, reason=reason)
+	return {"quality_inspection": quality_inspection, "accepted_qty": accepted, "rejected_qty": rejected, "rework_qty": rework, "rolls": [row[0] for row in normalized], "context": result}
+
+
+@frappe.whitelist()
+def get_rolls_for_qc(quality_inspection):
+	doc = frappe.get_doc("Quality Inspection", quality_inspection)
+	_validate_smartedge_inspection(doc)
+	if not doc.custom_source_production_job:
+		return []
+	from smart_edge_custom.manufacturing.roll_tracking import get_rolls_for_qc_source
+	return [
+		{"roll_id": row.name, "current_meter_quantity": row.current_meter_quantity, "decision": ""}
+		for row in get_rolls_for_qc_source(doc.custom_source_production_job, doc.custom_source_production_lot)
+		if row.qc_status in {"Pending", "Awaiting Re-QC"}
+	]
+
+
+@frappe.whitelist()
 def resubmit_rework(quality_inspection):
 	require_qc_authority()
 	doc = _lock_inspection(quality_inspection)
 	_validate_smartedge_inspection(doc)
+	_require_qc_plan_access(doc.custom_qc_plan_entry, _("resubmit rework for"))
 	if doc.custom_smartedge_qc_status != "Rework Required" or doc.custom_rework_resolved:
 		frappe.throw(_("Only unresolved rework can be resubmitted for inspection."))
 	if doc.custom_rework_resubmitted_to:
@@ -424,6 +537,14 @@ def _sync_qc_release(plan_entry):
 	from smart_edge_custom.manufacturing.planning import get_next_mandatory_entry, update_generator_planning_status
 
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	# Serialize QC decisions for this checkpoint.  The accepted total and the
+	# append-only QC Release delta must be calculated from the same snapshot so
+	# retries or concurrent reinspection submissions cannot release the same
+	# quantity twice.
+	frappe.db.sql(
+		"select name from `tabSmartEdge Production Plan Entry` where name=%s for update",
+		(entry.name,),
+	)
 	data = aggregate(plan_entry)
 	accepted = flt(data.accepted_qty)
 	qc_job = frappe.db.get_value(
@@ -432,19 +553,45 @@ def _sync_qc_release(plan_entry):
 	next_entry = get_next_mandatory_entry(entry)
 	input_kg = flt(entry.get("released_qty_kg"))
 	input_meter = flt(entry.get("released_qty_meter"))
+	released_kg = input_kg * accepted / input_meter if input_meter else 0
 	if next_entry:
 		next_entry.released_from_plan_entry = entry.name
 		next_entry.released_from_production_job = qc_job
 		next_entry.released_qty_meter = accepted
-		next_entry.released_qty_kg = input_kg * accepted / input_meter if input_meter else 0
+		next_entry.released_qty_kg = released_kg
 		if accepted > EPSILON and next_entry.status in {"Pending", "Planned", "On Hold"}:
 			next_entry.status = "Ready"
 		next_entry.save(ignore_permissions=True)
 		update_generator_planning_status(next_entry.final_eb_bom_generator)
 	if qc_job:
+		# Keep the QC job's cumulative release fields authoritative for later
+		# completion, while the ledger helper appends only newly accepted meters.
+		frappe.db.sql(
+			"select name from `tabSmartEdge Production Job` where name=%s for update",
+			(qc_job,),
+		)
+		qc_job_doc = frappe.get_doc("SmartEdge Production Job", qc_job)
+		qc_job_doc.released_qty_meter = accepted
+		qc_job_doc.released_qty_kg = released_kg
+		qc_job_doc.released_to_plan_entry = next_entry.name if next_entry else None
+		if next_entry and accepted > EPSILON:
+			from smart_edge_custom.manufacturing.production_lot import (
+				get_input_production_lot,
+				record_release_movement,
+			)
+
+			input_lot = get_input_production_lot(entry)
+			production = frappe.db.get_value(
+				"Final EB BOM Generator",
+				entry.final_eb_bom_generator,
+				["finished_item", "stock_uom"],
+				as_dict=True,
+			) or frappe._dict()
+			if input_lot and production.get("finished_item") and production.get("stock_uom"):
+				record_release_movement(qc_job_doc, entry, production, input_lot, qc_release=True)
 		frappe.db.set_value("SmartEdge Production Job", qc_job, {
 			"released_qty_meter": accepted,
-			"released_qty_kg": (input_kg * accepted / input_meter if input_meter else 0),
+			"released_qty_kg": released_kg,
 			"released_to_plan_entry": next_entry.name if next_entry else None,
 		}, update_modified=False)
 
@@ -453,7 +600,11 @@ def _finalize_qc_job_if_resolved(plan_entry, quality_inspection):
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	data = aggregate(plan_entry)
 	checkpoint_qty = flt(entry.get("released_qty_meter"))
-	if data.active or data.unresolved_rework_qty > EPSILON or data.root_inspected_qty + EPSILON < checkpoint_qty:
+	# A legacy upstream release can contain a fractional remainder that cannot be
+	# represented by the new whole-meter QC transaction. Resolve only the largest
+	# whole quantity within that exact boundary; never round the approval upward.
+	checkpoint_whole_qty = whole_meter_not_exceeding(checkpoint_qty)
+	if data.active or data.unresolved_rework_qty > EPSILON or data.root_inspected_qty + EPSILON < checkpoint_whole_qty:
 		return
 	job_name = frappe.db.get_value(
 		"SmartEdge Production Job", {"plan_entry": plan_entry, "status": ["in", ["In Progress", "Paused"]]}, "name"
@@ -461,7 +612,7 @@ def _finalize_qc_job_if_resolved(plan_entry, quality_inspection):
 	if not job_name:
 		return
 	job = frappe.get_doc("SmartEdge Production Job", job_name)
-	job.actual_qty_meter = checkpoint_qty
+	job.actual_qty_meter = checkpoint_whole_qty
 	job.actual_qty_kg = flt(entry.get("released_qty_kg"))
 	job.good_qty = data.accepted_qty
 	job.rejected_qty = data.rejected_qty
@@ -515,7 +666,7 @@ def inspection_context(doc):
 
 @frappe.whitelist()
 def get_qc_context(plan_entry):
-	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	entry = _require_qc_plan_access(plan_entry, _("view QC details for"))
 	entry.check_permission("read")
 	data = aggregate(plan_entry)
 	active = data.active[0] if data.active else None
@@ -705,11 +856,14 @@ def get_job_qc_visibility(production_job):
 	job = frappe.get_doc("SmartEdge Production Job", production_job)
 	job.check_permission("read")
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
+	_require_qc_plan_access(entry, _("view QC status for"))
 	from smart_edge_custom.manufacturing.planning import get_next_mandatory_entry
 
 	qc_entry = entry if is_qc_entry(entry) else get_next_mandatory_entry(entry)
 	if not qc_entry or not is_qc_entry(qc_entry):
 		return {"qc_required": False}
+	if not can_access_plan_entry(qc_entry) and QC_ROLE not in frappe.get_roles():
+		return {"qc_required": True, "qc_display_status": _("QC Restricted")}
 	context = get_qc_context(qc_entry.name)
 	return {
 		"qc_required": True,

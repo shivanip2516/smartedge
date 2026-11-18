@@ -68,10 +68,10 @@
 					[__("Operation"), link("Operation", node.operation || frm.doc.custom_operation_name)],
 					[__("Production Job"), link("SmartEdge Production Job", node.production_job || (trace ? frm.doc.reference_name : null))],
 					[__("Operation Status"), escape(node.operation_status || (operation ? "Completed" : "Not applicable"))],
-					[__("Physical Stock Quantity"), `${escape(frm.doc.batch_qty)} ${escape(node.stock_uom || "")}`],
+					[__("Physical Stock Quantity"), `${format_uom_quantity(frm.doc.batch_qty, node.stock_uom)} ${escape(node.stock_uom || "")}`],
 					[__("Operation Output Quantity"), node.operation_output_quantity != null
-						? `${escape(node.operation_output_quantity)} ${escape(node.operation_output_uom)}`
-						: (operation ? `${escape(frm.doc.custom_operation_output_quantity)} ${__("Meter")}` : __("Not applicable"))],
+						? `${format_uom_quantity(node.operation_output_quantity, node.operation_output_uom)} ${escape(node.operation_output_uom)}`
+						: (operation ? `${format_uom_quantity(frm.doc.custom_operation_output_quantity, "Meter")} ${__("Meter")}` : __("Not applicable"))],
 					[__("Operation Output UOM"), node.operation_output_uom || (operation ? __("Meter") : __("Not applicable"))],
 					[__("Input Material Summary"), material_summary(node.input_materials)],
 					[__("Stock Consumption Eligibility"), trace ? __("Not eligible") : __("Standard ERPNext validation")],
@@ -94,3 +94,12 @@
 		},
 	});
 })();
+
+function format_uom_quantity(value, uom) {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "0";
+	const normalized_uom = String(uom || "").toLowerCase();
+	return (normalized_uom === "meter" || normalized_uom === "m"
+		? number.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+		: format_number(number, null, 6));
+}

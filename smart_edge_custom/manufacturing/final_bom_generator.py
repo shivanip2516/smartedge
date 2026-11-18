@@ -54,8 +54,8 @@ class InsufficientMaterialQuantityError(frappe.ValidationError):
 	pass
 
 
-def validate_production_quantity_requirement(doc):
-	"""Require calculated production quantity to cover an authoritative SO allocation."""
+def validate_production_quantity_requirement(doc, show_warning=True):
+	"""Validate the authoritative SO allocation and warn when it exceeds production."""
 	reference_rows = doc.get("sales_order_references") or []
 	sales_order_linked = bool(doc.get("sales_order") or reference_rows)
 
@@ -104,22 +104,33 @@ def validate_production_quantity_requirement(doc):
 			"uom": uom,
 		}
 
-	format_quantity = lambda value: f"{flt(value):,.6f}".rstrip("0").rstrip(".")
-	frappe.throw(
-		_(
-			"Production Quantity is less than Required Production Quantity.\n\n"
-			"Required Production Quantity: {0} {3}\n"
-			"Current Production Quantity: {1} {3}\n"
-			"Shortfall: {2} {3}\n\n"
-			"Please increase the Production Quantity to at least the required quantity before sending this BOM to Production Planning."
-		).format(
-			format_quantity(required_quantity),
-			format_quantity(production_quantity),
-			format_quantity(shortfall),
-			uom,
-		),
-		title=_("Insufficient Production Quantity"),
-	)
+	if show_warning:
+		format_quantity = lambda value: f"{flt(value):,.6f}".rstrip("0").rstrip(".")
+		frappe.msgprint(
+			_(
+				"Production Quantity is less than Required Production Quantity.\n\n"
+				"Required Production Quantity: {0} {3}\n"
+				"Current Production Quantity: {1} {3}\n"
+				"Shortfall: {2} {3}\n\n"
+				"Please review the quantity before proceeding. Planning can continue."
+			).format(
+				format_quantity(required_quantity),
+				format_quantity(production_quantity),
+				format_quantity(shortfall),
+				uom,
+			),
+			title=_("Production Quantity Mismatch"),
+			alert=True,
+			indicator="orange",
+		)
+
+	return {
+		"required_production_quantity": required_quantity,
+		"production_quantity": production_quantity,
+		"shortfall": shortfall,
+		"uom": uom,
+		"warning": True,
+	}
 
 
 def get_finished_item_configuration(finished_item):
@@ -1105,7 +1116,7 @@ def validate_ready_for_planning(doc):
 	doc.check_permission("write")
 	preview = calculate_bom_preview(doc.as_dict())
 	apply_preview_to_doc(doc, preview)
-	validate_production_quantity_requirement(doc)
+	validate_production_quantity_requirement(doc, show_warning=False)
 
 	required = {
 		"finished_item": _("Finished Product Item"),
@@ -1121,8 +1132,8 @@ def validate_ready_for_planning(doc):
 	for fieldname, label in (
 		("production_quantity", _("Production Quantity")),
 	):
-		if flt(doc.get(fieldname)) <= 0:
-			frappe.throw(_("{0} must be greater than zero.").format(label))
+		if flt(doc.get(fieldname)) < 0:
+			frappe.throw(_("{0} cannot be negative.").format(label))
 	for fieldname, label in (
 		("compound_consumption_batches", _("Compound Consumption in Batches")),
 		("shade_consumption_batches", _("Shade Consumption in Batches")),

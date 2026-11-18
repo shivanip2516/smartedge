@@ -1,4 +1,9 @@
 frappe.pages["smartedge-packing"].on_page_load = function (wrapper) {
+	const is_meter_uom = (uom) => ["m", "meter", "meters", "metre", "metres"].includes(String(uom || "").trim().toLowerCase());
+	const round_meter = (value) => Math.floor(Math.max(Number(value) || 0, 0) + 0.5);
+	const format_quantity = (value, uom) => is_meter_uom(uom)
+		? round_meter(value).toLocaleString()
+		: String(value == null ? 0 : value);
 	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("SmartEdge Packing"), single_column: true });
 	const body = $("<div class='p-4'></div>").appendTo(page.body);
 	body.append(`<div class='row'>
@@ -24,7 +29,11 @@ frappe.pages["smartedge-packing"].on_page_load = function (wrapper) {
 	});
 	body.find(".se-confirm-pack").on("click", async () => {
 		try {
-			const row = await call("smart_edge_custom.manufacturing.packing.confirm_pack", { session: body.find(".se-session").val(), sales_order_item: body.find(".se-sales-order-item").val(), item_code: body.find(".se-item").val(), fg_batch: body.find(".se-batch").val(), production_lot: body.find(".se-lot").val(), packed_qty: body.find(".se-qty").val(), warehouse: body.find(".se-warehouse").val() });
+			const quantity_input = body.find(".se-qty");
+			const packing_uom = quantity_input.data("uom");
+			const packed_qty = is_meter_uom(packing_uom) ? round_meter(quantity_input.val()) : quantity_input.val();
+			if (is_meter_uom(packing_uom)) quantity_input.val(packed_qty);
+			const row = await call("smart_edge_custom.manufacturing.packing.confirm_pack", { session: body.find(".se-session").val(), sales_order_item: body.find(".se-sales-order-item").val(), item_code: body.find(".se-item").val(), fg_batch: body.find(".se-batch").val(), production_lot: body.find(".se-lot").val(), packed_qty, warehouse: body.find(".se-warehouse").val() });
 			result.html(`<div class='alert alert-success'>${__("Pack {0} confirmed.", [frappe.utils.escape_html(row.pack_id)])}</div>`);
 		} catch (error) { show_error(error); }
 	});
@@ -45,7 +54,11 @@ frappe.pages["smartedge-packing"].on_page_load = function (wrapper) {
 			body.find(".se-batch").val(row.batch);
 			body.find(".se-lot").val(row.production_lot);
 			body.find(".se-warehouse").val(row.warehouse || body.find(".se-warehouse").val());
-			result.html(`<div class='alert alert-success'><b>${frappe.utils.escape_html(row.item_name)}</b><br>${__("Item")}: ${frappe.utils.escape_html(row.item_code)}<br>${__("Batch")}: ${frappe.utils.escape_html(row.batch)}<br>${__("Production Lot")}: ${frappe.utils.escape_html(row.production_lot)}<br>${__("QC")}: ${frappe.utils.escape_html(row.qc_status)}<br>${__("Accepted")}: ${frappe.utils.escape_html(row.accepted_quantity)} ${frappe.utils.escape_html(row.accepted_uom)}<br>${__("Available Stock")}: ${frappe.utils.escape_html(row.available_stock)} ${frappe.utils.escape_html(row.stock_uom)}<br>${__("Warehouse")}: ${frappe.utils.escape_html(row.warehouse || "N/A")}</div>`);
+				const quantity_input = body.find(".se-qty");
+				quantity_input.data("uom", row.stock_uom).attr("step", is_meter_uom(row.stock_uom) ? "1" : "any");
+				if (is_meter_uom(row.accepted_uom)) quantity_input.attr("max", Math.floor(Number(row.accepted_quantity) || 0));
+				else quantity_input.removeAttr("max");
+				result.html(`<div class='alert alert-success'><b>${frappe.utils.escape_html(row.item_name)}</b><br>${__("Item")}: ${frappe.utils.escape_html(row.item_code)}<br>${__("Batch")}: ${frappe.utils.escape_html(row.batch)}<br>${__("Production Lot")}: ${frappe.utils.escape_html(row.production_lot)}<br>${__("QC")}: ${frappe.utils.escape_html(row.qc_status)}<br>${__("Accepted")}: ${frappe.utils.escape_html(format_quantity(row.accepted_quantity, row.accepted_uom))} ${frappe.utils.escape_html(row.accepted_uom)}<br>${__("Available Stock")}: ${frappe.utils.escape_html(format_quantity(row.available_stock, row.stock_uom))} ${frappe.utils.escape_html(row.stock_uom)}<br>${__("Warehouse")}: ${frappe.utils.escape_html(row.warehouse || "N/A")}</div>`);
 		} catch (error) {
 			result.html(`<div class='alert alert-danger'>${frappe.utils.escape_html(error.message || __("Unable to verify QR"))}</div>`);
 		} finally { input.val("").focus(); }

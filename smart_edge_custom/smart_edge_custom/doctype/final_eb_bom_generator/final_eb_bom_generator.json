@@ -222,6 +222,7 @@
    "in_list_view": 1,
    "label": "Production Quantity",
    "non_negative": 1,
+	   "precision": "0",
    "read_only": 1,
    "reqd": 1
   },
@@ -231,7 +232,7 @@
    "fieldtype": "Float",
    "label": "Required Production Quantity",
    "non_negative": 1,
-   "precision": "6",
+	   "precision": "0",
    "read_only": 1
   },
   {

@@ -22,27 +22,25 @@ class ProductionQuantityRequirementTests(TestCase):
 			}
 		)
 
-	def assert_blocked(self, production_quantity, required_quantity=10000):
-		with patch.object(
-			final_bom_generator.frappe,
-			"throw",
-			side_effect=self.Blocked,
-		) as throw:
-			with self.assertRaises(self.Blocked):
-				final_bom_generator.validate_production_quantity_requirement(
-					self.make_doc(production_quantity, required_quantity)
-				)
+	def assert_warned(self, production_quantity, required_quantity=10000):
+		with patch.object(final_bom_generator.frappe, "msgprint") as msgprint:
+			result = final_bom_generator.validate_production_quantity_requirement(
+				self.make_doc(production_quantity, required_quantity)
+			)
 
-		message = throw.call_args.args[0]
-		self.assertEqual(throw.call_args.kwargs["title"], "Insufficient Production Quantity")
+		message = msgprint.call_args.args[0]
+		self.assertEqual(msgprint.call_args.kwargs["title"], "Production Quantity Mismatch")
+		self.assertTrue(msgprint.call_args.kwargs["alert"])
+		self.assertEqual(result["shortfall"], required_quantity - production_quantity)
 		self.assertIn("Required Production Quantity: 10,000 m", message)
 		self.assertIn(f"Current Production Quantity: {production_quantity:,} m", message)
 		self.assertIn(f"Shortfall: {required_quantity - production_quantity:,} m", message)
+		self.assertIn("Planning can continue", message)
 
-	def test_lower_quantities_are_blocked(self):
+	def test_lower_quantities_warn_and_are_allowed(self):
 		for production_quantity in (0, 8000, 9999):
 			with self.subTest(production_quantity=production_quantity):
-				self.assert_blocked(production_quantity)
+				self.assert_warned(production_quantity)
 
 	def test_equal_and_higher_quantities_are_allowed(self):
 		for production_quantity in (10000, 11000):
@@ -61,10 +59,10 @@ class ProductionQuantityRequirementTests(TestCase):
 				frappe._dict(converted_production_quantity=4000),
 			],
 		)
-		with patch.object(final_bom_generator.frappe, "throw", side_effect=self.Blocked) as throw:
-			with self.assertRaises(self.Blocked):
-				final_bom_generator.validate_production_quantity_requirement(doc)
-		self.assertIn("Shortfall: 1 m", throw.call_args.args[0])
+		with patch.object(final_bom_generator.frappe, "msgprint") as msgprint:
+			result = final_bom_generator.validate_production_quantity_requirement(doc)
+		self.assertIn("Shortfall: 1 m", msgprint.call_args.args[0])
+		self.assertEqual(result["shortfall"], 1)
 
 	def test_manual_generator_without_requirement_keeps_existing_workflow(self):
 		doc = self.make_doc(0, required_quantity=0, sales_order=None)

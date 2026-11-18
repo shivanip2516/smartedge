@@ -12,6 +12,8 @@ frappe.ui.form.on("SmartEdge Production Job", {
 	},
 
 	async refresh(frm) {
+		install_meter_display_formatters(frm);
+		await install_output_meter_display_formatters(frm);
 		set_indicator(frm);
 		add_job_actions(frm);
 		set_operator_hint(frm);
@@ -24,6 +26,35 @@ frappe.ui.form.on("SmartEdge Production Job", {
 		set_operator_hint(frm);
 	},
 });
+
+function install_meter_display_formatters(frm) {
+	for (const fieldname of ["planned_qty_meter", "actual_qty_meter", "remaining_qty_meter", "released_qty_meter", "packing_qr_verified_qty"]) {
+		const field = frm.fields_dict[fieldname];
+		if (!field?.df) continue;
+		field.df.precision = "0";
+		if (field.df.read_only) field.df.formatter = (value) => format_meter(value);
+		frm.refresh_field(fieldname);
+	}
+}
+
+async function install_output_meter_display_formatters(frm) {
+	if (!frm.doc.plan_entry) return;
+	const response = await frappe.db.get_value("SmartEdge Production Plan Entry", frm.doc.plan_entry, "plan_type");
+	if (response?.message?.plan_type === "Required Material") return;
+	for (const fieldname of ["good_qty", "rejected_qty", "rework_qty"]) {
+		const field = frm.fields_dict[fieldname];
+		if (!field?.df) continue;
+		field.df.precision = "0";
+		field.df.formatter = (value) => format_meter(value);
+		frm.refresh_field(fieldname);
+	}
+}
+
+function format_meter(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "0";
+	return number.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
 
 async function show_scrap_movement_history(frm) {
 	if (frm.is_new()) return;
@@ -38,7 +69,7 @@ async function show_scrap_movement_history(frm) {
 			? `<a href="/app/stock-entry/${encodeURIComponent(row.stock_entry)}">${frappe.utils.escape_html(row.stock_entry)}</a>` : "—";
 		return `<div class="mb-2">
 			<strong>${frappe.utils.escape_html(row.movement_type || "")}</strong> ·
-			${format_number(row.quantity || 0, null, 6)} ${frappe.utils.escape_html(row.uom || "")} ·
+			${format_uom_quantity(row.quantity || 0, row.uom)} ${frappe.utils.escape_html(row.uom || "")} ·
 			${frappe.utils.escape_html(row.status || "")} · ${frappe.utils.escape_html(String(row.movement_datetime || ""))}<br>
 			${frappe.utils.escape_html(row.source_operation || "")} · ${frappe.utils.escape_html(row.source_workstation || "")} ·
 			${frappe.utils.escape_html(row.source_employee || "")} · ${stock_entry}
@@ -75,7 +106,7 @@ async function show_recovered_material_allocations(frm) {
 			<a href="/app/smartedge-recovered-material-allocation/${encodeURIComponent(row.name)}">${frappe.utils.escape_html(row.name)}</a>:
 			${frappe.utils.escape_html(row.recovered_material_item || "")} ·
 			<a href="/app/batch/${encodeURIComponent(row.recovered_material_batch)}">${frappe.utils.escape_html(row.recovered_material_batch || "")}</a> ·
-			${format_number(row.allocated_quantity || 0, null, 6)} ${frappe.utils.escape_html(row.uom || "")} ·
+			${format_uom_quantity(row.allocated_quantity || 0, row.uom)} ${frappe.utils.escape_html(row.uom || "")} ·
 			${frappe.utils.escape_html(row.status || "")}
 		</div>`).join("");
 	frm.dashboard.add_section(`<div class="small">${content}</div>`, __("Recovered Material Reuse"), "custom smartedge-recovered-material");
@@ -113,7 +144,7 @@ async function open_recovered_material_dialog(frm) {
 	}
 	const by_label = {};
 	for (const row of options) {
-		const label = `${row.item_code} · ${row.batch_no} · ${format_number(row.maximum_selectable_quantity, null, 6)} ${row.uom}`;
+		const label = `${row.item_code} · ${row.batch_no} · ${format_uom_quantity(row.maximum_selectable_quantity, row.uom)} ${row.uom}`;
 		by_label[label] = row;
 	}
 	const dialog = new frappe.ui.Dialog({
@@ -212,9 +243,18 @@ async function show_qc_visibility(frm) {
 			<div><strong>${__("Production Job")}:</strong> ${frappe.utils.escape_html(context.production_job || "")}</div>
 			<div><strong>${__("Operation")}:</strong> ${frappe.utils.escape_html(context.operation || "")}</div>
 			<div><strong>${__("Workstation")}:</strong> ${frappe.utils.escape_html(context.workstation || "")}</div>
-			<div><strong>${__("Completed Quantity")}:</strong> ${format_number(context.completed_quantity || 0, null, 6)}</div>
+			<div><strong>${__("Completed Quantity")}:</strong> ${format_uom_quantity(context.completed_quantity || 0, "Meter")} m</div>
 			<div><strong>${__("Quality Inspection")}:</strong> ${inspection}</div>
 			${warning}
 		</div>
 	`, __("Quality Control"), "custom smartedge-qc-visibility");
+}
+
+function format_uom_quantity(value, uom) {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return "0";
+	const normalized_uom = String(uom || "").toLowerCase();
+	return normalized_uom === "meter" || normalized_uom === "m"
+		? number.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+		: format_number(number, null, 6);
 }

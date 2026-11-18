@@ -5,6 +5,17 @@
   <div><b>Warehouse:</b> {{ doc.warehouse or '' }} &nbsp; <b>Operator:</b> {{ doc.operator or '' }}</div>
   <table style="width:100%; border-collapse:collapse; margin-top:6mm; font-size:9pt">
     <thead><tr>{% for h in ['Pack ID','Sales Order Item','FG Item','FG Batch','Production Lot','Quantity','Meter','Kg','UOM','Status'] %}<th style="border:1px solid #000; padding:2mm; text-align:left">{{ h }}</th>{% endfor %}</tr></thead>
-    <tbody>{% for row in doc.packs %}<tr>{% for value in [row.pack_id, row.sales_order_item, row.item_code, row.fg_batch, row.production_lot, row.packed_qty, row.meter_quantity, row.kg_quantity, row.stock_uom, row.status] %}<td style="border:1px solid #000; padding:2mm">{{ value or '' }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    <tbody>{% for row in doc.packs %}<tr>
+        <td style="border:1px solid #000; padding:2mm">{{ row.pack_id or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.sales_order_item or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.item_code or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.fg_batch or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.production_lot or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.packed_qty or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{% if (row.stock_uom or '').lower() in ['meter', 'm'] %}{{ '{:,.0f}'.format(row.meter_quantity|float) }}{% else %}{{ row.meter_quantity or '' }}{% endif %}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.kg_quantity or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.stock_uom or '' }}</td>
+        <td style="border:1px solid #000; padding:2mm">{{ row.status or '' }}</td>
+    </tr>{% endfor %}</tbody>
   </table>
 </div>

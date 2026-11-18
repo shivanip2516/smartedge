@@ -71,10 +71,12 @@ doctype_js = {
 	"BOM": "public/js/bom.js",
 	"Compound": "public/js/compound.js",
 	"Item": "public/js/item.js",
+	"Quality Inspection": "public/js/quality_inspection.js",
 	"Sales Order": "public/js/sales_order.js",
 	"Workstation": "public/js/workstation.js",
 	"Work Order": "public/js/work_order.js",
 	"SmartEdge Production Lot": "public/js/smartedge_production_lot.js",
+	"SmartEdge Production Plan Entry": "public/js/smartedge_production_plan_entry.js",
 }
 doctype_list_js = {
 	"Sales Order": "public/js/sales_order_list.js",
@@ -177,13 +179,15 @@ notification_config = "smart_edge_custom.notifications.get_notification_config"
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
+permission_query_conditions = {
+	"SmartEdge Production Plan Entry": "smart_edge_custom.manufacturing.operator_access.plan_entry_query_conditions",
+	"SmartEdge Production Job": "smart_edge_custom.manufacturing.operator_access.production_job_query_conditions",
+}
 #
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+has_permission = {
+	"SmartEdge Production Plan Entry": "smart_edge_custom.manufacturing.operator_access.plan_entry_has_permission",
+	"SmartEdge Production Job": "smart_edge_custom.manufacturing.operator_access.production_job_has_permission",
+}
 
 # Document Events
 # ---------------

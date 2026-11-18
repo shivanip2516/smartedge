@@ -25,7 +25,7 @@ def execute(filters=None):
 
 		if is_material_batch:
 			standard_batch_kg = _quantity_in_kg(
-				entry.production_quantity,
+				entry.get("planned_kg") or entry.production_quantity,
 				entry.quantity_uom,
 				entry.material_item,
 			)
@@ -128,7 +128,7 @@ def _get_plan_entry(name):
 		return None
 	return frappe.db.get_value(
 		"SmartEdge Production Plan Entry", name,
-		["plan_type", "production_quantity", "quantity_uom", "material_item"], as_dict=True
+		["plan_type", "production_quantity", "planned_kg", "quantity_uom", "material_item"], as_dict=True
 	)
 
 

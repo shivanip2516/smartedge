@@ -38,6 +38,78 @@ function get_qr_verification_error_message(error) {
 	return get_server_error_message(error, __("The scanned QR could not be verified."));
 }
 
+function get_completion_quantity_defaults(context = {}, card = {}) {
+	const has_recorded_output = Boolean(
+		flt(context.actual_qty_meter) > 0 ||
+		flt(context.actual_qty_kg) > 0 ||
+		flt(context.good_qty) > 0
+	);
+	const release_values_available =
+		context.released_qty_meter != null && context.released_qty_kg != null;
+	const valid_release_meter = release_values_available && flt(context.released_qty_meter) > 0;
+	const meter_matches_release = release_values_available && (
+		Math.abs(flt(context.actual_qty_meter) - flt(context.released_qty_meter)) <= 0.000001 ||
+		flt(context.actual_qty_meter) === se_floor_meter(context.released_qty_meter)
+	);
+	const actual_matches_planned =
+		flt(context.planned_qty_meter) > 0 &&
+		Math.abs(flt(context.actual_qty_meter) - flt(context.planned_qty_meter)) <= 0.000001;
+	const use_qc_release =
+		context.qc_release_applicable === true &&
+		valid_release_meter &&
+		(!has_recorded_output || meter_matches_release || actual_matches_planned);
+	if (use_qc_release) {
+		// A legacy QC release can contain fractional meters. The next whole-meter
+		// transaction must stay at or below that exact approved quantity.
+		const actual_qty_meter = se_floor_meter(context.released_qty_meter ?? 0);
+		const actual_qty_kg = context.released_qty_kg ?? 0;
+		return {
+			actual_qty_meter,
+			actual_qty_kg,
+			good_qty: actual_qty_meter,
+			good_qty_kg: actual_qty_kg,
+		};
+	}
+
+	// Frappe may return zero-valued numeric fields as strings. Do not let a
+	// string "0" win over the planned quantity when opening a new completion.
+	const actual_qty_meter = se_round_meter(
+		flt(context.actual_qty_meter) > 0
+			? context.actual_qty_meter
+			: flt(context.planned_qty_meter) > 0
+				? context.planned_qty_meter
+				: card.qty || 0
+	);
+	const actual_qty_kg = flt(context.actual_qty_kg) > 0
+		? context.actual_qty_kg
+		: context.planned_qty_kg || card.planned_weight_kg || 0;
+	return {
+		actual_qty_meter,
+		actual_qty_kg,
+		good_qty: se_round_meter(flt(context.good_qty) > 0 ? context.good_qty : actual_qty_meter),
+		good_qty_kg: context.good_qty_kg || context.actual_qty_kg || 0,
+	};
+}
+
+function sum_roll_quantities(roll_quantities = []) {
+	return roll_quantities.reduce((sum, value) => {
+		const text = String(value ?? "").trim();
+		return /^[0-9]+$/.test(text) ? sum + Number(text) : sum;
+	}, 0);
+}
+
+function read_meter_field_value(field) {
+	const raw_value = typeof field?.get_value === "function" ? field.get_value() : field?.$input?.val();
+	if (raw_value === undefined || raw_value === null || String(raw_value).trim() === "") {
+		return undefined;
+	}
+	if (typeof raw_value === "number") {
+		return Number.isFinite(raw_value) ? raw_value : NaN;
+	}
+	const value = Number(String(raw_value).replace(/,/g, "").trim());
+	return Number.isFinite(value) ? value : NaN;
+}
+
 smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	constructor(wrapper) {
 		this.wrapper = wrapper;
@@ -388,6 +460,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const card = group.parent || group.anchor;
 		const placement_card = group.anchor;
 		const is_material = card.plan_type === "Required Material";
+		const can_manage_planning = Boolean(this.state.board?.can_manage_planning);
 		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
 		const status_class = get_status_class(group.status);
 		const item_name = card.item_name || card.finished_item || __("Production Item");
@@ -396,6 +469,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const reference_label = is_material ? __("Work Order") : __("Production");
 		const sales_order_reference = !is_material && card.sales_order
 			? `<div class="se-item-reference"><span>${__("Sales Order")}:</span> ${frappe.utils.escape_html(card.sales_order)}</div>`
+			: "";
+		const partial_planning = !is_material ? card.partial_planning : null;
+		const partial_planning_warning = partial_planning
+			? `<div class="se-partial-planning-warning" role="status">
+				<span class="se-partial-planning-icon" aria-hidden="true">⚠</span>
+				<span><strong>${__("Partially Planned")}</strong><br>${partial_planning.unplanned_count} ${partial_planning.unplanned_count === 1 ? __("operation remaining to be planned.") : __("operations remaining to be planned.")}<br><span class="se-partial-planning-pending"><strong>${__("Pending")}:</strong> ${frappe.utils.escape_html((partial_planning.unplanned_operations || []).join(", "))}</span><br><small>${__("{0} of {1} operations completed", [partial_planning.completed_count, partial_planning.total_count])} · ${__("{0} of {1} planned", [partial_planning.planned_count, partial_planning.total_count])}</small></span>
+			</div>`
 			: "";
 		const quantity = get_parent_quantity_label(card);
 		const active_operation = group.column_operations.find((operation) => ["In Progress", "Paused"].includes(get_card_status(operation))) || card;
@@ -419,6 +499,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				</div>
 				<div class="se-item-reference"><span>${reference_label}:</span> ${frappe.utils.escape_html(reference || "-")}</div>
 				${sales_order_reference}
+				${partial_planning_warning}
 				<div class="se-item-quantity">${frappe.utils.escape_html(quantity)}</div>
 				<div class="se-item-meta-grid">
 					<div><span>${__("Progress")}</span><strong>${group.completed_count}/${group.total_count} ${__("Completed")}</strong></div>
@@ -437,8 +518,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						<ul class="dropdown-menu dropdown-menu-right">
 							<li><a class="dropdown-item se-parent-view" href="#">${is_material ? __("Open Planning Entry") : __("View Production Details")}</a></li>
 							${is_material ? `<li><a class="dropdown-item se-parent-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
-							${!is_material ? `<li><a class="dropdown-item se-parent-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
-							<li><a class="dropdown-item se-parent-production" href="#">${__("Open Production")}</a></li>
+							${can_manage_planning && !is_material ? `<li><a class="dropdown-item se-parent-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
+							${can_manage_planning ? `<li><a class="dropdown-item se-parent-production" href="#">${__("Open Production")}</a></li>` : ""}
 						</ul>
 					</div>
 				</div>
@@ -474,13 +555,14 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	bind_parent_card_actions($card, group) {
 		const card = group.parent || group.anchor;
 		const is_material = card.plan_type === "Required Material";
+		const can_manage_planning = Boolean(this.state.board?.can_manage_planning);
 		$card.find(".dropdown-item").on("click", (event) => {
 			event.preventDefault();
 			this.close_card_menus();
 		});
 		this.bind_more_menu($card.find(".se-item-menu"));
 		$card.find(".se-parent-view").on("click", () =>
-			is_material
+			is_material || !can_manage_planning
 				? frappe.set_route("Form", "SmartEdge Production Plan Entry", card.id)
 				: this.open_production_drawer(card.production, card)
 		);
@@ -496,17 +578,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const operation_key = String(card.id);
 		const operation_label = get_operation_display_label(card);
 		const expanded = this.expanded_operation_rows.has(operation_key);
+		const can_manage_planning = Boolean(this.state.board?.can_manage_planning);
+		const completed_operation = get_card_status(card) === "Completed";
 		const workstation = card.workstation || __("Not Assigned");
 		const employee = card.operator_name || __("Not Assigned");
 		const quantity = get_operation_quantity_label(card);
 		const planned_time = get_planned_time_label(card);
 		const lot_uom = card.lot_uom || card.uom || "";
-		const lot_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(lot_uom)}`.trim();
-		const operation_quantity = (value) => `${se_format_number(value, 6)} m`;
+		const lot_quantity = (value) => `${se_format_uom_quantity(value, lot_uom)}`.trim();
+		const operation_quantity = (value) => `${se_format_meter(value)} m`;
 		const output_uom = card.plan_type === "Required Material" ? (card.uom || "") : "m";
-		const output_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(output_uom)}`.trim();
-		const usable_scrap_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(card.scrap_uom || output_uom)}`.trim();
-		const unusable_scrap_quantity = (value) => `${se_format_number(value, 6)} ${frappe.utils.escape_html(card.unusable_scrap_uom || card.scrap_uom || output_uom)}`.trim();
+		const output_quantity = (value) => se_format_uom_quantity(value, output_uom);
+		const usable_scrap_quantity = (value) => se_format_uom_quantity(value, card.scrap_uom || output_uom);
+		const unusable_scrap_quantity = (value) => se_format_uom_quantity(value, card.unusable_scrap_uom || card.scrap_uom || output_uom);
 		const trace_link = (doctype, name) => `<a href="/app/${doctype}/${encodeURIComponent(name)}">${frappe.utils.escape_html(name)}</a>`;
 		const qc_badge = get_qc_badge_html(card);
 		const fg_details = card.plan_type !== "Required Material" ? `
@@ -555,7 +639,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const $row = $(
 			`<div class="se-operation-row se-${status_class} ${match_class} ${expanded ? "is-expanded" : ""}" data-plan-entry="${frappe.utils.escape_html(card.id)}">
 				<div class="se-operation-strip">
-					<div class="se-operation-title" draggable="true" title="${frappe.utils.escape_html(operation_label)}">
+					<div class="se-operation-title" draggable="${can_manage_planning ? "true" : "false"}" title="${frappe.utils.escape_html(operation_label)}">
 						<span class="se-operation-sequence">${frappe.utils.escape_html(card.operation_sequence || "•")}</span>
 						<span class="se-operation-title-content">
 							<span class="se-operation-statuses">
@@ -590,10 +674,11 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							<ul class="dropdown-menu dropdown-menu-right">
 								<li><a class="dropdown-item se-view" href="#">${__("View Details")}</a></li>
 								${card.plan_type === "Required Material" && !card.work_order_missing ? `<li><a class="dropdown-item se-open-work-order" href="#">${__("Open Work Order")}</a></li>` : ""}
-								<li><a class="dropdown-item se-edit" href="#">${__("Edit Schedule")}</a></li>
-								${card.plan_type !== "Required Material" ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
-								${!is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
-								<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>
+								${can_manage_planning ? `<li><a class="dropdown-item se-edit" href="#">${__("Edit Schedule")}</a></li>` : ""}
+								${can_manage_planning && card.plan_type !== "Required Material" ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
+								${can_manage_planning && !is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
+								${can_manage_planning && !completed_operation ? `<li><a class="dropdown-item se-change-operator" href="#">${__("Change Operator")}</a></li>` : can_manage_planning ? `<li><span class="dropdown-item disabled" title="${__("Completed operations cannot be reassigned because execution history must be preserved.")}">${__("Change Operator")}</span></li>` : ""}
+								${can_manage_planning ? `<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>` : ""}
 							</ul>
 						</div>
 					</div>
@@ -601,7 +686,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			</div>`
 		);
 		const $handle = $row.find(".se-operation-title");
-		$handle.on("dragstart", (event) => {
+		if (can_manage_planning) $handle.on("dragstart", (event) => {
 			$row.addClass("dragging");
 			event.originalEvent.dataTransfer.setData("application/json", JSON.stringify(card));
 		});
@@ -626,7 +711,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		});
 		this.bind_more_menu($row.find(".se-operation-menu"));
 		$row.find(".se-view").on("click", () =>
-			card.plan_type === "Required Material"
+			card.plan_type === "Required Material" || !can_manage_planning
 				? frappe.set_route("Form", "SmartEdge Production Plan Entry", card.id)
 				: this.open_production_drawer(card.production, card)
 		);
@@ -634,6 +719,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$row.find(".se-edit, .se-plan").on("click", () => this.open_schedule_dialog(card, card.planned_date || this.state.week_start));
 		$row.find(".se-plan-all").on("click", () => this.plan_full_production(card));
 		$row.find(".se-unplan").on("click", () => this.unplan(card));
+		$row.find(".se-change-operator").on("click", () => this.open_change_operator_dialog(card));
 		$row.find(".se-open-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
 		$row.find(".se-start").on("click", () => this.open_start_dialog(card));
 		$row.find(".se-pause").on("click", () => this.pause_production_job(card));
@@ -643,6 +729,42 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$row.find(".se-qc-resubmit").on("click", () => this.resubmit_qc_rework(card));
 		$row.find(".se-qc-view").on("click", () => this.view_qc(card));
 		return $row;
+	}
+
+	async open_change_operator_dialog(card) {
+		if (!this.state.board?.can_manage_planning || get_card_status(card) === "Completed") return;
+		const dialog = new frappe.ui.Dialog({
+			title: __("Change Operator"),
+			fields: [
+				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation || "" },
+				{ fieldtype: "Data", fieldname: "current_operator", label: __("Current Assigned Operator"), read_only: 1, default: card.operator_name || __("Not Assigned") },
+				{
+					fieldtype: "Link",
+					fieldname: "new_operator",
+					label: __("New Operator"),
+					options: "Employee",
+					reqd: 1,
+					default: card.operator_employee || "",
+					get_query: () => ({ filters: { status: "Active", ...(card.company ? { company: card.company } : {}) } }),
+				},
+				{ fieldtype: "Small Text", fieldname: "reason", label: __("Reason for Change") },
+			],
+			primary_action_label: __("Update Operator"),
+			primary_action: async (values) => {
+				await frappe.call({
+					method: `${this.method}.change_operator`,
+					args: {
+						plan_entry: card.id,
+						new_operator: values.new_operator,
+						reason: values.reason,
+					},
+					error_handlers: get_planning_error_handlers(),
+				});
+				dialog.hide();
+				await this.refresh();
+			},
+		});
+		dialog.show();
 	}
 
 	bind_more_menu($menu) {
@@ -737,7 +859,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				<div class="se-column-body day-drop-zone"></div>
 			</div>
 		`);
-		if (date_key !== "pending") {
+		if (date_key !== "pending" && this.state.board?.can_manage_planning) {
 			const $body = $column.find(".se-column-body");
 			$body.on("dragover", (event) => {
 				event.preventDefault();
@@ -760,6 +882,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	}
 
 	bind_workstation_drop($workstation, date_key, workstation) {
+		if (!this.state.board?.can_manage_planning) return;
 		$workstation.on("dragover", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -784,6 +907,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					planned_start: normalize_schedule_time(get_time_from_datetime(card.planned_start) || "09:00"),
 					duration_hours: card.duration_hours || 1,
 					priority: card.priority,
+					planned_employee: card.operator_employee,
 			});
 			if (scheduled) await this.refresh();
 			return;
@@ -893,13 +1017,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const is_material = card.plan_type === "Required Material";
 		const qty = is_material
 			? `${cint(card.planned_batches)} ${__("batches")}`
-			: `${se_format_number(card.qty, 2)} m`;
+			: `${se_format_meter(card.qty)} m`;
 		const weight = card.planned_weight_kg
 			? `${se_format_number(card.planned_weight_kg, 3)} ${is_material ? card.uom || "" : "Kg"}`
 			: "";
 		const released_qty = get_released_qty_label(card);
 		const category_class = CATEGORY_COLOR_CLASSES[card.category_color] || "category-other";
 		const effective_status = get_card_status(card);
+		const can_manage_planning = Boolean(this.state.board?.can_manage_planning);
+		const completed_operation = effective_status === "Completed";
 		const status_class = `status-${String(effective_status || "Pending").toLowerCase().replace(/\s+/g, "-")}`;
 		const status_label = get_status_label(effective_status);
 		const qc_badge = get_qc_badge_html(card);
@@ -956,6 +1082,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							${card.workstation && can_change_workstation(card) ? `<li><a class="dropdown-item se-change-workstation" href="#">${__("Change Workstation")}</a></li>` : ""}
 							${!is_material ? `<li><a class="dropdown-item se-plan-all" href="#">${__("Plan Full Route")}</a></li>` : ""}
 							${!is_pending ? `<li><a class="dropdown-item se-unplan" href="#">${__("Unplan")}</a></li>` : ""}
+							${can_manage_planning && !completed_operation ? `<li><a class="dropdown-item se-change-operator" href="#">${__("Change Operator")}</a></li>` : can_manage_planning ? `<li><span class="dropdown-item disabled" title="${__("Completed operations cannot be reassigned because execution history must be preserved.")}">${__("Change Operator")}</span></li>` : ""}
 							<li><a class="dropdown-item se-open-production" href="#">${__("Open Production")}</a></li>
 						</ul>
 					</div>
@@ -992,6 +1119,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		$card.find(".se-change-workstation").on("click", () =>
 			this.open_schedule_dialog(card, card.planned_date || this.state.week_start, card.workstation, true)
 		);
+		$card.find(".se-change-operator").on("click", () => this.open_change_operator_dialog(card));
 		$card.find(".se-plan-all").on("click", () => this.plan_full_production(card));
 		$card.find(".se-unplan").on("click", () => this.unplan(card));
 		$card.find(".se-open-production").on("click", () => frappe.set_route("Form", "Final EB BOM Generator", card.production));
@@ -1036,6 +1164,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	get_primary_action_html(card, is_pending, status_class) {
 		const status = get_card_status(card);
 		const qc_status = card.qc_status;
+		const can_manage_planning = Boolean(this.state.board?.can_manage_planning);
 		if (card.is_qc && !is_pending) {
 			if (!card.qc_can_review) {
 				return `<button class="btn btn-xs btn-default" disabled>${__("QC Action Restricted")}</button>`;
@@ -1063,7 +1192,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			return `<button class="btn btn-xs btn-default" disabled title="${frappe.utils.escape_html(card.work_order_warning || "")}">${__("Unavailable")}</button>`;
 		}
 		if (is_pending) {
-			return `<button class="btn btn-xs btn-primary se-plan">${__("Plan")}</button>`;
+			return can_manage_planning
+				? `<button class="btn btn-xs btn-primary se-plan">${__("Plan")}</button>`
+				: `<button class="btn btn-xs btn-default" disabled>${__("Awaiting Planning")}</button>`;
 		}
 		if (status === "In Progress") {
 			return `
@@ -1149,6 +1280,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	}
 
 	async open_schedule_dialog(card, date_key, default_workstation = null, changing_workstation = false) {
+		if (!this.state.board?.can_manage_planning) return;
 		const response = await frappe.call({
 			method: `${this.method}.get_compatible_workstations`,
 			args: {
@@ -1186,6 +1318,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					default: default_workstation || card.workstation || workstations[0],
 					read_only: !workstation_editable,
 				},
+				{
+					fieldtype: "Link",
+					fieldname: "planned_employee",
+					label: __("Operator"),
+					options: "Employee",
+					reqd: 1,
+					default: card.operator_employee,
+					get_query: () => ({ filters: { status: "Active", ...(card.company ? { company: card.company } : {}) } }),
+				},
 				{ fieldtype: "Time", fieldname: "planned_start", label: __("Planned Start"), reqd: 1, default: default_start },
 				{
 					fieldtype: "Float",
@@ -1213,6 +1354,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							workstation: values.workstation,
 							planned_start: normalize_schedule_time(values.planned_start),
 							duration_hours: values.duration_hours,
+							planned_employee: values.planned_employee,
 							priority: card.priority,
 							override_sequence: values.override_sequence,
 							override_capacity: values.override_capacity,
@@ -1335,6 +1477,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			args: { plan_entry: card.id },
 		});
 		const context = response.message || {};
+		const material_quantity_precision = se_is_meter_uom(context.quantity_uom) ? "0" : 6;
 		const compatible_workstations = context.compatible_workstations || [];
 		let starting = false;
 		const dialog = new frappe.ui.Dialog({
@@ -1360,8 +1503,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "bom_no", label: __("BOM"), options: "BOM", read_only: 1, hidden: !context.is_material_production, default: context.bom_no },
 				{ fieldtype: "Column Break", hidden: !context.is_material_production },
 				{ fieldtype: "Int", fieldname: "planned_batches", label: __("No. of Batches"), read_only: 1, hidden: !context.is_material_production, default: context.planned_batches },
-				{ fieldtype: "Float", fieldname: "weight_per_batch", label: __("Weight per Batch ({0})", [context.quantity_uom || ""]), precision: 6, read_only: 1, hidden: !context.is_material_production, default: context.weight_per_batch },
-				{ fieldtype: "Float", fieldname: "total_planned_quantity", label: __("Total Planned Quantity ({0})", [context.quantity_uom || ""]), precision: 6, read_only: 1, hidden: !context.is_material_production, default: context.total_planned_quantity },
+				{ fieldtype: "Float", fieldname: "weight_per_batch", label: __("Weight per Batch ({0})", [context.quantity_uom || ""]), precision: material_quantity_precision, read_only: 1, hidden: !context.is_material_production, default: context.weight_per_batch },
+				{ fieldtype: "Float", fieldname: "total_planned_quantity", label: __("Total Planned Quantity ({0})", [context.quantity_uom || ""]), precision: material_quantity_precision, read_only: 1, hidden: !context.is_material_production, default: context.total_planned_quantity },
 				{ fieldtype: "Section Break", label: __("Warehouses"), hidden: !context.is_material_production },
 				{ fieldtype: "Link", fieldname: "source_warehouse", label: __("Source Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.source_warehouse },
 				{ fieldtype: "Link", fieldname: "wip_warehouse", label: __("Work-in-Progress Warehouse"), options: "Warehouse", read_only: 1, hidden: !context.is_material_production, default: context.wip_warehouse },
@@ -1425,7 +1568,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					fieldtype: "Float",
 					fieldname: "planned_meter",
 					label: context.is_material_production ? __("Planned Batches") : __("Planned Meter"),
-					precision: 6,
+					precision: "0",
 					read_only: 1,
 					default: context.planned_qty_meter,
 				},
@@ -1550,6 +1693,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const scrap_uom = context.usable_scrap_uom || context.scrap_uom || output_uom;
 		const unusable_scrap_uom = context.unusable_scrap_uom || scrap_uom;
 		const meter_to_kg_factor = flt(context.completion_meter_to_kg_factor);
+		const completion_defaults = get_completion_quantity_defaults(context, card);
 		const uom_options = (values, fallback) => {
 			const options = Array.from(new Set([...(values || []), fallback].filter(Boolean)));
 			return options.join("\n");
@@ -1561,6 +1705,10 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		let completion_quantity_request = 0;
 		let completion_quantity_error = quantity_calculation_enabled;
 		let completion_quantity_error_message = null;
+		const roll_packing_enabled = Boolean(context.is_extrusion_operation && !is_material);
+		let roll_quantities = [];
+		let previous_roll_count = 1;
+		let roll_input_rendering = false;
 		const dialog = new frappe.ui.Dialog({
 			title: __("Complete Process"),
 			fields: [
@@ -1580,7 +1728,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Data", fieldname: "workstation", label: __("Workstation"), read_only: 1, default: context.workstation || card.workstation },
 				{ fieldtype: "Data", fieldname: "operator_name", label: __("Employee"), read_only: 1, default: context.operator_name || card.operator_name || "" },
 				{ fieldtype: "Section Break" },
-				{ fieldtype: "Float", fieldname: "planned_qty_meter", label: is_material ? __("Planned Batches") : __("Planned Qty Meter"), precision: 6, read_only: 1, default: context.planned_qty_meter || card.qty || 0 },
+				{ fieldtype: "Float", fieldname: "planned_qty_meter", label: is_material ? __("Planned Batches") : __("Planned Qty Meter"), precision: "0", read_only: 1, default: context.planned_qty_meter || card.qty || 0 },
 				{ fieldtype: "Float", fieldname: "planned_qty_kg", label: is_material ? __("Planned Quantity ({0})", [context.quantity_uom || ""]) : __("Planned Kg"), precision: 6, read_only: 1, default: context.planned_qty_kg || card.planned_weight_kg || 0 },
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Data", fieldname: "actual_running_time", label: __("Actual Running Time"), read_only: 1, default: format_duration_seconds(context.productive_elapsed_seconds || card.job_productive_elapsed_seconds || 0) },
@@ -1604,14 +1752,42 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					reqd: 1,
 					default: "Full Completion",
 				},
-				{ fieldtype: "Float", fieldname: "actual_qty_meter", label: meter_label, precision: 6, reqd: 1, default: context.actual_qty_meter || context.planned_qty_meter || card.qty || 0 },
-				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: context.actual_qty_kg || context.planned_qty_kg || card.planned_weight_kg || 0 },
+				{
+					fieldtype: "Float",
+					fieldname: "actual_qty_meter",
+					label: meter_label,
+					precision: "0",
+					reqd: 1,
+					default: completion_defaults.actual_qty_meter,
+				},
+				{ fieldtype: "Section Break", label: __("Roll Packing Details"), hidden: !roll_packing_enabled },
+				{
+					fieldtype: "Int",
+					fieldname: "roll_count",
+					label: __("Number of Rolls"),
+					min: 1,
+					reqd: roll_packing_enabled,
+					hidden: !roll_packing_enabled,
+					default: roll_packing_enabled ? 1 : 0,
+				},
+				{ fieldtype: "HTML", fieldname: "roll_packing_inputs", hidden: !roll_packing_enabled, options: "" },
+				{
+					fieldtype: "Float",
+					fieldname: "total_roll_quantity",
+					label: __("Total Roll Quantity (m)"),
+					precision: "0",
+					read_only: 1,
+					hidden: !roll_packing_enabled,
+					default: 0,
+				},
+				{ fieldtype: "HTML", fieldname: "roll_packing_message", hidden: !roll_packing_enabled, options: "" },
+				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: completion_defaults.actual_qty_kg },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "good_qty", label: output_label("Good Output"), precision: 6, hidden: quantity_calculation_enabled, read_only: 1, default: context.good_qty || (is_material ? context.total_planned_quantity : card.qty) || 0 },
-				{ fieldtype: "Float", fieldname: "good_qty_kg", label: __("Good Output (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, read_only: 1, default: context.good_qty_kg || context.actual_qty_kg || 0 },
-				{ fieldtype: "Float", fieldname: "rejected_qty", label: output_label("Rejected Output"), precision: 6, hidden: quantity_calculation_enabled, default: context.rejected_qty || 0 },
+				{ fieldtype: "Float", fieldname: "good_qty", label: output_label("Good Output"), precision: is_material ? 6 : "0", hidden: quantity_calculation_enabled, read_only: 1, default: is_material ? (context.good_qty || context.total_planned_quantity || 0) : completion_defaults.good_qty },
+				{ fieldtype: "Float", fieldname: "good_qty_kg", label: __("Good Output (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, read_only: 1, default: completion_defaults.good_qty_kg },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: output_label("Rejected Output"), precision: is_material ? 6 : "0", hidden: quantity_calculation_enabled, default: is_material ? (context.rejected_qty || 0) : se_round_meter(context.rejected_qty) },
 				{ fieldtype: "Float", fieldname: "rejected_qty_kg", label: __("Rejected Output (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, default: context.rejected_qty_kg || 0 },
-				{ fieldtype: "Float", fieldname: "rework_qty", label: output_label("Rework"), precision: 6, hidden: quantity_calculation_enabled, default: context.rework_qty || 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: output_label("Rework"), precision: is_material ? 6 : "0", hidden: quantity_calculation_enabled, default: is_material ? (context.rework_qty || 0) : se_round_meter(context.rework_qty) },
 				{ fieldtype: "Float", fieldname: "rework_qty_kg", label: __("Rework (Kg)"), precision: 6, hidden: !quantity_calculation_enabled, default: context.rework_qty_kg || 0 },
 				{ fieldtype: "Section Break" },
 				{ fieldtype: "Float", fieldname: "usable_scrap", label: __("Usable Scrap"), precision: 6, hidden: !quantity_calculation_enabled, default: context.usable_scrap || 0 },
@@ -1624,7 +1800,38 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			],
 			primary_action_label: __("Confirm Completion"),
 			primary_action: async (values) => {
-				const invalid_output = get_invalid_completion_output(values);
+				// Read the dialog at click time.  The callback argument can be a stale
+				// snapshot when calculated fields have just refreshed.
+				const current_values = dialog.get_values() || values || {};
+				const meter_field = dialog.get_field("actual_qty_meter");
+				const actual_meter = read_meter_field_value(meter_field);
+				if (actual_meter === undefined) {
+					frappe.msgprint({
+						title: __("Missing Actual Completed Qty"),
+						message: __("Enter Actual Completed Qty (m)."),
+						indicator: "red",
+					});
+					return;
+				}
+				if (!Number.isFinite(actual_meter) || actual_meter <= 0) {
+					frappe.msgprint({
+						title: __("Invalid Actual Completed Qty"),
+						message: __("Actual Completed Qty (m) must be greater than zero."),
+						indicator: "red",
+					});
+					return;
+				}
+				current_values.actual_qty_meter = se_round_meter(actual_meter);
+				meter_field.set_input(current_values.actual_qty_meter);
+				if (!is_material && !quantity_calculation_enabled) {
+					for (const fieldname of ["good_qty", "rejected_qty", "rework_qty"]) {
+						current_values[fieldname] = se_round_meter(current_values[fieldname]);
+						dialog.fields_dict[fieldname]?.set_input(current_values[fieldname]);
+					}
+				}
+				const roll_details = roll_packing_enabled ? collect_roll_details() : null;
+				if (roll_packing_enabled && !roll_details) return;
+				const invalid_output = get_invalid_completion_output(current_values);
 				if (invalid_output) {
 					frappe.msgprint({
 						title: __("Invalid Output Quantity"),
@@ -1648,30 +1855,32 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				$primary.prop("disabled", true);
 				try {
 					if (context.packing_qr_required) {
-						await verify_input_qr(values.actual_qty_meter);
+						await verify_input_qr(current_values.actual_qty_meter);
 					}
 					const completion_args = {
 						method: `${this.method}.complete_production_job`,
 						args: {
 							plan_entry: card.id,
-							completion_type: values.completion_type,
-							actual_qty_meter: values.actual_qty_meter,
-							actual_qty_kg: values.actual_qty_kg,
-							good_qty: values.good_qty,
-							rejected_qty: values.rejected_qty,
-							rework_qty: values.rework_qty,
-							usable_scrap: values.usable_scrap,
-							unusable_scrap: values.unusable_scrap,
-							remarks: values.remarks,
+							completion_type: current_values.completion_type,
+							actual_qty_meter: current_values.actual_qty_meter,
+							actual_qty_kg: current_values.actual_qty_kg,
+							good_qty: current_values.good_qty,
+							rejected_qty: current_values.rejected_qty,
+							rework_qty: current_values.rework_qty,
+							usable_scrap: current_values.usable_scrap,
+							unusable_scrap: current_values.unusable_scrap,
+							remarks: current_values.remarks,
+							roll_count: roll_details?.roll_count,
+							roll_packing_details: roll_details ? JSON.stringify(roll_details.rows) : undefined,
 						},
 					};
 					if (quantity_calculation_enabled) {
 						Object.assign(completion_args.args, {
-							good_qty_kg: values.good_qty_kg,
-							rejected_qty_kg: values.rejected_qty_kg,
-							rework_qty_kg: values.rework_qty_kg,
-							usable_scrap_uom: values.usable_scrap_uom,
-							unusable_scrap_uom: values.unusable_scrap_uom,
+							good_qty_kg: current_values.good_qty_kg,
+							rejected_qty_kg: current_values.rejected_qty_kg,
+							rework_qty_kg: current_values.rework_qty_kg,
+							usable_scrap_uom: current_values.usable_scrap_uom,
+							unusable_scrap_uom: current_values.unusable_scrap_uom,
 						});
 					}
 					await frappe.call(completion_args);
@@ -1683,6 +1892,102 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				}
 			},
 		});
+		const set_roll_message = (message, indicator = "muted") => {
+			const wrapper = dialog.fields_dict.roll_packing_message?.$wrapper;
+			if (wrapper) wrapper.html(message ? `<div class="text-${indicator}">${frappe.utils.escape_html(message)}</div>` : "");
+		};
+		const get_current_actual_meter = () => {
+			const actual = read_meter_field_value(dialog.get_field("actual_qty_meter"));
+			return actual === undefined ? NaN : actual;
+		};
+		const update_roll_total = () => {
+			const total = sum_roll_quantities(roll_quantities);
+			dialog.set_value("total_roll_quantity", total);
+			const actual = get_current_actual_meter();
+			if (roll_packing_enabled && Number.isFinite(actual) && total > actual) {
+				set_roll_message(__("Total roll quantity ({0} m) cannot exceed actual completed production quantity ({1} m).", [total.toLocaleString(), actual.toLocaleString()]), "danger");
+			} else if (roll_packing_enabled) {
+				set_roll_message(__("Enter a positive whole-meter quantity for every roll."));
+			}
+		};
+		const render_roll_inputs = (requested_count) => {
+			if (roll_input_rendering || !roll_packing_enabled) return;
+			const count = Number(requested_count);
+			if (!Number.isInteger(count) || count < 1) {
+				dialog.fields_dict.roll_packing_inputs.$wrapper.empty();
+				set_roll_message(__("Number of Rolls must be a positive whole number."), "danger");
+				return;
+			}
+			if (count < previous_roll_count && roll_quantities.slice(count).some((value) => String(value ?? "").trim() !== "")) {
+				frappe.confirm(
+					__("Reducing the number of rolls will discard entered quantities. Continue?"),
+					() => {
+						roll_quantities = roll_quantities.slice(0, count);
+						previous_roll_count = count;
+						render_roll_inputs(count);
+					},
+					() => dialog.set_value("roll_count", previous_roll_count),
+				);
+				return;
+			}
+			roll_input_rendering = true;
+			try {
+				roll_quantities = Array.from({ length: count }, (_, index) => roll_quantities[index] ?? "");
+				previous_roll_count = count;
+				const html = roll_quantities.map((value, index) => `
+					<div class="form-group se-roll-packing-row">
+						<label class="control-label">${__("Roll {0} (m)", [index + 1])}</label>
+						<input type="number" class="form-control se-roll-quantity" data-roll-index="${index}" min="1" step="1" inputmode="numeric" value="${frappe.utils.escape_html(String(value))}">
+					</div>
+				`).join("");
+				dialog.fields_dict.roll_packing_inputs.$wrapper.html(`<div class="se-roll-packing-inputs">${html}</div>`);
+				dialog.fields_dict.roll_packing_inputs.$wrapper.find(".se-roll-quantity").on("input change", (event) => {
+					const index = Number(event.currentTarget.dataset.rollIndex);
+					roll_quantities[index] = event.currentTarget.value;
+					update_roll_total();
+				});
+				update_roll_total();
+			} finally {
+				roll_input_rendering = false;
+			}
+		};
+		const collect_roll_details = () => {
+			const count_text = String(dialog.get_value("roll_count") ?? "").trim();
+			if (!/^\d+$/.test(count_text) || Number(count_text) < 1) {
+				set_roll_message(__("Number of Rolls must be a positive whole number."), "danger");
+				return null;
+			}
+			const count = Number(count_text);
+			const inputs = dialog.fields_dict.roll_packing_inputs.$wrapper.find(".se-roll-quantity");
+			if (inputs.length !== count) {
+				set_roll_message(__("Number of Rolls must match the number of roll quantities."), "danger");
+				return null;
+			}
+			const rows = [];
+			let total = 0;
+			for (let index = 0; index < inputs.length; index += 1) {
+				const value = String(inputs[index].value || "").trim();
+				if (!/^[1-9]\d*$/.test(value)) {
+					set_roll_message(__("Each roll must have a positive whole-meter quantity."), "danger");
+					return null;
+				}
+				const meter_quantity = Number(value);
+				rows.push({ roll_no: index + 1, meter_quantity });
+				total += meter_quantity;
+			}
+			dialog.set_value("total_roll_quantity", total);
+			const actual = get_current_actual_meter();
+			if (!Number.isFinite(actual) || total > actual) {
+				set_roll_message(__("Total roll quantity ({0} m) cannot exceed actual completed production quantity ({1} m).", [total.toLocaleString(), actual.toLocaleString()]), "danger");
+				return null;
+			}
+			return { roll_count: count, rows };
+		};
+		if (roll_packing_enabled) {
+			dialog.fields_dict.roll_count.df.onchange = () => render_roll_inputs(dialog.get_value("roll_count"));
+			dialog.fields_dict.roll_count.$input?.on("input change", () => render_roll_inputs(dialog.get_value("roll_count")));
+			dialog.fields_dict.actual_qty_meter.$input?.on("input change", update_roll_total);
+		}
 		const set_qr_status = (message, indicator = "muted") => {
 			const wrapper = dialog.fields_dict.packing_qr_status?.$wrapper;
 			if (wrapper) wrapper.html(`<div class="text-${indicator}">${frappe.utils.escape_html(message)}</div>`);
@@ -1713,6 +2018,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			return verified_qr;
 		};
 		dialog.show();
+		if (roll_packing_enabled) render_roll_inputs(1);
 		const set_completion_quantity_message = (message, indicator = "muted") => {
 			const $help = dialog.fields_dict.good_qty_kg?.$wrapper?.find(".help-box");
 			if ($help?.length) {
@@ -1836,7 +2142,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		if (!context.quality_inspection) {
 			frappe.throw(__("No pending Quality Inspection is available."));
 		}
+		const roll_response = await frappe.call({
+			method: "smart_edge_custom.manufacturing.quality_control.get_rolls_for_qc",
+			args: { quality_inspection: context.quality_inspection },
+		});
+		const qc_rolls = roll_response.message || [];
 		let submitting = false;
+		const safe_eligible_qty = se_floor_meter(context.eligible_qty);
 		const result_options = "\nPass\nFail\nNot Applicable";
 		const dialog = new frappe.ui.Dialog({
 			title: __("Submit QC Decision"),
@@ -1864,12 +2176,20 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Select", fieldname: "surface_appearance", label: __("Surface / Appearance"), options: result_options },
 				{ fieldtype: "Select", fieldname: "print_quality", label: __("Print Quality"), options: result_options },
 				{ fieldtype: "Section Break", label: __("Quantity Decision") },
-				{ fieldtype: "Float", fieldname: "eligible_qty", label: __("Eligible Quantity"), precision: 6, read_only: 1, default: context.eligible_qty },
-				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: 6, reqd: 1, default: context.eligible_qty },
+				...(qc_rolls.length ? [
+					{ fieldtype: "Section Break", label: __("Whole-Roll Decisions") },
+					{ fieldtype: "Table", fieldname: "roll_decisions", label: __("Roll Decisions"), cannot_add_rows: true, cannot_delete_rows: true, in_place_edit: true, data: qc_rolls, fields: [
+						{ fieldtype: "Data", fieldname: "roll_id", label: __("Roll ID"), read_only: 1, in_list_view: 1 },
+						{ fieldtype: "Float", fieldname: "current_meter_quantity", label: __("Current Meters"), precision: "0", read_only: 1, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "decision", label: __("Decision"), options: "\nPassed\nRework Required\nRejected", reqd: 1, in_list_view: 1 },
+					] },
+				] : []),
+				{ fieldtype: "Float", fieldname: "eligible_qty", label: __("Eligible Quantity"), precision: "0", read_only: 1, default: safe_eligible_qty },
+				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: "0", reqd: 1, default: safe_eligible_qty },
 				{ fieldtype: "Column Break" },
-				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: 6, read_only: 1, default: context.eligible_qty },
-				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Quantity"), precision: 6, default: 0 },
-				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Quantity"), precision: 6, default: 0 },
+				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: "0", read_only: 1, default: safe_eligible_qty },
+				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Quantity"), precision: "0", default: 0 },
+				{ fieldtype: "Float", fieldname: "rework_qty", label: __("Rework Quantity"), precision: "0", default: 0 },
 				{ fieldtype: "Section Break" },
 				{ fieldtype: "Small Text", fieldname: "reason", label: __("Rejection / Rework Reason") },
 				{ fieldtype: "Small Text", fieldname: "remarks", label: __("QC Remarks") },
@@ -1877,6 +2197,33 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			primary_action_label: __("Submit QC Decision"),
 			primary_action: async (values) => {
 				if (submitting) return;
+				if (qc_rolls.length) {
+					const decisions = (values.roll_decisions || []).map((row) => ({ roll_id: row.roll_id, decision: row.decision }));
+					if (decisions.some((row) => !row.decision)) {
+						frappe.throw(__("Choose a decision for every roll."));
+					}
+					submitting = true;
+					try {
+						await frappe.call({ method: "smart_edge_custom.manufacturing.quality_control.submit_roll_decision", args: { quality_inspection: values.quality_inspection, decisions: JSON.stringify(decisions), reason: values.reason, remarks: values.remarks, qc_employee: values.qc_employee } });
+						dialog.hide();
+						await this.refresh();
+					} finally {
+						submitting = false;
+					}
+					return;
+				}
+				for (const fieldname of ["inspected_qty", "rejected_qty", "rework_qty"]) {
+					const field = dialog.fields_dict[fieldname];
+					const parsed_value = read_meter_field_value(field);
+					values[fieldname] = se_round_meter(
+						parsed_value === undefined ? values[fieldname] : parsed_value
+					);
+					field?.set_input(values[fieldname]);
+				}
+				values.accepted_qty = Math.max(
+					values.inspected_qty - values.rejected_qty - values.rework_qty,
+					0
+				);
 				submitting = true;
 				try {
 					await frappe.call({
@@ -1971,7 +2318,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					options: `
 						<div class="se-plan-drawer">
 							<p><strong>${frappe.utils.escape_html(plan.item_name || plan.finished_item)}</strong></p>
-							<p class="text-muted">${se_format_number(plan.qty, 2)} ${frappe.utils.escape_html(plan.uom || "")} - ${se_format_number(plan.weight, 3)} Kg</p>
+							<p class="text-muted">${se_format_uom_quantity(plan.qty, plan.uom)} - ${se_format_number(plan.weight, 3)} Kg</p>
 							${selected_card ? `
 								<div class="se-drawer-focus">
 									<div><strong>${__("Operation")}</strong><span>${frappe.utils.escape_html(selected_card.operation || "-")}</span></div>
@@ -2118,7 +2465,7 @@ function get_parent_quantity_label(card) {
 			parts.push(`${se_format_number(card.planned_weight_kg, 3)} ${card.uom || ""}`.trim());
 		}
 	} else {
-		if (flt(card.qty)) parts.push(`${se_format_number(card.qty, 2)} m`);
+		if (flt(card.qty)) parts.push(`${se_format_meter(card.qty)} m`);
 		if (flt(card.planned_weight_kg)) parts.push(`${se_format_number(card.planned_weight_kg, 3)} Kg`);
 	}
 	return parts.join(" • ") || __("Quantity not available");
@@ -2130,16 +2477,16 @@ function get_operation_quantity_label(card) {
 		const actual_batches = flt(card.job_actual_qty_meter) || cint(card.work_order_completed_batches);
 		const actual_quantity = flt(card.job_actual_qty_kg) || flt(card.work_order_produced_qty);
 		if (actual_batches || actual_quantity) {
-			if (actual_batches) parts.push(`${se_format_number(actual_batches, 2)} ${__("batches completed")}`);
+			if (actual_batches) parts.push(`${se_format_meter(actual_batches)} ${__("batches completed")}`);
 			if (actual_quantity) parts.push(`${se_format_number(actual_quantity, 3)} ${card.uom || ""}`.trim());
 		} else {
 			parts.push(get_parent_quantity_label(card));
 		}
 	} else {
-		if (flt(card.job_actual_qty_meter)) parts.push(`${se_format_number(card.job_actual_qty_meter, 2)} m ${__("actual")}`);
+		if (flt(card.job_actual_qty_meter)) parts.push(`${se_format_meter(card.job_actual_qty_meter)} m ${__("actual")}`);
 		if (flt(card.job_actual_qty_kg)) parts.push(`${se_format_number(card.job_actual_qty_kg, 3)} Kg ${__("actual")}`);
 		if (!parts.length) {
-			if (flt(card.qty)) parts.push(`${se_format_number(card.qty, 2)} m ${__("planned")}`);
+			if (flt(card.qty)) parts.push(`${se_format_meter(card.qty)} m ${__("planned")}`);
 			if (flt(card.planned_weight_kg)) parts.push(`${se_format_number(card.planned_weight_kg, 3)} Kg ${__("planned")}`);
 		}
 	}
@@ -2157,6 +2504,35 @@ function se_format_number(value, precision) {
 		minimumFractionDigits: 0,
 		maximumFractionDigits: precision,
 	});
+}
+
+function se_format_meter(value) {
+	return se_round_meter(value).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function se_round_meter(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return 0;
+	return number < 0
+		? -Math.floor(Math.abs(number) + 0.5)
+		: Math.floor(number + 0.5);
+}
+
+function se_floor_meter(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number) || number <= 0) return 0;
+	return Math.floor(number);
+}
+
+function se_format_uom_quantity(value, uom) {
+	const formatted = se_is_meter_uom(uom)
+		? se_format_meter(value)
+		: se_format_number(value, 6);
+	return `${formatted} ${frappe.utils.escape_html(uom || "")}`.trim();
+}
+
+function se_is_meter_uom(uom) {
+	return ["meter", "metre", "m"].includes(String(uom || "").trim().toLowerCase());
 }
 
 function get_invalid_completion_output(values = {}) {
@@ -2271,7 +2647,7 @@ function get_remaining_qty_label(card) {
 		parts.push(`${se_format_number(card.work_order_remaining_qty, 3)} ${card.uom || ""} ${__("remaining")}`);
 	}
 	if (flt(card.job_remaining_qty_meter)) {
-		parts.push(`${se_format_number(card.job_remaining_qty_meter, 2)} m ${__("remaining")}`);
+		parts.push(`${se_format_meter(card.job_remaining_qty_meter)} m ${__("remaining")}`);
 	}
 	if (flt(card.job_remaining_qty_kg)) {
 		parts.push(`${se_format_number(card.job_remaining_qty_kg, 3)} Kg ${__("remaining")}`);
@@ -2282,7 +2658,7 @@ function get_remaining_qty_label(card) {
 function get_released_qty_label(card) {
 	const parts = [];
 	if (flt(card.released_qty_meter)) {
-		parts.push(`${se_format_number(card.released_qty_meter, 2)} m ${__("eligible")}`);
+		parts.push(`${se_format_meter(card.released_qty_meter)} m ${__("eligible")}`);
 	}
 	if (flt(card.released_qty_kg)) {
 		parts.push(`${se_format_number(card.released_qty_kg, 3)} Kg ${__("eligible")}`);
@@ -2297,7 +2673,7 @@ function get_machine_capacity_labels(capacity) {
 		? `${se_format_number(capacity.planned_kg, 3)} Kg`
 		: capacity.quantity_uom === "Kg" ? __("Not Available") : null;
 	const planned_meter = flt(capacity.planned_meter) > 0
-		? `${se_format_number(capacity.planned_meter, 2)} Meter`
+		? `${se_format_meter(capacity.planned_meter)} Meter`
 		: capacity.quantity_uom === "Meter" ? __("Not Available") : null;
 	const planned_hours = !rate_configured
 		? __("Not Configured")
@@ -2308,7 +2684,7 @@ function get_machine_capacity_labels(capacity) {
 		? __("Not Configured")
 		: !capacity.availability_configured || capacity.available_capacity === null || capacity.available_capacity === undefined
 			? __("Not Available")
-			: `${se_format_number(capacity.available_capacity, 2)} ${capacity.quantity_uom}`;
+			: se_format_uom_quantity(capacity.available_capacity, capacity.quantity_uom);
 	const utilization_value = capacity.workstation_utilization;
 	const utilization = utilization_value === null || utilization_value === undefined
 		? "N/A"
@@ -2420,7 +2796,7 @@ function capacity_summary_html(projection = {}) {
 		? `${se_format_number(projection.capacity_rate, 2)} ${projection.capacity_uom || ""}`.trim()
 		: __("Not Configured");
 	const quantity = projection.planned_quantity
-		? `${se_format_number(projection.planned_quantity, 2)} ${projection.quantity_uom || ""}`.trim()
+		? se_format_uom_quantity(projection.planned_quantity, projection.quantity_uom)
 		: __("Not Available");
 	const status_labels = {
 		ok: __("Within Capacity"),
@@ -2632,8 +3008,8 @@ function render_batch_consumption_summary(preview) {
 					(row) => `<tr>
 						<td>${frappe.utils.escape_html(row.batch_no || "")}</td>
 						<td>${frappe.utils.escape_html(row.warehouse || "")}</td>
-						<td class="text-right">${se_format_number(row.available_qty, 6)} ${frappe.utils.escape_html(row.uom || "")}</td>
-						<td class="text-right"><strong>${se_format_number(row.quantity_to_consume, 6)} ${frappe.utils.escape_html(row.uom || "")}</strong></td>
+						<td class="text-right">${se_format_uom_quantity(row.available_qty, row.uom)}</td>
+						<td class="text-right"><strong>${se_format_uom_quantity(row.quantity_to_consume, row.uom)}</strong></td>
 					</tr>`
 				)
 				.join("");
@@ -2660,7 +3036,7 @@ function format_duration_seconds(seconds) {
 
 function format_qty(value, uom) {
 	if (!flt(value)) return "";
-	return `${se_format_number(value, 2)} ${uom}`;
+	return se_format_uom_quantity(value, uom);
 }
 
 const CATEGORY_COLOR_CLASSES = {
@@ -2684,6 +3060,9 @@ if (typeof module !== "undefined" && module.exports) {
 		get_utilization_status,
 		get_invalid_completion_output,
 		get_server_error_message,
+		get_completion_quantity_defaults,
+		sum_roll_quantities,
+		read_meter_field_value,
 		get_operation_display_label,
 		resolve_item_group_placement,
 		can_change_workstation,

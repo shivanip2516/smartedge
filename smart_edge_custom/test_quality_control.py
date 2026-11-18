@@ -14,6 +14,7 @@ class TestQualityControl(unittest.TestCase):
 			raise exc(message)
 
 		self.enterContext(patch.object(qc, "_", side_effect=lambda text: text))
+		self.enterContext(patch.object(qc, "_require_qc_plan_access"))
 		self.enterContext(patch.object(qc.frappe, "throw", side_effect=throw))
 		self.enterContext(patch.object(frappe, "logger", return_value=logging.getLogger("quality-control-test")))
 		frappe.local.session = frappe._dict(user="operator@example.com")
@@ -33,7 +34,17 @@ class TestQualityControl(unittest.TestCase):
 
 	def test_accepted_quantity_is_derived_from_inspected_and_losses(self):
 		values = qc.validate_quantities(6472.222222, 6472.222222, 6472.222222, 100, 10)
-		self.assertEqual(values["Accepted Quantity"], 6362.222222)
+		self.assertEqual(values["Accepted Quantity"], 6362)
+
+	def test_meter_inputs_use_conventional_half_up_rounding(self):
+		values = qc.validate_quantities(10, 8.5, None, 0.5, 0)
+		self.assertEqual(values["Inspected Quantity"], 9)
+		self.assertEqual(values["Rejected Quantity"], 1)
+		self.assertEqual(values["Accepted Quantity"], 8)
+
+	def test_whole_meter_inspection_cannot_exceed_precise_legacy_availability(self):
+		with self.assertRaises(frappe.ValidationError):
+			qc.validate_quantities(3289.89899, 3290, None, 0, 0)
 
 	def test_blank_loss_quantities_are_treated_as_zero(self):
 		values = qc.validate_quantities(100, 100, 0, None, "")
@@ -302,6 +313,35 @@ class TestQualityControl(unittest.TestCase):
 			result = qc.aggregate("PLAN-QC")
 		self.assertEqual(result.accepted_qty, 100)
 		self.assertEqual(result.unresolved_rework_qty, 0)
+
+	@patch("smart_edge_custom.manufacturing.production_lot.record_release_movement")
+	@patch("smart_edge_custom.manufacturing.production_lot.get_input_production_lot", return_value="LOT-EXT")
+	@patch("smart_edge_custom.manufacturing.planning.update_generator_planning_status")
+	@patch("smart_edge_custom.manufacturing.planning.get_next_mandatory_entry")
+	def test_qc_release_reaches_packing_even_with_unresolved_rework(
+		self, get_next, _update_status, get_input_lot, record_release
+	):
+		entry = frappe._dict(
+			name="PLAN-QC", final_eb_bom_generator="GEN-1", released_qty_meter=13000,
+			released_qty_kg=65, operation="QC After Extrusion",
+		)
+		next_entry = frappe._dict(
+			name="PLAN-PACK", final_eb_bom_generator="GEN-1", operation="Packing",
+			status="Pending", save=Mock(),
+		)
+		qc_job = frappe._dict(name="JOB-QC", released_qty_meter=0, released_qty_kg=0, released_to_plan_entry=None)
+		production = frappe._dict(finished_item="FG-1", stock_uom="Meter")
+		frappe.db.get_value.side_effect = ["JOB-QC", production]
+		with patch.object(qc, "aggregate", return_value=frappe._dict(accepted_qty=10000, unresolved_rework_qty=3000)), \
+			patch.object(qc.frappe, "get_doc", side_effect=[entry, qc_job]):
+			get_next.return_value = next_entry
+			qc._sync_qc_release("PLAN-QC")
+
+		self.assertEqual(next_entry.released_qty_meter, 10000)
+		self.assertEqual(next_entry.released_qty_kg, 50)
+		self.assertEqual(next_entry.status, "Ready")
+		get_input_lot.assert_called_once_with(entry)
+		record_release.assert_called_once_with(qc_job, entry, production, "LOT-EXT", qc_release=True)
 
 	def test_pending_notification_is_role_scoped_and_idempotent(self):
 		inspection = frappe._dict(name="QI-1", custom_eligible_qty=100)

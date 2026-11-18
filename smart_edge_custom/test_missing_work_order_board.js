@@ -9,7 +9,7 @@ const context = vm.createContext({
 });
 vm.runInContext(fs.readFileSync(require.resolve("./smart_edge_custom/page/smartedge_production_planning/smartedge_production_planning.js"), "utf8"), context);
 const board = Object.create(context.smart_edge_custom.ProductionPlanningBoard.prototype);
-board.state = { filters: {} };
+board.state = { board: { can_manage_planning: true }, filters: {} };
 let summary;
 board.$summary = { html(value) { summary = value; } };
 board.render_summary({ all_operations: [], work_order_warnings: [{
@@ -22,6 +22,10 @@ assert.match(unavailable, /disabled/);
 assert.match(unavailable, /Unavailable/);
 assert.doesNotMatch(unavailable, /se-plan|se-start|se-complete/);
 assert.match(board.get_primary_action_html({ status: "Pending" }, true, ""), /se-plan/);
+board.state.board.can_manage_planning = false;
+assert.match(board.get_primary_action_html({ status: "Pending" }, true, ""), /Awaiting Planning/);
+assert.doesNotMatch(board.get_primary_action_html({ status: "Pending" }, true, ""), /se-plan/);
+board.state.board.can_manage_planning = true;
 assert.match(board.get_primary_action_html({ status: "Ready", start_allowed: true }, false, ""), /se-start/);
 assert.match(board.get_primary_action_html({ status: "In Progress" }, false, ""), /se-complete/);
 context.$ = (markup) => ({ markup, find() { return this; }, on() { return this; } });

@@ -1,5 +1,6 @@
 frappe.ui.form.on("SmartEdge Production Lot", {
 	async refresh(frm) {
+		install_lot_quantity_formatters(frm);
 		const wrapper = frm.fields_dict.traceability_details?.$wrapper;
 		if (!wrapper || frm.is_new()) return;
 		wrapper.html(`<div class="text-muted">${__("Loading recorded input batches...")}</div>`);
@@ -20,3 +21,22 @@ frappe.ui.form.on("SmartEdge Production Lot", {
 		}
 	},
 });
+
+function install_lot_quantity_formatters(frm) {
+	if (!["m", "meter", "meters", "metre", "metres"].includes(String(frm.doc.quantity_uom || "").trim().toLowerCase())) return;
+	for (const fieldname of [
+		"planned_quantity", "actual_output_quantity", "input_quantity", "produced_quantity",
+		"good_quantity", "rejected_quantity", "rework_quantity", "usable_scrap", "unusable_scrap",
+	]) {
+		const field = frm.fields_dict[fieldname];
+		if (!field?.df) continue;
+		field.df.precision = "0";
+		if (field.df.read_only) {
+			field.df.formatter = (value) => {
+				const number = Number(value);
+				return Number.isFinite(number) ? Math.floor(Math.max(number, 0) + 0.5).toLocaleString() : "0";
+			};
+		}
+		frm.refresh_field(fieldname);
+	}
+}

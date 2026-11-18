@@ -1,0 +1,43 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-11-17 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "module": "smart_edge_custom",
+ "name": "SmartEdge Roll",
+ "field_order": ["naming_series","identity_section","finished_item","source_production_job","source_plan_entry","source_work_order","source_operation","source_production_lot","source_batch","roll_sequence","quantity_section","original_meter_quantity","current_meter_quantity","status_section","qc_status","process_status","packing_status","reserved_for_plan_entry","reserved_for_production_job","packing_job","operation_history"],
+ "fields": [
+  {"fieldname":"naming_series","fieldtype":"Select","label":"Series","options":"SE-ROLL-.#####","default":"SE-ROLL-.#####","reqd":1},
+  {"fieldname":"identity_section","fieldtype":"Section Break","label":"Roll Identity"},
+  {"fieldname":"finished_item","fieldtype":"Link","label":"Finished Item","options":"Item","read_only":1,"reqd":1,"in_list_view":1},
+  {"fieldname":"source_production_job","fieldtype":"Link","label":"Source Production Job","options":"SmartEdge Production Job","read_only":1,"reqd":1,"in_list_view":1},
+  {"fieldname":"source_plan_entry","fieldtype":"Link","label":"Source Plan Entry","options":"SmartEdge Production Plan Entry","read_only":1},
+  {"fieldname":"source_work_order","fieldtype":"Link","label":"Source Work Order","options":"Work Order","read_only":1},
+  {"fieldname":"source_operation","fieldtype":"Link","label":"Source Operation","options":"Operation","read_only":1},
+  {"fieldname":"source_production_lot","fieldtype":"Link","label":"Source Production Lot","options":"SmartEdge Production Lot","read_only":1},
+  {"fieldname":"source_batch","fieldtype":"Link","label":"Source Batch","options":"Batch","read_only":1},
+  {"fieldname":"roll_sequence","fieldtype":"Int","label":"Roll Sequence","read_only":1,"reqd":1,"in_list_view":1},
+  {"fieldname":"quantity_section","fieldtype":"Section Break","label":"Quantity"},
+  {"fieldname":"original_meter_quantity","fieldtype":"Float","label":"Original Meter Quantity","precision":"0","read_only":1,"reqd":1,"in_list_view":1},
+  {"fieldname":"current_meter_quantity","fieldtype":"Float","label":"Current Meter Quantity","precision":"0","read_only":1,"reqd":1,"in_list_view":1},
+  {"fieldname":"status_section","fieldtype":"Section Break","label":"Status"},
+  {"fieldname":"qc_status","fieldtype":"Select","label":"QC Status","options":"Pending\nPassed\nRework Required\nAwaiting Re-QC\nRejected","default":"Pending","read_only":1,"in_list_view":1},
+  {"fieldname":"process_status","fieldtype":"Select","label":"Process Status","options":"Created\nAvailable for QC\nIn Rework\nAwaiting Re-QC\nAvailable for Packing\nReserved for Packing\nPacked\nRejected","default":"Created","read_only":1,"in_list_view":1},
+  {"fieldname":"packing_status","fieldtype":"Select","label":"Packing Status","options":"Not Available\nAvailable\nReserved\nPacked","default":"Not Available","read_only":1},
+  {"fieldname":"reserved_for_plan_entry","fieldtype":"Link","label":"Reserved for Plan Entry","options":"SmartEdge Production Plan Entry","read_only":1},
+  {"fieldname":"reserved_for_production_job","fieldtype":"Link","label":"Reserved for Production Job","options":"SmartEdge Production Job","read_only":1},
+  {"fieldname":"packing_job","fieldtype":"Link","label":"Packing Job","options":"SmartEdge Production Job","read_only":1},
+  {"fieldname":"operation_history","fieldtype":"Table","label":"Operation History","options":"SmartEdge Roll Operation History","read_only":1}
+ ],
+ "permissions": [
+  {"role":"Manufacturing User","read":1,"report":1},
+  {"role":"Manufacturing Manager","read":1,"report":1,"export":1},
+  {"role":"Quality Manager","read":1,"report":1},
+  {"role":"Stock User","read":1,"report":1},
+  {"role":"System Manager","read":1,"write":1,"create":1,"read":1,"report":1,"export":1}
+ ],
+ "track_changes": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC"
+}

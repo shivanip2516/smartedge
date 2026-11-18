@@ -7,6 +7,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_datetime, now_datetime
 
+from smart_edge_custom.manufacturing.quantity import round_meter_quantity
+
 EPSILON = 0.000001
 DISPOSAL_ROLES = {"Manufacturing Manager", "Stock Manager"}
 
@@ -264,6 +266,10 @@ def dispose_unusable_scrap(unusable_scrap_lot, quantity, reason, employee, dispo
 	if lot.status != "Pending Disposal":
 		frappe.throw(_("Request disposal authorization before posting unusable scrap disposal."))
 	qty = _number(quantity, _("Disposal Quantity"))
+	if str(lot.uom or "").strip().lower() in {"meter", "metre", "m"}:
+		qty = round_meter_quantity(qty)
+		if qty <= 0:
+			frappe.throw(_("Disposal Quantity must be at least 1 meter."))
 	if not str(reason or "").strip():
 		frappe.throw(_("Disposal Reason is required."))
 	_validate_employee(employee, lot.company)

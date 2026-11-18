@@ -12,7 +12,7 @@
   {"fieldname":"fg_batch","fieldtype":"Link","label":"FG Batch","options":"Batch","reqd":1},
   {"fieldname":"production_lot","fieldtype":"Link","label":"Production Lot","options":"SmartEdge Production Lot","reqd":1},
   {"fieldname":"packed_qty","fieldtype":"Float","label":"Packed Quantity","precision":"6","reqd":1},
-  {"fieldname":"meter_quantity","fieldtype":"Float","label":"Meter Quantity","precision":"6"},
+  {"fieldname":"meter_quantity","fieldtype":"Float","label":"Meter Quantity","precision":"0"},
   {"fieldname":"kg_quantity","fieldtype":"Float","label":"Kg Quantity","precision":"6"},
   {"fieldname":"stock_uom","fieldtype":"Link","label":"Stock UOM","options":"UOM","reqd":1},
   {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},

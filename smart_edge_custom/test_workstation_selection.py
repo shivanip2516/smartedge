@@ -134,6 +134,7 @@ class TestWorkstationOptionResolution(TestCase):
 		entry = PlanEntry()
 		fake_frappe = SimpleNamespace(get_doc=Mock(return_value=entry))
 		with (
+			patch("smart_edge_custom.manufacturing.operator_access.require_planning_supervisor"),
 			patch.object(planning, "frappe", fake_frappe),
 			patch.object(planning, "lock_plan_entry"),
 			patch.object(planning, "lock_workstation"),

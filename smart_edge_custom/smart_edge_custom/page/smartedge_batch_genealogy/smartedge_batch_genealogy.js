@@ -301,7 +301,7 @@ class SmartEdgeBatchGenealogy {
 							<span>${this.link("SmartEdge Production Job", row.production_job, row.production_job)}</span>
 							<span>${this.escape(row.workstation || __("No workstation"))} · ${row.employee ? this.link("Employee", row.employee, row.employee) : __("No employee")}</span>
 							<span>${this.escape(row.actual_start || "")} → ${this.escape(row.actual_end || "")}</span>
-							<span>${__("Actual")}: ${this.render_operation_quantity(row)} · ${__("Good")}: ${this.number(row.good_quantity)} · ${__("Rejected")}: ${this.number(row.rejected_quantity)} · ${__("Rework")}: ${this.number(row.rework_quantity)} · ${__("Scrap")}: ${this.number((row.usable_scrap || 0) + (row.unusable_scrap || 0))}</span>
+					<span>${__("Actual")}: ${this.render_operation_quantity(row)} · ${__("Good")}: ${this.number(row.good_quantity)} · ${__("Rejected")}: ${this.number(row.rejected_quantity)} · ${__("Rework")}: ${this.number(row.rework_quantity)} · ${__("Scrap")}: ${this.number((row.usable_scrap || 0) + (row.unusable_scrap || 0))}</span>
 							<span><strong>${this.escape(row.tracking_mode || __("Operation History"))}</strong></span>
 							${row.evidence_basis ? `<span>${__("Evidence")}: ${this.escape(row.evidence_basis)}</span>` : ""}
 							${(row.input_batches || []).length ? `<span>${__("Actual Input Batches")}: ${this.render_batch_quantities(row.input_batches)}</span>` : ""}
@@ -316,15 +316,15 @@ class SmartEdgeBatchGenealogy {
 
 	render_batch_quantities(rows) {
 		return (rows || [])
-			.map((row) => `${this.link("Batch", row.batch_no, row.batch_no)} ${this.number(row.quantity)} ${this.escape(row.uom || "")}`)
+			.map((row) => `${this.link("Batch", row.batch_no, row.batch_no)} ${this.number(row.quantity, row.uom)} ${this.escape(row.uom || "")}`)
 			.join(", ") || __("Not Recorded");
 	}
 
 	render_operation_quantity(row) {
 		if (row.plan_type === "Required Material") {
-			return `${this.number(row.actual_qty_meter)} ${__("batches")} / ${this.number(row.actual_qty_kg)} ${this.escape(row.quantity_uom || "")}`;
+			return `${this.number(row.actual_qty_meter, "Meter")} ${__("batches")} / ${this.number(row.actual_qty_kg)} ${this.escape(row.quantity_uom || "")}`;
 		}
-		return `${this.number(row.actual_qty_meter)} m / ${this.number(row.actual_qty_kg)} Kg`;
+		return `${this.number(row.actual_qty_meter, "Meter")} m / ${this.number(row.actual_qty_kg)} Kg`;
 	}
 
 	bind_links() {
@@ -345,7 +345,12 @@ class SmartEdgeBatchGenealogy {
 		return frappe.utils.escape_html(String(value == null ? "" : value));
 	}
 
-	number(value) {
+	number(value, uom) {
+		const normalized_uom = String(uom || "").toLowerCase();
+		if (normalized_uom === "meter" || normalized_uom === "m") {
+			const number = Number(value);
+			return Number.isFinite(number) ? number.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : "0";
+		}
 		return format_number(value || 0, null, 6);
 	}
 }

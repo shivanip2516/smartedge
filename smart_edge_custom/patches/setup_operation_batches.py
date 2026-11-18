@@ -9,7 +9,7 @@ def execute():
 		{"fieldname": "custom_operation_lot", "label": "Operation Lot", "fieldtype": "Link", "options": "SmartEdge Production Lot", "unique": 1},
 		{"fieldname": "custom_operation_name", "label": "Operation Name", "fieldtype": "Link", "options": "Operation", "in_list_view": 1},
 		{"fieldname": "custom_operation_sequence", "label": "Operation Sequence", "fieldtype": "Int"},
-		{"fieldname": "custom_operation_output_quantity", "label": "Operation Output Quantity (Meter)", "fieldtype": "Float", "precision": "6", "in_list_view": 1},
+		{"fieldname": "custom_operation_output_quantity", "label": "Operation Output Quantity (Meter)", "fieldtype": "Float", "precision": "0", "in_list_view": 1},
 		{"fieldname": "custom_operation_completed_at", "label": "Operation Completion", "fieldtype": "Datetime"},
 		{"fieldname": "custom_previous_operation_batch", "label": "Previous Operation Batch", "fieldtype": "Link", "options": "Batch"},
 		{"fieldname": "custom_related_fg_batch", "label": "Related Final FG Batch", "fieldtype": "Link", "options": "Batch"},

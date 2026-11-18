@@ -6,9 +6,11 @@ from frappe.tests import IntegrationTestCase
 from smart_edge_custom.manufacturing.planning import (
 	assign_planning_execution_keys,
 	get_planning_execution_key,
+	get_partial_planning_summary,
 	get_released_productions,
 	get_week_start,
 	is_unreleased_material_entry,
+	make_operation_card,
 )
 
 
@@ -56,6 +58,39 @@ class TestPlanningBoardGrouping(IntegrationTestCase):
 		self.assertEqual(get_planning_execution_key(rows[0]), ("Required Material", "WO-1"))
 		self.assertEqual(get_planning_execution_key(rows[1]), ("Required Material", "WO-2"))
 
+	@patch("smart_edge_custom.manufacturing.planning.frappe.db.get_value", return_value="Compound")
+	@patch(
+		"smart_edge_custom.manufacturing.planning.get_scheduled_start_eligibility",
+		return_value={"allowed": True, "message": None},
+	)
+	@patch("smart_edge_custom.manufacturing.planning.get_card_workstation", return_value="Mixer-1")
+	def test_material_card_uses_decimal_planned_quantity(self, _workstation, _eligibility, _item_name):
+		row = frappe._dict(
+			{
+				"name": "PLAN-MAT",
+				"plan_type": "Required Material",
+				"planning_category": "Mixing",
+				"production_quantity": 195,
+				"planned_kg": 194.55,
+				"planned_meter": 3,
+				"final_eb_bom_generator": "FEBG-1",
+				"operation": "Mixing",
+				"sequence": 0,
+				"planned_batches": 3,
+				"weight_per_batch": 64.85,
+				"quantity_uom": "Kg",
+				"material_item": "COMPOUND",
+				"material_type": "Compound",
+				"status": "Pending",
+				"workstation": "Mixer-1",
+			}
+		)
+
+		card = make_operation_card(row)
+
+		self.assertEqual(card["planned_quantity"], 194.55)
+		self.assertEqual(card["planned_weight_kg"], 194.55)
+
 	def test_material_processes_share_parent_card_without_changing_fg_sequences(self):
 		rows = [
 			self.make_material_row("PLAN-SHADE", "Base Colour", "WO-SHADE"),
@@ -102,6 +137,136 @@ class TestPlanningBoardGrouping(IntegrationTestCase):
 		final = self.make_row("PLAN-FINAL-1", "2026-10-01 09:00:02", 1)
 		released = get_released_productions([material, final])
 		self.assertFalse(is_unreleased_material_entry(material, released))
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_partial_planning_counts_distinct_required_route_steps(self, get_all):
+		get_all.side_effect = [
+			[
+				frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Mixing", idx=1),
+				frappe._dict(parent="FEBG-1", name="ROUTE-2", operation="Mixing", idx=2),
+				frappe._dict(parent="FEBG-1", name="ROUTE-3", operation="Packing", idx=3),
+			],
+			[
+				frappe._dict(final_eb_bom_generator="FEBG-1", operation_row="ROUTE-1", status="Completed"),
+				frappe._dict(final_eb_bom_generator="FEBG-1", operation_row="ROUTE-1", status="Completed"),
+				frappe._dict(final_eb_bom_generator="FEBG-1", operation_row="ROUTE-2", status="Planned"),
+			],
+			[],
+		]
+
+		self.assertEqual(
+			get_partial_planning_summary({"FEBG-1"}),
+			{
+				"FEBG-1": {
+					"planned_count": 2,
+					"completed_count": 1,
+					"total_count": 3,
+					"unplanned_count": 1,
+					"unplanned_operations": ["Packing"],
+				}
+			},
+		)
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_ready_without_schedule_is_not_accounted_as_planned(self, get_all):
+		get_all.side_effect = [
+			[frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Packing", idx=1)],
+			[frappe._dict(final_eb_bom_generator="FEBG-1", operation_row="ROUTE-1", status="Ready")],
+			[],
+		]
+
+		self.assertEqual(get_partial_planning_summary({"FEBG-1"}), {})
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_ready_with_schedule_is_accounted_as_planned(self, get_all):
+		get_all.side_effect = [
+			[
+				frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Packing", idx=1),
+				frappe._dict(parent="FEBG-1", name="ROUTE-2", operation="QC", idx=2),
+			],
+			[
+				frappe._dict(
+					final_eb_bom_generator="FEBG-1",
+					operation_row="ROUTE-1",
+					status="Ready",
+					planned_date="2026-11-16",
+				),
+			],
+			[],
+		]
+
+		result = get_partial_planning_summary({"FEBG-1"})
+		self.assertEqual(result["FEBG-1"]["planned_count"], 1)
+		self.assertEqual(result["FEBG-1"]["unplanned_operations"], ["QC"])
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_pending_with_schedule_is_accounted_as_planned(self, get_all):
+		get_all.side_effect = [
+			[
+				frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Mixing", idx=1),
+				frappe._dict(parent="FEBG-1", name="ROUTE-2", operation="Packing", idx=2),
+			],
+			[
+				frappe._dict(
+					name="PLAN-1",
+					final_eb_bom_generator="FEBG-1",
+					operation_row="ROUTE-1",
+					status="Pending",
+					planned_date="2026-11-16",
+				),
+			],
+			[],
+		]
+
+		result = get_partial_planning_summary({"FEBG-1"})
+		self.assertEqual(result["FEBG-1"]["planned_count"], 1)
+		self.assertEqual(result["FEBG-1"]["unplanned_count"], 1)
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_completed_material_operation_counts_toward_partial_route(self, get_all):
+		get_all.side_effect = [
+			[
+				frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Extrusion", idx=1),
+				frappe._dict(parent="FEBG-1", name="ROUTE-2", operation="QC", idx=2),
+				frappe._dict(parent="FEBG-1", name="ROUTE-3", operation="Packing", idx=3),
+			],
+			[
+				frappe._dict(
+					name="MAT-1",
+					final_eb_bom_generator="FEBG-1",
+					operation_row=None,
+					operation="Base Colour Mixing",
+					plan_type="Required Material",
+					material_type="Base Colour",
+					status="Completed",
+				),
+				frappe._dict(name="PLAN-1", final_eb_bom_generator="FEBG-1", operation_row="ROUTE-1", status="Pending"),
+				frappe._dict(name="PLAN-2", final_eb_bom_generator="FEBG-1", operation_row="ROUTE-2", status="Pending"),
+				frappe._dict(name="PLAN-3", final_eb_bom_generator="FEBG-1", operation_row="ROUTE-3", status="Pending"),
+			],
+			[],
+		]
+
+		result = get_partial_planning_summary({"FEBG-1"})
+		self.assertEqual(result["FEBG-1"]["total_count"], 4)
+		self.assertEqual(result["FEBG-1"]["completed_count"], 1)
+		self.assertEqual(result["FEBG-1"]["unplanned_count"], 3)
+
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_all")
+	def test_partial_planning_summary_omits_unplanned_and_fully_planned_routes(self, get_all):
+		get_all.side_effect = [
+			[
+				frappe._dict(parent="FEBG-1", name="ROUTE-1", operation="Mixing", idx=1),
+				frappe._dict(parent="FEBG-1", name="ROUTE-2", operation="Packing", idx=2),
+				frappe._dict(parent="FEBG-2", name="ROUTE-3", operation="Mixing", idx=1),
+			],
+			[
+				frappe._dict(final_eb_bom_generator="FEBG-2", operation_row="ROUTE-3"),
+			],
+			[],
+		]
+
+		self.assertEqual(get_partial_planning_summary({"FEBG-1", "FEBG-2"}), {})
 
 	def make_row(self, name, creation, sequence):
 		return frappe._dict(
