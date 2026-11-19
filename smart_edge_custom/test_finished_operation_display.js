@@ -17,6 +17,12 @@ const qcResubmitStart = planningSource.indexOf("async resubmit_qc_rework", qcDia
 const qcDialogSource = planningSource.slice(qcDialogStart, qcResubmitStart);
 assert.match(qcDialogSource, /read_meter_field_value\(field\)/);
 assert.doesNotMatch(qcDialogSource, /field\?\.\$input\?\.val\(\)/);
+assert.match(qcDialogSource, /frappe\.datetime\.get_datetime_as_string\(context\.inspection_datetime\)/);
+assert.match(qcDialogSource, /await dialog\.set_value\("inspected_qty", initial_inspected_qty\)/);
+assert.match(qcDialogSource, /inspected_qty: current_values\.inspected_qty/);
+assert.match(qcDialogSource, /if \(safe_eligible_qty <= 0\)/);
+assert.match(qcDialogSource, /No rolls are currently eligible for QC/);
+assert.match(planningSource, /qc_eligible_qty != null && flt\(card\.qc_eligible_qty\) <= 0/);
 vm.runInContext(planningSource, context);
 assert.equal(context.se_format_meter(3289.89899), "3,290");
 assert.equal(context.se_format_meter(3290.40404), "3,290");

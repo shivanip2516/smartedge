@@ -95,6 +95,10 @@ def is_qc_operation(entry):
 	return entry.get("planning_category") == "QC" or bool(re.search(r"\bQC\b|quality", str(entry.get("operation") or ""), re.IGNORECASE))
 
 
+def is_packing_operation(entry):
+	return entry.get("planning_category") == "Packing" or "pack" in str(entry.get("operation") or "").lower()
+
+
 def get_operation_lot_mode(entry):
 	if entry.get("plan_type") == "Required Material":
 		return "Stock Batch"
@@ -162,7 +166,15 @@ def record_completed_job(job, allow_create=True):
 	)
 	if not production or not production.finished_item:
 		frappe.throw(_("Finished Item is required before recording a Production Lot."))
-	input_lot = get_input_production_lot(entry)
+	if job.meta.has_field("rework_roll") and job.get("rework_roll"):
+		return _record_completed_rework_job(job, entry, production)
+	resolved_input_lot = get_input_production_lot(entry)
+	recorded_input_lot = job.get("input_production_lot")
+	if resolved_input_lot and recorded_input_lot and resolved_input_lot != recorded_input_lot:
+		frappe.throw(_("Production Job {0} has an input Production Lot that does not match its released upstream lot.").format(job.name))
+	input_lot = resolved_input_lot or recorded_input_lot
+	if input_lot:
+		link_job_lots(job, input_lot, job.get("output_production_lot"))
 	# Preserve recorded historical QC reuse; never rewrite completed ledger history.
 	if is_qc_operation(entry) and input_lot and job.get("output_production_lot") == input_lot:
 		if not allow_create or frappe.db.exists(LEDGER_DOCTYPE, {
@@ -238,39 +250,49 @@ def record_completed_job(job, allow_create=True):
 		destination_operation=job.operation,
 	)
 	if input_lot:
-		input_qty = flt(entry.released_qty_meter) or produced_qty
-		if is_qc_operation(entry) and frappe.db.exists(LEDGER_DOCTYPE, make_movement_key("qc-hold", job.name, input_lot)):
+		# A partial Packing execution consumes only the rolls finalized by this
+		# job.  The plan release may cover the full QC-approved pool and must not
+		# be reused as this execution's movement quantity.
+		input_qty = produced_qty if is_packing_operation(entry) else (flt(entry.released_qty_meter) or produced_qty)
+		if is_qc_operation(entry):
+			input_qty = get_unprocessed_qc_input_quantity(job, input_lot, input_qty)
+		# QC release is append-only and may already have reconciled the complete
+		# input before completion finalizes the QC job.  In that case there is no
+		# second input movement to record; importantly, do not create zero-valued
+		# ledger or genealogy rows.
+		if input_qty > 0:
+			if is_qc_operation(entry) and frappe.db.exists(LEDGER_DOCTYPE, make_movement_key("qc-hold", job.name, input_lot)):
+				record_movement(
+					"QC Release", ("qc-input-release", job.name, input_lot), job, entry, production,
+					quantity=input_qty, uom=production.stock_uom, source_lot=input_lot, destination_lot=input_lot,
+					source_operation=job.operation, destination_operation=job.operation,
+				)
+			ensure_available_for_transfer(input_lot, job.operation, input_qty)
 			record_movement(
-				"QC Release", ("qc-input-release", job.name, input_lot), job, entry, production,
-				quantity=input_qty, uom=production.stock_uom, source_lot=input_lot, destination_lot=input_lot,
-				source_operation=job.operation, destination_operation=job.operation,
+				"Consume for Operation",
+				("consume", job.name, input_lot),
+				job,
+				entry,
+				production,
+				quantity=input_qty,
+				uom=production.stock_uom,
+				quantity_kg=entry.released_qty_kg,
+				source_lot=input_lot,
+				source_operation=job.operation,
 			)
-		ensure_available_for_transfer(input_lot, job.operation, input_qty)
-		record_movement(
-			"Consume for Operation",
-			("consume", job.name, input_lot),
-			job,
-			entry,
-			production,
-			quantity=input_qty,
-			uom=production.stock_uom,
-			quantity_kg=entry.released_qty_kg,
-			source_lot=input_lot,
-			source_operation=job.operation,
-		)
-		record_movement(
-			"Lot Genealogy Link",
-			("genealogy", job.name, input_lot, lot.name),
-			job,
-			entry,
-			production,
-			quantity=min(input_qty, produced_qty),
-			uom=production.stock_uom,
-			source_lot=input_lot,
-			destination_lot=lot.name,
-			source_operation=job.operation,
-			destination_operation=job.operation,
-		)
+			record_movement(
+				"Lot Genealogy Link",
+				("genealogy", job.name, input_lot, lot.name),
+				job,
+				entry,
+				production,
+				quantity=min(input_qty, produced_qty),
+				uom=production.stock_uom,
+				source_lot=input_lot,
+				destination_lot=lot.name,
+				source_operation=job.operation,
+				destination_operation=job.operation,
+			)
 	record_quality_movements(job, entry, production, lot.name, informational=True)
 	record_release_movement(job, entry, production, lot.name)
 	from smart_edge_custom.manufacturing.unusable_scrap import prepare_unusable_scrap
@@ -285,6 +307,53 @@ def record_completed_job(job, allow_create=True):
 	from smart_edge_custom.manufacturing.scrap_recovery import register_usable_scrap
 	register_usable_scrap(job, lot, operation_batches[0] if operation_batches else None)
 	return {"mode": mode, "production_lot": lot.name, "operation_batches": operation_batches}
+
+
+def _record_completed_rework_job(job, entry, production):
+	"""Record non-stock rework execution without consuming the source lot again."""
+	if "rework" not in str(entry.operation or "").lower():
+		frappe.throw(_("Rework Production Job {0} must use a configured Rework operation.").format(job.name))
+	if entry.get("stock_movement_type") != "Non-Stock Operation":
+		frappe.throw(_("Rework Production Job {0} must be a non-stock operation.").format(job.name))
+	input_lot = job.get("input_production_lot")
+	if not input_lot:
+		frappe.throw(_("Rework Production Job {0} requires its source Production Lot.").format(job.name))
+	existing = frappe.db.get_value(LOT_DOCTYPE, {"production_job": job.name}, "name", for_update=True)
+	if existing:
+		link_job_lots(job, input_lot, existing)
+		from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
+		return {"mode": "Rework", "production_lot": existing, "operation_batches": ensure_operation_batch(existing, allow_create=False)}
+	lot = _create_completed_operation_lot(job, entry, production, input_lot)
+	link_job_lots(job, input_lot, lot.name)
+	from smart_edge_custom.manufacturing.operation_batch import ensure_operation_batch
+	return {"mode": "Rework", "production_lot": lot.name, "operation_batches": ensure_operation_batch(lot, allow_create=True)}
+
+
+def get_unprocessed_qc_input_quantity(job, input_lot, total_quantity):
+	"""Return only QC input not already released by an earlier partial decision."""
+	total_quantity = flt(total_quantity)
+	if total_quantity < -0.000001:
+		frappe.throw(_("QC input quantity cannot be negative."))
+	if not job.get("released_to_plan_entry") or not input_lot:
+		return total_quantity
+	release_rows = frappe.get_all(
+		LEDGER_DOCTYPE,
+		filters={
+			"status": ACTIVE,
+			"movement_type": "QC Release",
+			"production_job": job.name,
+			"destination_plan_entry": job.released_to_plan_entry,
+			"source_production_lot": input_lot,
+		},
+		fields=["quantity"],
+		limit_page_length=10000,
+	)
+	released_quantity = sum(flt(row.quantity) for row in release_rows)
+	if released_quantity < -0.000001 or released_quantity > total_quantity + 0.000001:
+		frappe.throw(
+			_("QC Release movements for Production Lot {0} exceed the released input quantity.").format(input_lot)
+		)
+	return max(total_quantity - released_quantity, 0)
 
 
 def _create_completed_operation_lot(job, entry, production, input_lot):
@@ -370,12 +439,37 @@ def get_input_production_lot(entry):
 	output_lot = frappe.db.get_value("SmartEdge Production Job", source_job, "output_production_lot")
 	if output_lot:
 		return output_lot
-	return frappe.db.get_value(
+	lot = frappe.db.get_value(
 		LOT_DOCTYPE,
 		{"production_job": source_job},
 		"name",
 		order_by="actual_end desc, creation desc",
 	)
+	if lot:
+		return lot
+	# A non-stock QC checkpoint can remain In Progress while approved rolls are
+	# packed. In that case it has no output lot; use the nearest completed lot
+	# from the same parent route rather than leaving downstream genealogy blank.
+	for previous in frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters={
+			"final_eb_bom_generator": entry.get("final_eb_bom_generator"),
+			"plan_type": entry.get("plan_type") or "Final EB",
+			"sequence": ["<", entry.get("sequence")],
+			"status": ["!=", "Cancelled"],
+		},
+		fields=["name"],
+		order_by="sequence desc",
+		limit_page_length=50,
+	):
+		lot = frappe.db.get_value(
+			"SmartEdge Production Job",
+			{"plan_entry": previous.name, "status": "Completed"},
+			"output_production_lot",
+		)
+		if lot:
+			return lot
+	return None
 
 
 def record_qc_hold(job, entry=None):

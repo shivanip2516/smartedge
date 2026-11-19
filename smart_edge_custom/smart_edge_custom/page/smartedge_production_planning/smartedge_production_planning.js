@@ -717,6 +717,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		);
 		$row.find(".se-open-work-order").on("click", () => frappe.set_route("Form", "Work Order", card.work_order));
 		$row.find(".se-edit, .se-plan").on("click", () => this.open_schedule_dialog(card, card.planned_date || this.state.week_start));
+		$row.find(".se-plan-remaining").on("click", () => this.plan_remaining_packing(card));
 		$row.find(".se-plan-all").on("click", () => this.plan_full_production(card));
 		$row.find(".se-unplan").on("click", () => this.unplan(card));
 		$row.find(".se-change-operator").on("click", () => this.open_change_operator_dialog(card));
@@ -899,6 +900,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 	}
 
 	async handle_workstation_drop(card, date_key, workstation) {
+		const is_packing = String(card.category || "").toLowerCase() === "packing"
+			|| String(card.operation || "").toLowerCase().includes("pack");
+		if (is_packing && !card.planned_date) {
+			await this.open_schedule_dialog(card, date_key, workstation);
+			return;
+		}
 		if (card.planned_date && card.planned_start) {
 			const scheduled = await this.schedule_with_capacity_check({
 					plan_entry: card.id,
@@ -925,6 +932,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				planned_start: args.planned_start,
 				duration_hours: args.duration_hours,
 				override_capacity: args.override_capacity,
+				roll_ids: args.roll_ids,
 			},
 			error_handlers: get_planning_error_handlers(),
 		});
@@ -1170,6 +1178,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				return `<button class="btn btn-xs btn-default" disabled>${__("QC Action Restricted")}</button>`;
 			}
 			if (qc_status === "Under Review") {
+				if (card.qc_eligible_qty != null && flt(card.qc_eligible_qty) <= 0) {
+					return `<button class="btn btn-xs btn-default" disabled>${__("Awaiting QC / Rework")}</button>`;
+				}
 				return `<button class="btn btn-xs btn-primary se-qc-decision">${__("Submit QC Decision")}</button>`;
 			}
 			if (qc_status === "Rework Required") {
@@ -1181,6 +1192,12 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			if (qc_status === "Pending") {
 				return `<button class="btn btn-xs btn-primary se-start">▶ ${__("Start QC Review")}</button>`;
 			}
+		}
+		if (card.packing_operation_status === "Partially Completed") {
+			if (can_manage_planning && flt(card.packing_available_qty_meter) > 0) {
+				return `<button class="btn btn-xs btn-primary se-plan-remaining">${__("Plan Remaining Packing")}</button>`;
+			}
+			return `<button class="btn btn-xs btn-default" disabled>${__("Awaiting QC / Rework")}</button>`;
 		}
 		if (status === "Completed") {
 			return `<span class="se-state-pill ${status_class}">✓</span>`;
@@ -1218,6 +1235,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 
 	get_status_line_html(card, planned_time, status_class) {
 		const status = get_card_status(card);
+		if (card.packing_operation_status === "Partially Completed") {
+			const packed = `${se_format_meter(card.packing_packed_qty_meter)} m ${__("packed")}`;
+			const available = flt(card.packing_available_qty_meter) > 0
+				? ` • ${se_format_meter(card.packing_available_qty_meter)} m ${__("available for Packing")}`
+				: "";
+			return `<div class="se-card-time">${__("Partially Completed")} • ${packed}${available}</div>`;
+		}
 		if (status === "In Progress") {
 			const running_label = card.operator_name
 				? `${__("RUNNING")} • ${frappe.utils.escape_html(card.operator_name)}`
@@ -1270,6 +1294,25 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		return `<div class="se-card-time">${__("Pending workstation schedule")}</div>`;
 	}
 
+	async plan_remaining_packing(card) {
+		if (!this.state.board?.can_manage_planning || card.packing_operation_status !== "Partially Completed") return;
+		try {
+			const response = await frappe.call({
+				method: `${this.method}.create_remaining_packing_plan`,
+				args: { plan_entry: card.id },
+			});
+			const plan_entry = response.message?.plan_entry;
+			if (!plan_entry) return;
+			await this.refresh();
+			const follow_up = (this.state.board?.all_operations || []).find((operation) => operation.id === plan_entry);
+			if (follow_up) {
+				await this.open_schedule_dialog(follow_up, follow_up.planned_date || this.state.week_start, follow_up.workstation);
+			}
+		} catch (error) {
+			frappe.msgprint({ title: __("Unable to Plan Remaining Packing"), message: error.message || error });
+		}
+	}
+
 	make_empty_state(message) {
 		return $(`
 			<div class="se-empty">
@@ -1304,19 +1347,33 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			: site_now.time;
 		const default_duration = card.duration_hours || 1;
 		const workstation_editable = !card.workstation || can_change_workstation(card);
+		const is_packing = String(card.category || card.planning_category || "").toLowerCase() === "packing"
+			|| String(card.operation || "").toLowerCase().includes("pack");
+		let packing_roll_context = null;
+		let selected_packing_roll_ids = [];
+		if (is_packing) {
+			const roll_response = await frappe.call({
+				method: "smart_edge_custom.manufacturing.roll_tracking.get_packing_roll_context",
+				args: { plan_entry: card.id },
+				error_handlers: get_planning_error_handlers(),
+			});
+			packing_roll_context = roll_response.message || { eligible_rolls: [], reserved_rolls: [] };
+			selected_packing_roll_ids = (packing_roll_context.reserved_rolls || []).map((row) => row.name);
+		}
 		const dialog = new frappe.ui.Dialog({
 			title: changing_workstation ? __("Change Workstation") : __("Plan Operation"),
 			fields: [
 				{ fieldtype: "Data", fieldname: "operation", label: __("Operation"), read_only: 1, default: card.operation },
 				{ fieldtype: "Date", fieldname: "planned_date", label: __("Date"), reqd: 1, default: default_date },
 				{
-					fieldtype: "Select",
+					fieldtype: "Link",
 					fieldname: "workstation",
 					label: __("Workstation"),
+					options: "Workstation",
 					reqd: 1,
-					options: workstations.join("\n"),
 					default: default_workstation || card.workstation || workstations[0],
 					read_only: !workstation_editable,
+					get_query: () => ({ filters: { disabled: 0 } }),
 				},
 				{
 					fieldtype: "Link",
@@ -1342,12 +1399,21 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					read_only: 1,
 				},
 				{ fieldtype: "HTML", fieldname: "capacity_summary", options: "" },
+				...(is_packing ? [
+					{ fieldtype: "Section Break", label: __("QC-approved Whole Rolls") },
+					{ fieldtype: "HTML", fieldname: "packing_rolls", options: "" },
+					{ fieldtype: "Float", fieldname: "packing_roll_quantity", label: __("Selected Packing Quantity (m)"), read_only: 1, default: 0 },
+				] : []),
 				{ fieldtype: "Check", fieldname: "override_sequence", label: __("Override sequence warning") },
 				{ fieldtype: "Check", fieldname: "override_capacity", label: __("Override capacity warning") },
 			],
 			primary_action_label: __("Schedule"),
 			primary_action: async (values) => {
 				if (!validate_schedule_in_browser(values.planned_date, values.planned_start)) return;
+				if (is_packing && !selected_packing_roll_ids.length) {
+					frappe.msgprint({ title: __("Packing Rolls Required"), indicator: "red", message: __("Select at least one QC-approved whole roll.") });
+					return;
+				}
 				const scheduled = await this.schedule_with_capacity_check({
 							plan_entry: card.id,
 							planned_date: values.planned_date,
@@ -1358,6 +1424,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 							priority: card.priority,
 							override_sequence: values.override_sequence,
 							override_capacity: values.override_capacity,
+							roll_ids: is_packing ? JSON.stringify(selected_packing_roll_ids) : undefined,
 				});
 				if (!scheduled) return;
 				dialog.hide();
@@ -1366,6 +1433,32 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		});
 		normalize_time_control(dialog.fields_dict.planned_start);
 		dialog.show();
+		if (is_packing) {
+			const rolls = [
+				...(packing_roll_context?.eligible_rolls || []),
+				...(packing_roll_context?.reserved_rolls || []),
+			].filter((row, index, all) => all.findIndex((candidate) => candidate.name === row.name) === index);
+			const render_packing_rolls = () => {
+				const selected = new Set(selected_packing_roll_ids);
+				const quantity = rolls.filter((row) => selected.has(row.name)).reduce((sum, row) => sum + flt(row.current_meter_quantity), 0);
+				dialog.set_value("packing_roll_quantity", quantity);
+				dialog.fields_dict.packing_rolls.$wrapper.html(rolls.length ? `
+					<div class="se-packing-roll-selection">
+						<table class="table table-bordered"><thead><tr><th></th><th>${__("Roll ID")}</th><th>${__("Current Quantity (m)")}</th></tr></thead><tbody>
+						${rolls.map((row) => `<tr><td><input type="checkbox" class="se-packing-roll-check" data-roll-id="${frappe.utils.escape_html(row.name)}" ${selected.has(row.name) ? "checked" : ""}></td><td>${frappe.utils.escape_html(row.name)}</td><td>${se_format_meter(row.current_meter_quantity)}</td></tr>`).join("")}
+						</tbody></table>
+						${!rolls.length ? `<p class="text-danger">${__("No QC-approved whole rolls are available for Packing.")}</p>` : ""}
+					</div>` : `<p class="text-danger">${__("No QC-approved whole rolls are available for Packing.")}</p>`);
+				dialog.fields_dict.packing_rolls.$wrapper.find(".se-packing-roll-check").on("change", (event) => {
+					const roll_id = event.currentTarget.dataset.rollId;
+					if (event.currentTarget.checked) selected_packing_roll_ids = [...new Set([...selected_packing_roll_ids, roll_id])];
+					else selected_packing_roll_ids = selected_packing_roll_ids.filter((id) => id !== roll_id);
+					render_packing_rolls();
+					refresh_capacity_summary();
+				});
+			};
+			render_packing_rolls();
+		}
 		set_schedule_date_limits(dialog, "planned_date", "planned_start");
 		const update_end = () => {
 			const values = dialog.get_values(true) || {};
@@ -1401,6 +1494,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						planned_start: normalize_schedule_time(values.planned_start),
 						duration_hours: values.duration_hours,
 						override_capacity: values.override_capacity,
+						roll_ids: is_packing ? JSON.stringify(selected_packing_roll_ids) : undefined,
 					},
 				});
 				if (request_id !== capacity_request) return;
@@ -1780,6 +1874,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					hidden: !roll_packing_enabled,
 					default: 0,
 				},
+				{ fieldtype: "HTML", fieldname: "roll_reconciliation_message", hidden: !roll_packing_enabled, options: "" },
 				{ fieldtype: "HTML", fieldname: "roll_packing_message", hidden: !roll_packing_enabled, options: "" },
 				{ fieldtype: "Float", fieldname: "actual_qty_kg", label: is_material ? __("Actual Completed Quantity ({0})", [context.quantity_uom || ""]) : __("Actual Kg"), precision: 6, reqd: kg_required, hidden: !kg_required, default: completion_defaults.actual_qty_kg },
 				{ fieldtype: "Column Break" },
@@ -1896,6 +1991,19 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			const wrapper = dialog.fields_dict.roll_packing_message?.$wrapper;
 			if (wrapper) wrapper.html(message ? `<div class="text-${indicator}">${frappe.utils.escape_html(message)}</div>` : "");
 		};
+		const set_roll_reconciliation = (actual, total) => {
+			const wrapper = dialog.fields_dict.roll_reconciliation_message?.$wrapper;
+			if (!wrapper || !Number.isFinite(actual)) return;
+			const loss = quantity_calculation_enabled
+				? Math.max(actual - flt(dialog.get_value("good_qty")), 0)
+				: flt(dialog.get_value("rejected_qty")) + flt(dialog.get_value("rework_qty"));
+			const remaining = actual - total - loss;
+			const balanced = Math.abs(remaining) <= 0.000001;
+			const message = balanced
+				? __("Accounted: {0} m in rolls + {1} m validated non-roll loss; remaining 0 m.", [total.toLocaleString(), loss.toLocaleString()])
+				: __("Unallocated balance: {0} m. Allocate it to rolls or record it through the approved loss/scrap workflow.", [remaining.toLocaleString()]);
+			wrapper.html(`<div class="text-${balanced ? "success" : "danger"}"><strong>${frappe.utils.escape_html(message)}</strong></div>`);
+		};
 		const get_current_actual_meter = () => {
 			const actual = read_meter_field_value(dialog.get_field("actual_qty_meter"));
 			return actual === undefined ? NaN : actual;
@@ -1904,8 +2012,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			const total = sum_roll_quantities(roll_quantities);
 			dialog.set_value("total_roll_quantity", total);
 			const actual = get_current_actual_meter();
+			set_roll_reconciliation(actual, total);
 			if (roll_packing_enabled && Number.isFinite(actual) && total > actual) {
-				set_roll_message(__("Total roll quantity ({0} m) cannot exceed actual completed production quantity ({1} m).", [total.toLocaleString(), actual.toLocaleString()]), "danger");
+				set_roll_message(__("Roll quantities exceed the accountable extrusion output."), "danger");
 			} else if (roll_packing_enabled) {
 				set_roll_message(__("Enter a positive whole-meter quantity for every roll."));
 			}
@@ -1977,8 +2086,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			}
 			dialog.set_value("total_roll_quantity", total);
 			const actual = get_current_actual_meter();
-			if (!Number.isFinite(actual) || total > actual) {
-				set_roll_message(__("Total roll quantity ({0} m) cannot exceed actual completed production quantity ({1} m).", [total.toLocaleString(), actual.toLocaleString()]), "danger");
+			const loss = quantity_calculation_enabled
+				? Math.max(actual - flt(dialog.get_value("good_qty")), 0)
+				: flt(dialog.get_value("rejected_qty")) + flt(dialog.get_value("rework_qty"));
+			const remaining = actual - total - loss;
+			if (!Number.isFinite(actual) || total > actual || Math.abs(remaining) > 0.000001) {
+				set_roll_reconciliation(actual, total);
+				set_roll_message(remaining < 0
+					? __("Roll quantities exceed the accountable extrusion output.")
+					: __("Every extrusion meter must be assigned to a roll or an approved loss/scrap quantity."), "danger");
 				return null;
 			}
 			return { roll_count: count, rows };
@@ -1987,6 +2103,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			dialog.fields_dict.roll_count.df.onchange = () => render_roll_inputs(dialog.get_value("roll_count"));
 			dialog.fields_dict.roll_count.$input?.on("input change", () => render_roll_inputs(dialog.get_value("roll_count")));
 			dialog.fields_dict.actual_qty_meter.$input?.on("input change", update_roll_total);
+			for (const fieldname of ["good_qty", "rejected_qty", "rework_qty", "good_qty_kg", "rejected_qty_kg", "rework_qty_kg", "usable_scrap", "unusable_scrap"]) {
+				dialog.fields_dict[fieldname]?.$input?.on("input change", update_roll_total);
+			}
 		}
 		const set_qr_status = (message, indicator = "muted") => {
 			const wrapper = dialog.fields_dict.packing_qr_status?.$wrapper;
@@ -2149,9 +2268,28 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const qc_rolls = roll_response.message || [];
 		let submitting = false;
 		const safe_eligible_qty = se_floor_meter(context.eligible_qty);
-		const result_options = "\nPass\nFail\nNot Applicable";
+		if (safe_eligible_qty <= 0) {
+			await this.refresh();
+			frappe.msgprint({
+				title: __("QC Not Ready"),
+				message: context.qc_display_status === "QC Rework Required"
+					? __("No rolls are currently eligible for QC. Complete the existing rework and use Resubmit Rework when the roll is ready.")
+					: __("No quantity is currently eligible for QC inspection."),
+				indicator: "orange",
+			});
+			return;
+		}
+		const existing_inspected_qty = Number(context.inspected_qty);
+		const initial_inspected_qty = Number.isFinite(existing_inspected_qty) && existing_inspected_qty > 0
+			? se_floor_meter(existing_inspected_qty)
+			: safe_eligible_qty;
+		const inspection_datetime = context.inspection_datetime
+			? frappe.datetime.get_datetime_as_string(context.inspection_datetime)
+			: null;
+		const result_options = "\nPass\nFail";
 		const dialog = new frappe.ui.Dialog({
 			title: __("Submit QC Decision"),
+			size: "extra-large",
 			fields: [
 				{ fieldtype: "Link", fieldname: "production", label: __("Final EB BOM Generator"), options: "Final EB BOM Generator", read_only: 1, default: context.production },
 				{ fieldtype: "Link", fieldname: "finished_item", label: __("Finished Item"), options: "Item", read_only: 1, default: context.finished_item },
@@ -2166,26 +2304,36 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				{ fieldtype: "Link", fieldname: "batch", label: __("Batch"), options: "Batch", read_only: 1, default: context.batch },
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Link", fieldname: "qc_employee", label: __("QC Employee"), options: "Employee", read_only: 1, default: context.qc_employee },
-				{ fieldtype: "Datetime", fieldname: "inspection_datetime", label: __("Inspection Date and Time"), read_only: 1, default: context.inspection_datetime },
-				{ fieldtype: "Section Break", label: __("Measurements") },
-				{ fieldtype: "Float", fieldname: "width", label: __("Width"), precision: 6 },
-				{ fieldtype: "Float", fieldname: "thickness", label: __("Thickness"), precision: 6 },
-				{ fieldtype: "Column Break" },
-				{ fieldtype: "Select", fieldname: "color_match", label: __("Color Match"), options: result_options },
-				{ fieldtype: "Select", fieldname: "design_match", label: __("Design Match"), options: result_options },
-				{ fieldtype: "Select", fieldname: "surface_appearance", label: __("Surface / Appearance"), options: result_options },
-				{ fieldtype: "Select", fieldname: "print_quality", label: __("Print Quality"), options: result_options },
-				{ fieldtype: "Section Break", label: __("Quantity Decision") },
+				{ fieldtype: "Datetime", fieldname: "inspection_datetime", label: __("Inspection Date and Time"), read_only: 1, default: inspection_datetime },
+				...(qc_rolls.length ? [] : [
+					{ fieldtype: "Section Break", label: __("Measurements") },
+					{ fieldtype: "Float", fieldname: "width", label: __("Width"), precision: 6 },
+					{ fieldtype: "Float", fieldname: "thickness", label: __("Thickness"), precision: 6 },
+					{ fieldtype: "Column Break" },
+					{ fieldtype: "Select", fieldname: "color_match", label: __("Color Match"), options: result_options },
+					{ fieldtype: "Select", fieldname: "design_match", label: __("Design Match"), options: result_options },
+					{ fieldtype: "Select", fieldname: "surface_appearance", label: __("Surface / Appearance"), options: result_options },
+					{ fieldtype: "Select", fieldname: "print_quality", label: __("Print Quality"), options: result_options },
+				]),
 				...(qc_rolls.length ? [
-					{ fieldtype: "Section Break", label: __("Whole-Roll Decisions") },
-					{ fieldtype: "Table", fieldname: "roll_decisions", label: __("Roll Decisions"), cannot_add_rows: true, cannot_delete_rows: true, in_place_edit: true, data: qc_rolls, fields: [
+					{ fieldtype: "Section Break", label: __("Whole-Roll Inspection") },
+					{ fieldtype: "Table", fieldname: "roll_decisions", label: __("Roll Inspection — one whole-roll decision per row"), cannot_add_rows: true, cannot_delete_rows: true, in_place_edit: true, data: qc_rolls, fields: [
 						{ fieldtype: "Data", fieldname: "roll_id", label: __("Roll ID"), read_only: 1, in_list_view: 1 },
-						{ fieldtype: "Float", fieldname: "current_meter_quantity", label: __("Current Meters"), precision: "0", read_only: 1, in_list_view: 1 },
-						{ fieldtype: "Select", fieldname: "decision", label: __("Decision"), options: "\nPassed\nRework Required\nRejected", reqd: 1, in_list_view: 1 },
+						{ fieldtype: "Float", fieldname: "current_meter_quantity", label: __("Current Meter Quantity"), precision: "0", read_only: 1, in_list_view: 1 },
+						{ fieldtype: "Float", fieldname: "width", label: __("Width"), precision: 6, in_list_view: 1 },
+						{ fieldtype: "Float", fieldname: "thickness", label: __("Thickness"), precision: 6, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "color_match", label: __("Color Match"), options: result_options, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "design_match", label: __("Design Match"), options: result_options, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "surface_appearance", label: __("Surface / Appearance"), options: result_options, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "print_quality", label: __("Print Quality"), options: result_options, in_list_view: 1 },
+						{ fieldtype: "Select", fieldname: "decision", label: __("Final Decision"), options: "\nPassed\nRework Required\nRejected", reqd: 1, in_list_view: 1 },
 					] },
-				] : []),
+					{ fieldtype: "Section Break", label: __("Quantity Summary") },
+				] : [
+					{ fieldtype: "Section Break", label: __("Quantity Decision") },
+				]),
 				{ fieldtype: "Float", fieldname: "eligible_qty", label: __("Eligible Quantity"), precision: "0", read_only: 1, default: safe_eligible_qty },
-				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: "0", reqd: 1, default: safe_eligible_qty },
+				{ fieldtype: "Float", fieldname: "inspected_qty", label: __("Inspected Quantity"), precision: "0", reqd: 1, default: initial_inspected_qty },
 				{ fieldtype: "Column Break" },
 				{ fieldtype: "Float", fieldname: "accepted_qty", label: __("Accepted Quantity"), precision: "0", read_only: 1, default: safe_eligible_qty },
 				{ fieldtype: "Float", fieldname: "rejected_qty", label: __("Rejected Quantity"), precision: "0", default: 0 },
@@ -2197,14 +2345,15 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			primary_action_label: __("Submit QC Decision"),
 			primary_action: async (values) => {
 				if (submitting) return;
+				const current_values = dialog.get_values() || values || {};
 				if (qc_rolls.length) {
-					const decisions = (values.roll_decisions || []).map((row) => ({ roll_id: row.roll_id, decision: row.decision }));
+					const decisions = (current_values.roll_decisions || []).map((row) => ({ ...row, roll_id: row.roll_id, decision: row.decision }));
 					if (decisions.some((row) => !row.decision)) {
 						frappe.throw(__("Choose a decision for every roll."));
 					}
 					submitting = true;
 					try {
-						await frappe.call({ method: "smart_edge_custom.manufacturing.quality_control.submit_roll_decision", args: { quality_inspection: values.quality_inspection, decisions: JSON.stringify(decisions), reason: values.reason, remarks: values.remarks, qc_employee: values.qc_employee } });
+						await frappe.call({ method: "smart_edge_custom.manufacturing.quality_control.submit_roll_decision", args: { quality_inspection: current_values.quality_inspection, decisions: JSON.stringify(decisions), inspected_qty: current_values.inspected_qty, accepted_qty: current_values.accepted_qty, rejected_qty: current_values.rejected_qty, rework_qty: current_values.rework_qty, reason: current_values.reason, remarks: current_values.remarks, qc_employee: current_values.qc_employee } });
 						dialog.hide();
 						await this.refresh();
 					} finally {
@@ -2215,13 +2364,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				for (const fieldname of ["inspected_qty", "rejected_qty", "rework_qty"]) {
 					const field = dialog.fields_dict[fieldname];
 					const parsed_value = read_meter_field_value(field);
-					values[fieldname] = se_round_meter(
-						parsed_value === undefined ? values[fieldname] : parsed_value
+					current_values[fieldname] = se_round_meter(
+						parsed_value === undefined ? current_values[fieldname] : parsed_value
 					);
-					field?.set_input(values[fieldname]);
+					field?.set_input(current_values[fieldname]);
 				}
-				values.accepted_qty = Math.max(
-					values.inspected_qty - values.rejected_qty - values.rework_qty,
+				current_values.accepted_qty = Math.max(
+					current_values.inspected_qty - current_values.rejected_qty - current_values.rework_qty,
 					0
 				);
 				submitting = true;
@@ -2229,20 +2378,20 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					await frappe.call({
 						method: "smart_edge_custom.manufacturing.quality_control.submit_decision",
 						args: {
-							quality_inspection: values.quality_inspection,
-							inspected_qty: values.inspected_qty,
-							accepted_qty: values.accepted_qty,
-							rejected_qty: values.rejected_qty,
-							rework_qty: values.rework_qty,
-							width: values.width,
-							thickness: values.thickness,
-							color_match: values.color_match,
-							design_match: values.design_match,
-							surface_appearance: values.surface_appearance,
-							print_quality: values.print_quality,
-							reason: values.reason,
-							remarks: values.remarks,
-							qc_employee: values.qc_employee,
+							quality_inspection: current_values.quality_inspection,
+							inspected_qty: current_values.inspected_qty,
+							accepted_qty: current_values.accepted_qty,
+							rejected_qty: current_values.rejected_qty,
+							rework_qty: current_values.rework_qty,
+							width: current_values.width,
+							thickness: current_values.thickness,
+							color_match: current_values.color_match,
+							design_match: current_values.design_match,
+							surface_appearance: current_values.surface_appearance,
+							print_quality: current_values.print_quality,
+							reason: current_values.reason,
+							remarks: current_values.remarks,
+							qc_employee: current_values.qc_employee,
 						},
 					});
 					dialog.hide();
@@ -2253,6 +2402,48 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			},
 		});
 		dialog.show();
+		// Keep the value in FieldGroup's model as well as in the visible input.
+		// This preserves mandatory validation while avoiding a stale/empty
+		// callback snapshot during submission.
+		await dialog.set_value("inspected_qty", initial_inspected_qty);
+		dialog.$wrapper.addClass("se-smartedge-qc-dialog");
+		dialog.$wrapper.find(".modal-dialog").css({ width: "96vw", maxWidth: "1440px" });
+		dialog.$body.css({
+			maxHeight: "calc(100vh - 220px)",
+			overflowY: "auto",
+			overflowX: window.matchMedia("(max-width: 1100px)").matches ? "auto" : "hidden",
+		});
+		const update_roll_summary = () => {
+			if (!qc_rolls.length) return;
+			const rows = dialog.get_values()?.roll_decisions || [];
+			const totals = { Passed: 0, "Rework Required": 0, Rejected: 0 };
+			for (const row of rows) totals[row.decision] = (totals[row.decision] || 0) + se_floor_meter(row.current_meter_quantity);
+			dialog.set_value("accepted_qty", totals.Passed || 0);
+			dialog.set_value("rework_qty", totals["Rework Required"] || 0);
+			dialog.set_value("rejected_qty", totals.Rejected || 0);
+		};
+		if (qc_rolls.length) {
+			dialog.fields_dict.roll_decisions?.grid?.wrapper?.on("change", update_roll_summary);
+			update_roll_summary();
+			dialog.fields_dict.roll_decisions?.$wrapper?.addClass("se-roll-inspection-table");
+			dialog.fields_dict.roll_decisions?.$wrapper?.css({ width: "100%" });
+			dialog.fields_dict.roll_decisions?.$wrapper?.find(".grid, .grid-body, .grid-heading-row").css({ width: "100%" });
+			const roll_column_widths = {
+				roll_id: "150px",
+				current_meter_quantity: "125px",
+				width: "90px",
+				thickness: "100px",
+				color_match: "110px",
+				design_match: "110px",
+				surface_appearance: "140px",
+				print_quality: "115px",
+				decision: "145px",
+			};
+			for (const [fieldname, width] of Object.entries(roll_column_widths)) {
+				dialog.fields_dict.roll_decisions?.$wrapper?.find(`.col[data-fieldname="${fieldname}"]`).css({ minWidth: width, width });
+			}
+			dialog.fields_dict.roll_decisions?.$wrapper?.find(".grid-heading-row .col, .grid-row .col").css({ whiteSpace: "nowrap" });
+		}
 		const update_accepted_quantity = () => {
 			const inspected = flt(dialog.get_value("inspected_qty"));
 			const rejected = flt(dialog.get_value("rejected_qty"));
@@ -2582,6 +2773,7 @@ function get_planned_time_label(card) {
 }
 
 function get_card_status(card) {
+	if (card.packing_operation_status) return card.packing_operation_status;
 	if (
 		card.work_order_is_partial &&
 		card.job_status !== "In Progress" &&

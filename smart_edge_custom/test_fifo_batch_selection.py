@@ -8,6 +8,7 @@ from smart_edge_custom.manufacturing.final_bom_generator import calculate_batch_
 from smart_edge_custom.manufacturing.planning import (
 	get_final_stock_components,
 	get_current_fifo_allocations,
+	get_final_batch_consumption_preview,
 	get_revalidated_consumption_batches,
 	set_final_component_batch_bundles,
 )
@@ -241,6 +242,46 @@ class TestFIFOBatchSelection(IntegrationTestCase):
 		get_allocations.assert_called_once_with(
 			"Compound 1", "Stores - SE", 1, 65, "Compound"
 		)
+
+	@patch("smart_edge_custom.manufacturing.planning.build_final_batch_consumption_preview")
+	@patch(
+		"smart_edge_custom.manufacturing.planning.get_active_stock_entry_reference",
+		return_value="MAT-STE-00120",
+	)
+	@patch("smart_edge_custom.manufacturing.planning.is_first_fg_operation_entry", return_value=False)
+	@patch("smart_edge_custom.manufacturing.planning.is_final_stock_posting_entry", return_value=True)
+	@patch("smart_edge_custom.manufacturing.planning.frappe.get_doc")
+	def test_follow_up_final_operation_reuses_posted_material_consumption(
+		self, get_doc, _is_final, _is_first, get_stock_entry, build_preview
+	):
+		entry = frappe._dict(
+			{
+				"final_eb_bom_generator": "FEBG-1",
+				"name": "PACK-2",
+			}
+		)
+		entry.check_permission = lambda *_args, **_kwargs: None
+		generator = frappe._dict(
+			{
+				"name": "FEBG-1",
+				"final_manufacturing_stock_entry": "MAT-STE-00120",
+			}
+		)
+		generator.check_permission = lambda *_args, **_kwargs: None
+		get_doc.side_effect = [entry, generator]
+
+		with patch(
+			"smart_edge_custom.manufacturing.operator_access.require_plan_entry_access"
+		):
+			result = get_final_batch_consumption_preview("PACK-2", actual_qty_meter=6000)
+
+		self.assertEqual(result["applicable"], 1)
+		self.assertEqual(result["components"], [])
+		self.assertIn("already consumed", result["message"])
+		get_stock_entry.assert_called_once_with(
+			"MAT-STE-00120", "Final EB BOM Generator FEBG-1"
+		)
+		build_preview.assert_not_called()
 
 	@patch("erpnext.stock.serial_batch_bundle.SerialBatchCreation")
 	def test_stock_entry_uses_outward_serial_batch_bundle(self, serial_batch_creation):

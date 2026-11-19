@@ -48,6 +48,9 @@ ALREADY_SENT_TO_PLANNING_MESSAGE = _(
 	"This Finished Product has already been sent to Production Planning. Duplicate planning is not allowed."
 )
 PRODUCTION_QUANTITY_TOLERANCE = 0.000001
+LEGACY_NON_STOCK = "Legacy Non-Stock"
+PHYSICAL_WIP = "Physical WIP"
+PHYSICAL_MOVEMENT_TYPES = {"Stockable WIP Output", "WIP Transfer / Processing"}
 
 
 class InsufficientMaterialQuantityError(frappe.ValidationError):
@@ -1166,8 +1169,181 @@ def validate_ready_for_planning(doc):
 		frappe.throw(_("No SmartEdge Cost Heads are configured for the selected route."))
 
 	validate_material_availability_for_release(doc, preview.get("materials"))
+	validate_stock_posting_mode(doc, for_planning=True)
 
 	return preview
+
+
+def get_stock_posting_mode(production):
+	"""Return the effective mode; an absent value is always legacy."""
+	mode = get_stored_stock_posting_mode(production)
+	return mode if mode in (LEGACY_NON_STOCK, PHYSICAL_WIP) else LEGACY_NON_STOCK
+
+
+def get_stored_stock_posting_mode(production):
+	"""Return the persisted value without applying the legacy-safe fallback."""
+	if not production:
+		return None
+	if isinstance(production, str):
+		try:
+			mode = frappe.db.get_value("Final EB BOM Generator", production, "stock_posting_mode")
+		except Exception:
+			mode = None
+	else:
+		mode = production.get("stock_posting_mode")
+	return mode
+
+
+def stock_posting_mode_schema_available():
+	try:
+		return bool(frappe.db.has_column("Final EB BOM Generator", "stock_posting_mode"))
+	except Exception:
+		return False
+
+
+def _posting_activity_exists(production):
+	"""Conservative lock check for all records that make mode changes unsafe."""
+	checks = (
+		("SmartEdge Production Plan Entry", {"final_eb_bom_generator": production}),
+		("SmartEdge Production Job", {"final_eb_bom_generator": production}),
+		("SmartEdge Production Lot", {"final_eb_bom_generator": production}),
+		("Quality Inspection", {"custom_final_eb_bom_generator": production}),
+	)
+	for doctype, filters in checks:
+		try:
+			if frappe.db.exists(doctype, filters):
+				return True
+		except Exception:
+			# Optional historical fields differ across deployments; status and stock
+			# references below remain the hard lock in those deployments.
+			continue
+	return False
+
+
+def _validate_physical_route(doc):
+	rows = [row for row in (doc.get("operation_preview") or []) if row.get("mandatory")]
+	physical_rows = [row for row in rows if row.get("stock_movement_type") in PHYSICAL_MOVEMENT_TYPES]
+	if not physical_rows:
+		frappe.throw(_("Physical WIP requires at least one mandatory stock movement operation."))
+
+	for row in physical_rows:
+		warehouse = row.get("wip_warehouse")
+		if not warehouse:
+			frappe.throw(_("Physical WIP operation {0} requires a WIP Warehouse.").format(row.get("operation") or ""))
+		warehouse_fields = ["name", "company", "is_group"]
+		try:
+			warehouse_doc = frappe.db.get_value("Warehouse", warehouse, warehouse_fields, as_dict=True)
+		except Exception:
+			warehouse_doc = None
+		if not warehouse_doc or warehouse_doc.company != doc.company or warehouse_doc.is_group:
+			frappe.throw(_("WIP Warehouse {0} is invalid for company {1}.").format(warehouse, doc.company))
+
+	item = frappe.db.get_value(
+		"Item", doc.get("finished_item"), ["name", "is_stock_item", "disabled", "has_batch_no", "stock_uom"], as_dict=True
+	)
+	if not item or not item.is_stock_item or item.disabled:
+		frappe.throw(_("Physical WIP requires an enabled stock Finished Goods Item."))
+	if not item.has_batch_no:
+		frappe.throw(_("Physical WIP requires a batch-controlled Finished Goods Item."))
+	if not item.stock_uom:
+		frappe.throw(_("Physical WIP requires a stock UOM on the Finished Goods Item."))
+	if item.stock_uom != "Meter" and flt(frappe.db.get_value(
+		"UOM Conversion Detail", {"parent": item.name, "uom": "Meter"}, "conversion_factor"
+	)) <= 0:
+		frappe.throw(_("Physical WIP requires a valid Meter conversion for Finished Goods Item {0}.").format(item.name))
+
+	# Non-QC non-stock stages between physical stages would break the WIP chain.
+	first = min(rows.index(row) for row in physical_rows)
+	last = max(rows.index(row) for row in physical_rows)
+	for row in rows[first:last + 1]:
+		if row in physical_rows or (row.get("planning_category") or "").upper() == "QC":
+			continue
+		if row.get("stock_movement_type") not in PHYSICAL_MOVEMENT_TYPES:
+			frappe.throw(_("Physical WIP route has a non-stock operation between physical stages: {0}.").format(row.get("operation") or ""))
+
+
+def validate_stock_posting_mode(doc, for_planning=False):
+	"""Validate selection and enforce immutable parent-level posting mode."""
+	mode = doc.get("stock_posting_mode") or LEGACY_NON_STOCK
+	if mode not in (LEGACY_NON_STOCK, PHYSICAL_WIP):
+		frappe.throw(_("Invalid Stock Posting Mode: {0}").format(mode))
+
+	if doc.get("name"):
+		try:
+			stored = frappe.db.get_value("Final EB BOM Generator", doc.name, "stock_posting_mode")
+			stored_effective = stored if stored in (LEGACY_NON_STOCK, PHYSICAL_WIP) else LEGACY_NON_STOCK
+			has_activity = _posting_activity_exists(doc.name)
+			if stored and stored != mode and has_activity:
+				frappe.throw(_("Stock Posting Mode cannot change after production activity has started."))
+			if stored and stored != mode and (doc.get("production_status") not in (None, "", "Draft")):
+				frappe.throw(_("Stock Posting Mode cannot change after planning release."))
+			if not stored and mode == PHYSICAL_WIP and (
+				has_activity or doc.get("production_status") not in (None, "", "Draft")
+			):
+				frappe.throw(_("A historical or started production without a locked mode must remain Legacy Non-Stock."))
+			doc.stock_posting_mode = mode
+			if stored_effective == PHYSICAL_WIP and mode != PHYSICAL_WIP:
+				frappe.throw(_("A Physical WIP production cannot be changed to Legacy Non-Stock."))
+		except frappe.ValidationError:
+			raise
+		except Exception:
+			# The field is unavailable until the approved schema migration runs.
+			# The explicit default and posting fallback remain legacy-safe meanwhile.
+			pass
+
+	if for_planning and mode == PHYSICAL_WIP:
+		if not stock_posting_mode_schema_available():
+			frappe.throw(_("Stock Posting Mode schema is not migrated; Physical WIP planning is unavailable."))
+		from smart_edge_custom.manufacturing.physical_operation_stock import enabled
+		if not enabled():
+			frappe.throw(_("Physical WIP is not enabled for new production planning."))
+		_validate_physical_route(doc)
+
+
+@frappe.whitelist()
+def classify_stock_posting_modes():
+	"""Read-only dry-run classification; never writes production documents."""
+	if not stock_posting_mode_schema_available():
+		return {
+			"status": "Schema migration required",
+			"message": _("Final EB BOM Generator.stock_posting_mode is not present; no classification was performed."),
+			"records": [],
+		}
+	results = []
+	for row in frappe.get_all(
+		"Final EB BOM Generator",
+		fields=["name", "status", "production_status", "stock_posting_mode", "final_manufacturing_stock_entry"],
+		limit_page_length=0,
+	):
+		physical_evidence = False
+		stock_entries = []
+		if row.final_manufacturing_stock_entry:
+			stock_entries.append(row.final_manufacturing_stock_entry)
+		for job in frappe.get_all(
+			"SmartEdge Production Job",
+			filters={"final_eb_bom_generator": row.name},
+			fields=["manufacturing_stock_entry"],
+			limit_page_length=0,
+		):
+			if job.manufacturing_stock_entry:
+				stock_entries.append(job.manufacturing_stock_entry)
+		for stock_entry in set(stock_entries):
+			remarks = frappe.db.get_value("Stock Entry", stock_entry, "remarks") or ""
+			purpose = frappe.db.get_value("Stock Entry", stock_entry, "purpose")
+			physical_evidence = physical_evidence or (
+				frappe.db.get_value("Stock Entry", stock_entry, "docstatus") == 1
+				and (
+					remarks.startswith("SmartEdge physical operation ")
+					or remarks.startswith("SmartEdge incremental Packing physical Repack ")
+					or (stock_entry == row.final_manufacturing_stock_entry and purpose == "Repack")
+				)
+			)
+		mode = row.stock_posting_mode if row.stock_posting_mode in (LEGACY_NON_STOCK, PHYSICAL_WIP) else None
+		classification = mode or (PHYSICAL_WIP if physical_evidence else LEGACY_NON_STOCK)
+		if not mode and physical_evidence and not row.final_manufacturing_stock_entry:
+			classification = "Manual Review"
+		results.append({"production": row.name, "classification": classification, "stored_mode": mode, "physical_evidence": physical_evidence})
+	return results
 
 
 def validate_material_availability_for_release(doc, materials):

@@ -20,25 +20,67 @@ def enabled():
 
 
 def movement_type(entry):
-	return entry.get("stock_movement_type") or NON_STOCK
+	return entry.get("stock_movement_type") or NON_STOCK if entry else NON_STOCK
 
 
 def should_post_operation(entry):
 	"""Only an explicitly configured, non-final route stage creates physical WIP."""
-	if not enabled() or movement_type(entry) not in PHYSICAL_TYPES:
+	if movement_type(entry) not in PHYSICAL_TYPES:
+		return False
+	production = entry.get("final_eb_bom_generator")
+	if production:
+		if not production_uses_physical_stock(production):
+			return False
+	elif not enabled():
 		return False
 	from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
 	return not is_final_stock_posting_entry(entry)
 
 
 def production_uses_physical_stock(production):
-	"""Use the immutable generator operation snapshot, never an operation-name heuristic."""
-	if not enabled():
+	"""Resolve the locked parent mode; missing mode is never physical."""
+	from smart_edge_custom.manufacturing.final_bom_generator import (
+		get_stored_stock_posting_mode,
+	)
+	mode = get_stored_stock_posting_mode(production)
+	if mode == "Physical WIP":
+		return True
+	if mode == "Legacy Non-Stock":
 		return False
-	return bool(frappe.db.exists("Final EB BOM Operation", {
-		"parent": production, "parenttype": "Final EB BOM Generator", "mandatory": 1,
-		"stock_movement_type": ["in", sorted(PHYSICAL_TYPES)],
-	}))
+	return has_physical_posting_evidence(production)
+
+
+def has_physical_posting_evidence(production):
+	"""Recognize only already-submitted physical transactions for old records."""
+	if not production:
+		return False
+	stock_entries = []
+	try:
+		final_entry = frappe.db.get_value(
+			"Final EB BOM Generator", production, "final_manufacturing_stock_entry"
+		)
+		if final_entry:
+			stock_entries.append(final_entry)
+		for job in frappe.get_all(
+			"SmartEdge Production Job",
+			filters={"final_eb_bom_generator": production},
+			fields=["manufacturing_stock_entry"],
+			limit_page_length=0,
+		):
+			if job.manufacturing_stock_entry:
+				stock_entries.append(job.manufacturing_stock_entry)
+		for stock_entry in set(stock_entries):
+			remarks = frappe.db.get_value("Stock Entry", stock_entry, "remarks") or ""
+			purpose = frappe.db.get_value("Stock Entry", stock_entry, "purpose")
+			if frappe.db.get_value("Stock Entry", stock_entry, "docstatus") == 1 and (
+				remarks.startswith("SmartEdge physical operation ")
+				or remarks.startswith("SmartEdge incremental Packing physical Repack ")
+				or (stock_entry == final_entry and purpose == "Repack")
+			):
+				return True
+	except Exception:
+		return False
+	return False
 
 
 def _field_precision(doctype, fieldname):
@@ -188,6 +230,18 @@ def physical_input_batch(lot_name):
 	return name
 
 
+def validate_physical_batch_for_production(batch_name, generator, lot_name=None):
+	"""Reject a physically valid Batch that belongs to another production."""
+	batch_item = frappe.db.get_value("Batch", batch_name, "item")
+	if batch_item != generator.finished_item:
+		frappe.throw(_("Physical Batch {0} belongs to Item {1}, not {2}.").format(batch_name, batch_item, generator.finished_item))
+	batch_lot = frappe.db.get_value("Batch", batch_name, "custom_operation_lot")
+	owner = frappe.db.get_value("SmartEdge Production Lot", batch_lot, "final_eb_bom_generator") if batch_lot else None
+	if owner != generator.name:
+		frappe.throw(_("Physical Batch {0} is not owned by production {1}; no cross-production WIP consumption is permitted.").format(batch_name, generator.name))
+	return batch_name
+
+
 def _batch_source(batch_no, item_code, required_stock_qty, company):
 	"""Resolve one authoritative source warehouse with enough eligible Batch stock."""
 	from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -220,6 +274,7 @@ def final_wip_components(generator, jobs):
 		if not lot:
 			frappe.throw(_("Final Job {0} requires a released physical input Production Lot.").format(job.name))
 		batch = physical_input_batch(lot)
+		validate_physical_batch_for_production(batch, generator, lot)
 		row = stock_row(generator.finished_item, job.stock_posting_qty, "__source__")
 		components.append(row)
 		batches.append({batch: flt(row["qty"]) * flt(row["conversion_factor"])})
@@ -284,6 +339,261 @@ def validate_posted_precision(stock_entry):
 		expected = _round(flt(row.qty) * flt(row.conversion_factor), precision)
 		if abs(flt(row.transfer_qty) - expected) > 0.000000001:
 			frappe.throw(_("ERPNext posted {0} {1}, but the normalized stock quantity is {2} {3}. Review the item conversion and effective Stock Entry precision before posting.").format(row.transfer_qty, row.stock_uom, expected, row.stock_uom))
+
+
+def resolve_packing_input_lot(job):
+	input_lot = job.get("input_production_lot")
+	if input_lot:
+		return input_lot
+	from smart_edge_custom.manufacturing.planning import is_mandatory_operation
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
+	candidate = entry.get("released_from_production_job")
+	if candidate:
+		input_lot = frappe.db.get_value("SmartEdge Production Job", candidate, "output_production_lot")
+		if input_lot:
+			return input_lot
+	previous_entries = frappe.get_all(
+		"SmartEdge Production Plan Entry",
+		filters={
+			"final_eb_bom_generator": entry.final_eb_bom_generator,
+			"plan_type": entry.get("plan_type") or "Final EB",
+			"sequence": ["<", entry.sequence],
+			"status": ["!=", "Cancelled"],
+		},
+		fields=["name", "operation_row", "sequence"],
+		order_by="sequence desc",
+		limit_page_length=50,
+	)
+	for previous in previous_entries:
+		if not is_mandatory_operation(previous.operation_row):
+			continue
+		input_lot = frappe.db.get_value(
+			"SmartEdge Production Job",
+			{"plan_entry": previous.name, "status": "Completed"},
+			"output_production_lot",
+		)
+		if input_lot:
+			return input_lot
+	return None
+
+
+def post_incremental_packing_repack(generator, job, output_row, batch_name=None):
+	"""Consume only one newly packed physical-WIP allocation into the FG Batch.
+
+	This is deliberately separate from the legacy incremental Material Receipt
+	path.  It is called only for an explicitly enabled physical route, so the
+	current non-stock route retains its established accounting behavior.
+	"""
+	from smart_edge_custom.manufacturing.batch_genealogy import capture_stock_entry
+
+	reference = f"SmartEdge incremental Packing physical Repack {job.name}"
+	existing = frappe.get_all(
+		"Stock Entry", filters={"remarks": reference, "docstatus": ["<", 2]},
+		fields=["name", "docstatus"],
+	)
+	if len(existing) > 1:
+		frappe.throw(_("Multiple physical Packing receipts exist for {0}; review them before retrying.").format(job.name))
+	if existing:
+		if existing[0].docstatus != 1:
+			frappe.throw(_("Draft physical Packing receipt {0} exists; review it before retrying.").format(existing[0].name))
+		return existing[0].name
+	if frappe.db.exists("Stock Entry", {"remarks": reference, "docstatus": 2}):
+		frappe.throw(_("The physical Packing receipt for {0} was cancelled; use the controlled amendment workflow.").format(job.name))
+
+	job_qty = flt(job.good_qty) or flt(job.actual_qty_meter)
+	if job_qty <= 0:
+		frappe.throw(_("Packing Job {0} has no positive completed quantity.").format(job.name))
+	input_lot = resolve_packing_input_lot(job)
+	if not input_lot:
+		frappe.throw(_("Physical Packing Job {0} requires a released input Production Lot.").format(job.name))
+
+	physical_batch = physical_input_batch(input_lot)
+	validate_physical_batch_for_production(physical_batch, generator, input_lot)
+	input_row = stock_row(generator.finished_item, job_qty, "__source__")
+	input_row["s_warehouse"] = _batch_source(
+		physical_batch, generator.finished_item,
+		flt(input_row["qty"]) * flt(input_row["conversion_factor"]), generator.company,
+	)
+	output = stock_row(generator.finished_item, job_qty, output_row.t_warehouse, inward=True)
+	output["is_finished_item"] = 1
+
+	stock_entry = frappe.new_doc("Stock Entry")
+	stock_entry.company = generator.company
+	stock_entry.purpose = "Repack"
+	stock_entry.set_stock_entry_type()
+	stock_entry.posting_date = nowdate()
+	stock_entry.set_posting_time = 1
+	stock_entry.remarks = reference
+	stock_entry.append("items", input_row)
+	stock_entry.append("items", output)
+	stock_entry.insert(ignore_permissions=True)
+	validate_posted_precision(stock_entry)
+	_bundle(stock_entry, stock_entry.items[0], physical_batch, stock_entry.items[0].transfer_qty,
+		stock_entry.items[0].s_warehouse, "Outward")
+	if batch_name:
+		_bundle(stock_entry, stock_entry.items[1], batch_name, stock_entry.items[1].transfer_qty,
+			stock_entry.items[1].t_warehouse, "Inward")
+	stock_entry.save(ignore_permissions=True)
+	stock_entry.submit()
+	capture_stock_entry(stock_entry)
+	return stock_entry.name
+
+
+def get_packing_fg_batch(generator):
+	"""Return the one submitted FG Batch established by physical Packing."""
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+
+	job_names = frappe.get_all(
+		"SmartEdge Production Job",
+		filters={"final_eb_bom_generator": generator.name},
+		pluck="name", limit_page_length=500,
+	)
+	if not job_names:
+		return None
+	remarks = [f"SmartEdge incremental Packing physical Repack {name}" for name in job_names]
+	entries = frappe.get_all(
+		"Stock Entry",
+		filters={
+			"remarks": ["in", remarks],
+			"docstatus": 1,
+		},
+		fields=["name"], order_by="creation asc", limit_page_length=500,
+	)
+	batches = []
+	for row in entries:
+		stock_entry = frappe.get_doc("Stock Entry", row.name)
+		for movement in extract_batch_movements(stock_entry):
+			if movement.get("direction") == "Output" and movement.get("item_code") == generator.finished_item:
+				batches.append(movement.get("batch_no"))
+	unique = list(dict.fromkeys(batch for batch in batches if batch))
+	if len(unique) > 1:
+		frappe.throw(_("Physical Packing has multiple finished-goods Batches for {0}; review them before retrying.").format(generator.name))
+	return unique[0] if unique else None
+
+
+def _disposition_movement_quantity(production_lot, batch_name):
+	"""Return submitted rejected-WIP quantity already explicitly disposed."""
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+
+	prefix = f"SmartEdge rejected WIP disposition {production_lot} — "
+	total = 0
+	for name in frappe.get_all("Stock Entry", filters={
+		"remarks": ["like", f"{prefix}%"], "docstatus": 1,
+	}, pluck="name"):
+		stock_entry = frappe.get_doc("Stock Entry", name)
+		for movement in extract_batch_movements(stock_entry):
+			if movement["direction"] == "Input" and movement["batch_no"] == batch_name:
+				total += flt(movement["quantity"])
+	return total
+
+
+def _validated_rejected_roll_quantity(production_lot, quality_inspection, rejected_rolls, physical_batch, quantity):
+	"""Require QC-linked roll history before any rejected WIP can be issued."""
+	if not quality_inspection or not rejected_rolls:
+		frappe.throw(_("Rejected-WIP disposition requires a QC inspection and rejected roll quantities."))
+	rows = frappe.parse_json(rejected_rolls) if isinstance(rejected_rolls, str) else rejected_rolls
+	if not isinstance(rows, (list, tuple)):
+		frappe.throw(_("Rejected roll quantities must be a list."))
+	total = 0.0
+	seen = set()
+	for row in rows:
+		roll_name = row.get("roll") or row.get("roll_id") or row.get("name")
+		roll_qty = flt(row.get("quantity") or row.get("meter_quantity"))
+		if not roll_name or roll_name in seen or roll_qty <= 0:
+			frappe.throw(_("Each rejected roll must be unique and have a positive quantity."))
+		seen.add(roll_name)
+		roll = frappe.get_doc("SmartEdge Roll", roll_name)
+		if roll.get("source_batch") != physical_batch:
+			frappe.throw(_("Rejected roll {0} does not belong to physical Batch {1}.").format(roll_name, physical_batch))
+		evidence = 0.0
+		for history in roll.get("operation_history") or []:
+			if history.get("related_quality_inspection") != quality_inspection:
+				continue
+			if history.get("event_type") not in {"QC Decision", "Re-QC Decision"}:
+				continue
+			try:
+				details = frappe.parse_json(history.get("remarks") or "{}")
+			except Exception:
+				continue
+			evidence += flt(details.get("rejected_meter_quantity"))
+			if not details.get("rejected_meter_quantity") and history.get("new_status") == "Rejected":
+				evidence += flt(history.get("new_meter_quantity"))
+		if roll_qty > evidence + 0.000001:
+			frappe.throw(_("Rejected quantity for roll {0} is not proven by QC inspection {1}.").format(roll_name, quality_inspection))
+		total += roll_qty
+	if abs(total - flt(quantity)) > 0.000001:
+		frappe.throw(_("Rejected roll quantities do not equal the requested disposition quantity."))
+	return total
+
+
+def post_rejected_wip_disposition(production_lot, quantity, reason, request_id, quality_inspection=None, rejected_rolls=None):
+	"""Explicitly issue rejected physical WIP after an authorized disposition.
+
+	No QC decision calls this implicitly.  The caller must provide a stable
+	request ID and reason, making the ERPNext Material Issue auditable and safe
+	to retry without silently writing off rejected material.
+	"""
+	if not enabled():
+		frappe.throw(_("Physical WIP is not enabled for this site."))
+	if not str(reason or "").strip() or not str(request_id or "").strip():
+		frappe.throw(_("A rejected-WIP disposition reason and request ID are required."))
+
+	lot = frappe.get_doc("SmartEdge Production Lot", production_lot)
+	frappe.db.get_value("SmartEdge Production Lot", production_lot, "name", for_update=True)
+	rejected = flt(lot.get("rejected_quantity"))
+	qty = normalize_posting_quantity(quantity)
+	if rejected <= 0 or qty <= 0:
+		frappe.throw(_("Production Lot {0} has no positive rejected quantity for disposition.").format(production_lot))
+	physical_batch = physical_input_batch(production_lot)
+	inspection_lot = frappe.db.get_value("Quality Inspection", quality_inspection, "custom_source_production_lot")
+	if inspection_lot != production_lot:
+		frappe.throw(_("Quality Inspection {0} is not linked to Production Lot {1}.").format(quality_inspection, production_lot))
+	_validated_rejected_roll_quantity(production_lot, quality_inspection, rejected_rolls, physical_batch, qty)
+	reference = f"SmartEdge rejected WIP disposition {production_lot} — {str(request_id).strip()[:140]}"
+	existing = frappe.get_all("Stock Entry", filters={
+		"remarks": reference, "docstatus": ["<", 2],
+	}, fields=["name", "docstatus"])
+	if len(existing) > 1:
+		frappe.throw(_("Multiple rejected-WIP dispositions exist for request {0}.").format(request_id))
+	if existing:
+		if existing[0].docstatus != 1:
+			frappe.throw(_("Draft rejected-WIP disposition {0} requires review.").format(existing[0].name))
+		return existing[0].name
+	if frappe.db.exists("Stock Entry", {"remarks": reference, "docstatus": 2}):
+		frappe.throw(_("Rejected-WIP disposition {0} was cancelled; use a controlled amendment workflow.").format(request_id))
+	disposed = _disposition_movement_quantity(production_lot, physical_batch)
+	row = stock_row(lot.finished_item, qty, "__source__")
+	rejected_stock_qty = _round(rejected * flt(row["conversion_factor"]), effective_stock_precision())
+	if disposed + flt(row["qty"]) * flt(row["conversion_factor"]) > rejected_stock_qty + 0.000001:
+		frappe.throw(_("Rejected-WIP disposition would exceed the rejected quantity of {0} for Production Lot {1}.").format(rejected, production_lot))
+	company = lot.company
+	warehouse = _batch_source(
+		physical_batch, lot.finished_item,
+		flt(row["qty"]) * flt(row["conversion_factor"]), company,
+	)
+	row["s_warehouse"] = warehouse
+	stock_entry = frappe.new_doc("Stock Entry")
+	stock_entry.company = company
+	stock_entry.purpose = "Material Issue"
+	stock_entry.set_stock_entry_type()
+	stock_entry.posting_date = nowdate()
+	stock_entry.set_posting_time = 1
+	stock_entry.remarks = reference + f" — QC {quality_inspection} — {str(reason).strip()}"
+	for fieldname, value in {
+		"custom_smartedge_source_production_lot": production_lot,
+		"custom_smartedge_source_batch": physical_batch,
+		"custom_smartedge_scrap_movement_type": "Rejected WIP Disposition",
+	}.items():
+		if stock_entry.meta.has_field(fieldname):
+			stock_entry.set(fieldname, value)
+	stock_entry.append("items", row)
+	stock_entry.insert(ignore_permissions=True)
+	validate_posted_precision(stock_entry)
+	_bundle(stock_entry, stock_entry.items[0], physical_batch, stock_entry.items[0].transfer_qty, warehouse, "Outward")
+	stock_entry.save(ignore_permissions=True)
+	stock_entry.submit()
+	capture_stock_entry(stock_entry)
+	return stock_entry.name
 
 
 def link_operation_posting(lot, job, stock_entry_name):
@@ -370,6 +680,8 @@ def post_operation(lot, job, entry, batch_name, batch_id_factory):
 		stock_entry.purpose = "Repack"
 		stock_entry.set_stock_entry_type()
 		previous_batch = physical_input_batch(physical_input_lot)
+		generator = frappe.get_doc("Final EB BOM Generator", job.final_eb_bom_generator)
+		validate_physical_batch_for_production(previous_batch, generator, physical_input_lot)
 		input_qty = flt(job.actual_qty_meter)
 		output_qty = flt(job.good_qty) or input_qty
 		if input_qty <= 0 or output_qty <= 0 or output_qty > input_qty + 0.000001:

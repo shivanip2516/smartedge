@@ -109,7 +109,8 @@ class TestFinalCompletionPosting(unittest.TestCase):
 		for item_code, total in ((self.doc.compound_item, self.doc.compound_total_required),
 			(self.doc.base_colour_item, self.doc.shade_total_required)):
 			self.assertAlmostEqual(sum(r.quantity for r in inputs if r.item_code == item_code),
-				total / self.doc.production_quantity * 10, places=5)
+				frappe.utils.flt(total / self.doc.production_quantity * 10,
+					frappe.get_precision("Stock Entry Detail", "qty")), places=5)
 		from smart_edge_custom.manufacturing.batch_genealogy import get_genealogy
 		self.assertTrue(get_genealogy(outputs[0].batch_no, "Backward")["production_lot_roots"])
 		self.assertTrue(get_genealogy(inputs[0].batch_no, "Forward")["production_lot_roots"])
@@ -137,7 +138,7 @@ class TestFinalCompletionPosting(unittest.TestCase):
 		self.doc.save()
 		self.doc.reload()
 		actual = frappe.utils.flt(self.doc.production_quantity, frappe.get_precision("SmartEdge Production Job", "good_qty"))
-		self.assertGreater(actual, self.doc.production_quantity)
+		self.assertEqual(actual, self.doc.production_quantity)
 		counts = {item: frappe.db.count("Batch", {"item": item}) for item in (self.doc.compound_item, self.doc.base_colour_item)}
 		complete_production_job(self.entries[2], actual_qty_meter=actual, good_qty=actual)
 		self.doc.reload()

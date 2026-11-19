@@ -40,6 +40,7 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		item = frappe.get_doc("Item", self.items["Finished Goods"])
 		item.has_batch_no = item.create_new_batch = 1
 		item.save()
+		TestFinishedOperationBatches._ensure_unusable_scrap_configuration(self)
 		# Keep batch lifecycle fixtures independent of the site's configured routes.
 		route = frappe.get_doc("SmartEdge Process Route", "Solid EB - Single Mould")
 		route.set("operations", [{"operation": row.operation, "sequence": row.sequence_id,
@@ -50,6 +51,27 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		self.doc.finished_bom = self.finished_bom
 		self.doc.save()
 		self.entries = create_planning_entries(self.doc)
+
+	@staticmethod
+	def _ensure_unusable_scrap_configuration(test_context):
+		items = []
+		for label in ("USABLE", "GROUND", "RECOVERED", "UNUSABLE"):
+			item_code = f"TEST-{label}-SCRAP-" + frappe.generate_hash(length=8)
+			items.append(frappe.get_doc({
+				"doctype": "Item", "item_code": item_code, "item_name": item_code,
+				"item_group": "Additives", "stock_uom": "Kg", "is_stock_item": 1,
+				"is_sales_item": 0, "include_item_in_manufacturing": 1, "has_batch_no": 1,
+			}).insert(ignore_permissions=True, ignore_mandatory=True).name)
+		frappe.get_doc({
+			"doctype": "SmartEdge Recovery Material",
+			"source_item": test_context.items["Finished Goods"], "company": test_context.company,
+			"usable_scrap_item": items[0], "ground_material_item": items[1],
+			"recovered_material_item": items[2], "unusable_scrap_item": items[3],
+			"usable_scrap_warehouse": test_context.warehouse,
+			"ground_material_warehouse": test_context.warehouse,
+			"recovered_material_warehouse": test_context.warehouse,
+			"unusable_scrap_warehouse": test_context.warehouse,
+		}).insert(ignore_permissions=True)
 
 	def complete(self, index, actual, good=None, **quality):
 		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.entries[index])
@@ -146,10 +168,11 @@ class TestFinishedOperationBatches(unittest.TestCase):
 			entry.save()
 
 	def test_route_qc_without_bom_has_distinct_id_and_preserves_the_chain(self):
-		from smart_edge_custom.manufacturing.production_lot import record_qc_hold, attach_lot_details
+		from smart_edge_custom.manufacturing.production_lot import attach_lot_details, record_qc_hold
+		from smart_edge_custom.manufacturing.quality_control import begin_review, ensure_pending_inspection, submit_decision
 		self.configure_route_qc()
 		counts = {dt: frappe.db.count(dt) for dt in ("Item", "Batch", "Stock Entry", "Work Order")}
-		_, first = self.complete(0, 490)
+		extrusion_job, first = self.complete(0, 490)
 		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.entries[1])
 		job = frappe.get_doc({"doctype": "SmartEdge Production Job", "plan_entry": entry.name,
 			"final_eb_bom_generator": self.doc.name, "company": self.company,
@@ -162,11 +185,28 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		attach_lot_details(active_rows)
 		self.assertFalse(active_rows[0].production_lot)
 		self.assertEqual(active_rows[0].previous_operation_lot, first.name)
-		qc = frappe.get_doc("SmartEdge Production Lot", job.complete_job()["production_lot"])
+		inspection = ensure_pending_inspection(entry, source_job=extrusion_job.name)
+		self.assertIsNotNone(inspection)
+		begin_review(inspection.name, qc_employee=self.employee)
+		submit_decision(
+			quality_inspection=inspection.name,
+			inspected_qty=490,
+			accepted_qty=480,
+			rejected_qty=10,
+			reason="Historical route-QC test disposition",
+			qc_employee=self.employee,
+		)
+		job.reload()
+		self.assertEqual(job.status, "Completed")
+		self.assertTrue(job.output_production_lot)
+		qc = frappe.get_doc("SmartEdge Production Lot", job.output_production_lot)
 		self.assertNotEqual(qc.name, first.name)
 		self.assertEqual(qc.input_production_lot, first.name)
 		self.assertEqual(qc.operation_sequence, 2)
-		self.assertEqual(job.complete_job()["production_lot"], qc.name)
+		qc_batch = frappe.db.get_value("Batch", {"custom_operation_lot": qc.name},
+			["name", "custom_previous_operation_batch"], as_dict=True)
+		first_batch = frappe.db.get_value("Batch", {"custom_operation_lot": first.name}, "name")
+		self.assertEqual(qc_batch.custom_previous_operation_batch, first_batch)
 		_, final = self.complete(2, 470)
 		self.assertEqual(final.input_production_lot, qc.name)
 		self.assertEqual(self.chain(get_production_lot_genealogy(final.name, "Backward")["roots"][0]), [final.name, qc.name, first.name])
@@ -175,22 +215,71 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		self.assertEqual(rows[1].production_lot, qc.name)
 		self.assertEqual(rows[1].operation_trace_id, qc.name)
 		self.assertEqual(rows[1].previous_operation_lot, first.name)
-		self.assertEqual(rows[1].lot_actual_output_quantity, 480)
+		self.assertEqual(rows[1].lot_actual_output_quantity, 490)
 		self.assertEqual({dt: qty + (2 if dt == "Batch" else 0) for dt, qty in counts.items()}, {dt: frappe.db.count(dt) for dt in counts})
 
 	def make_historical_qc(self):
 		self.configure_route_qc()
 		_, first = self.complete(0, 490)
-		# Reproduce a historical completion under the former QC reuse policy.
-		with patch("smart_edge_custom.manufacturing.production_lot.get_operation_lot_mode", return_value="Preserve Incoming Lot"):
-			job, old_output = self.complete(1, 480)
-		self.assertEqual(old_output.name, first.name)
+		# Build an isolated legacy completed-job record.  This represents the old
+		# QC reuse state without calling the current mandatory-QC completion API.
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.entries[1])
+		next_entry = frappe.get_doc("SmartEdge Production Plan Entry", self.entries[2])
+		next_entry.released_qty_meter = 480
+		next_entry.released_qty_kg = 0
+		next_entry.released_from_plan_entry = entry.name
+		next_entry.save()
+		job = frappe.get_doc({"doctype": "SmartEdge Production Job", "plan_entry": entry.name,
+			"final_eb_bom_generator": self.doc.name, "company": self.company,
+			"operation": entry.operation, "workstation": self.workstation, "operator_employee": self.employee,
+			"status": "In Progress", "actual_start": now_datetime(), "actual_qty_meter": 480, "good_qty": 480,
+			"planned_qty_meter": 500, "released_qty_meter": 480, "released_qty_kg": 0,
+			"released_to_plan_entry": next_entry.name,
+		}).insert()
+		from smart_edge_custom.manufacturing.production_lot import record_qc_hold, record_release_movement
+		record_qc_hold(job, entry)
+		legacy_end = now_datetime()
+		frappe.db.set_value("SmartEdge Production Job", job.name, {
+			"status": "Completed", "actual_end": legacy_end,
+			"completion_type": "Full Completion", "input_production_lot": first.name,
+			"output_production_lot": first.name,
+		}, update_modified=False)
+		frappe.db.set_value("SmartEdge Production Plan Entry", entry.name, {
+			"production_job": job.name, "status": "Completed",
+		}, update_modified=False)
+		frappe.db.set_value("SmartEdge Production Plan Entry", next_entry.name,
+			"released_from_production_job", job.name, update_modified=False)
+		# Preserve the accepted quantity evidence carried by historical QC
+		# records so current downstream quantity validation can evaluate the
+		# legacy job without routing it through the current QC API.
+		legacy_qc = frappe.get_doc({
+			"doctype": "Quality Inspection", "inspection_type": "In Process",
+			"reference_type": "SmartEdge Production Job", "reference_name": job.name,
+			"item_code": self.doc.finished_item, "company": self.company,
+			"inspected_by": frappe.session.user,
+			"status": "Accepted", "custom_smartedge_qc_key": f"legacy-qc:{job.name}",
+			"custom_final_eb_bom_generator": self.doc.name, "custom_qc_plan_entry": entry.name,
+			"custom_source_production_job": frappe.db.get_value(
+				"SmartEdge Production Job", {"plan_entry": self.entries[0]}, "name"
+			), "custom_source_production_lot": first.name,
+			"custom_qc_operation": entry.operation, "custom_smartedge_qc_status": "Accepted",
+			"custom_eligible_qty": 490, "custom_inspected_qty": 490,
+			"custom_accepted_qty": 480, "custom_rejected_qty": 10,
+			"custom_rework_qty": 0, "custom_inspection_datetime": legacy_end,
+		}).insert(ignore_permissions=True, ignore_mandatory=True)
+		frappe.db.set_value("Quality Inspection", legacy_qc.name, "docstatus", 1, update_modified=False)
+		job.reload()
+		production = frappe.db.get_value("Final EB BOM Generator", self.doc.name,
+			["finished_item", "stock_uom"], as_dict=True)
+		record_release_movement(job, entry, production, first.name, qc_release=True)
+		self.assertEqual(job.output_production_lot, first.name)
 		return job, first
 
 	def test_historical_qc_reuse_is_not_renamed_or_duplicated_on_retry(self):
 		job, first = self.make_historical_qc()
+		from smart_edge_custom.manufacturing.production_lot import backfill_completed_job
 		counts = {dt: frappe.db.count(dt) for dt in ("SmartEdge Production Lot", "SmartEdge WIP Ledger Entry", "Batch", "Stock Entry")}
-		self.assertTrue(job.complete_job()["backfill_required"])
+		self.assertEqual(backfill_completed_job(job.name, dry_run=True)["action"], "Create historical QC trace record")
 		self.assertEqual(record_completed_job(job)["production_lot"], first.name)
 		self.assertEqual(counts, {dt: frappe.db.count(dt) for dt in counts})
 		from smart_edge_custom.manufacturing.production_lot import attach_lot_details
@@ -217,8 +306,9 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		self.assertEqual(qc.actual_end, job.actual_end)
 		self.assertEqual(qc.actual_output_quantity, job.actual_qty_meter)
 		self.assertEqual(before_job, frappe.get_doc("SmartEdge Production Job", job.name).as_dict())
-		self.assertEqual(backfill_completed_job(job.name)["action"], "Reuse")
-		self.assertEqual(job.complete_job()["production_lot"], qc.name)
+		backfill_result = backfill_completed_job(job.name)
+		self.assertEqual(backfill_result["action"], "Reuse")
+		self.assertEqual(backfill_result["production_lot"], qc.name)
 		for dt, count in before.items():
 			self.assertEqual(frappe.db.count(dt), count + (1 if dt == "SmartEdge Production Lot" else 0))
 		rows = [frappe.get_doc("SmartEdge Production Plan Entry", name).as_dict() for name in self.entries]
@@ -234,6 +324,18 @@ class TestFinishedOperationBatches(unittest.TestCase):
 		_, final = self.complete(2, 470)
 		self.assertEqual(final.input_production_lot, first.name)
 		self.assertEqual(self.chain(get_production_lot_genealogy(final.name, "Backward")["roots"][0]), [final.name, qc, first.name])
+
+	def test_direct_complete_job_on_mandatory_qc_is_rejected(self):
+		self.configure_route_qc()
+		self.complete(0, 490)
+		entry = frappe.get_doc("SmartEdge Production Plan Entry", self.entries[1])
+		job = frappe.get_doc({"doctype": "SmartEdge Production Job", "plan_entry": entry.name,
+			"final_eb_bom_generator": self.doc.name, "company": self.company,
+			"operation": entry.operation, "workstation": self.workstation, "operator_employee": self.employee,
+			"status": "In Progress", "actual_start": now_datetime(), "actual_qty_meter": 480, "good_qty": 480,
+		}).insert()
+		with self.assertRaisesRegex(frappe.ValidationError, "Use Submit QC Decision to complete a mandatory QC checkpoint"):
+			job.complete_job()
 
 	def test_backfill_rejects_missing_actual_completion_information(self):
 		from smart_edge_custom.manufacturing.production_lot import backfill_completed_job

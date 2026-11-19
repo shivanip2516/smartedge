@@ -47,6 +47,25 @@ class TestRollPackingValidation(unittest.TestCase):
 			roll_count=1,
 		)
 
+	def test_completion_rejects_unaccounted_balance(self):
+		job = frappe._dict(roll_packing_details=[], good_qty=16422)
+		with patch("smart_edge_custom.manufacturing.planning.frappe.throw", side_effect=frappe.ValidationError("unaccounted")):
+			with self.assertRaises(frappe.ValidationError):
+				validate_roll_packing_details(
+					self.entry, job, 2,
+					[{"roll_no": 1, "meter_quantity": 8200}, {"roll_no": 2, "meter_quantity": 8200}],
+					16422, enforce_accounting=True,
+				)
+
+	def test_validated_non_roll_loss_accounts_for_balance(self):
+		job = frappe._dict(roll_packing_details=[], good_qty=16400)
+		rows = validate_roll_packing_details(
+			self.entry, job, 2,
+			[{"roll_no": 1, "meter_quantity": 8200}, {"roll_no": 2, "meter_quantity": 8200}],
+			16422, enforce_accounting=True,
+		)
+		self.assertEqual(sum(row["meter_quantity"] for row in rows), 16400)
+
 	def test_zero_fractional_and_mismatched_rows_are_rejected(self):
 		self.assert_invalid([{"roll_no": 1, "meter_quantity": 0}])
 		self.assert_invalid([{"roll_no": 1, "meter_quantity": 10.5}])

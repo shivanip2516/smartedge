@@ -256,6 +256,16 @@ class SmartEdgeProductionJob(Document):
 			from smart_edge_custom.manufacturing.production_lot import record_completed_job
 
 			result = {"status": self.status, **record_completed_job(self)}
+			# Permanent roll masters must exist before QC activation so the pending
+			# inspection is eligible for the actual linked whole rolls, not gross
+			# extrusion output.  The service is idempotent for completion retries.
+			from smart_edge_custom.manufacturing.planning import is_extrusion_operation
+			if is_extrusion_operation(entry) and self.get("roll_packing_details"):
+				from smart_edge_custom.manufacturing.roll_tracking import create_rolls_for_extrusion
+				create_rolls_for_extrusion(self, entry, [
+					{"roll_no": row.roll_no, "meter_quantity": row.meter_quantity}
+					for row in self.get("roll_packing_details")
+				])
 			from smart_edge_custom.manufacturing.quality_control import activate_qc_after_completion
 
 			activate_qc_after_completion(self)
@@ -371,11 +381,25 @@ class SmartEdgeProductionJob(Document):
 			updates["production_job"] = self.name
 		frappe.db.set_value("SmartEdge Production Plan Entry", self.plan_entry, updates, update_modified=True)
 		if self.final_eb_bom_generator:
-			plan_type = frappe.db.get_value("SmartEdge Production Plan Entry", self.plan_entry, "plan_type")
+			plan_details = frappe.db.get_value(
+				"SmartEdge Production Plan Entry",
+				self.plan_entry,
+				["plan_type", "operation", "planning_category"],
+				as_dict=True,
+			) or frappe._dict()
+			plan_type = plan_details.get("plan_type")
 			if plan_type == "Required Material":
 				from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 
 				refresh_material_readiness(self.final_eb_bom_generator)
+			elif getattr(frappe.flags, "smartedge_defer_packing_reconciliation", False) and (
+				"pack" in str(plan_details.get("planning_category") or "").lower()
+				or "pack" in str(plan_details.get("operation") or "").lower()
+			):
+				# Packing rolls are finalized by the orchestration layer immediately
+				# after complete_job().  Do not let this intermediate plan sync post
+				# an incremental receipt while those rolls are still Reserved.
+				return
 			else:
 				from smart_edge_custom.manufacturing.planning import update_generator_planning_status
 

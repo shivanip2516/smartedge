@@ -6,7 +6,7 @@
  "engine": "InnoDB",
  "module": "smart_edge_custom",
  "name": "SmartEdge Roll",
- "field_order": ["naming_series","identity_section","finished_item","source_production_job","source_plan_entry","source_work_order","source_operation","source_production_lot","source_batch","roll_sequence","quantity_section","original_meter_quantity","current_meter_quantity","status_section","qc_status","process_status","packing_status","reserved_for_plan_entry","reserved_for_production_job","packing_job","operation_history"],
+ "field_order": ["naming_series","identity_section","finished_item","source_production_job","source_plan_entry","source_work_order","source_operation","source_production_lot","source_batch","final_fg_batch","roll_sequence","quantity_section","original_meter_quantity","current_meter_quantity","status_section","qc_status","process_status","packing_status","reserved_for_plan_entry","reserved_for_production_job","packing_job","operation_history"],
  "fields": [
   {"fieldname":"naming_series","fieldtype":"Select","label":"Series","options":"SE-ROLL-.#####","default":"SE-ROLL-.#####","reqd":1},
   {"fieldname":"identity_section","fieldtype":"Section Break","label":"Roll Identity"},
@@ -17,6 +17,7 @@
   {"fieldname":"source_operation","fieldtype":"Link","label":"Source Operation","options":"Operation","read_only":1},
   {"fieldname":"source_production_lot","fieldtype":"Link","label":"Source Production Lot","options":"SmartEdge Production Lot","read_only":1},
   {"fieldname":"source_batch","fieldtype":"Link","label":"Source Batch","options":"Batch","read_only":1},
+  {"fieldname":"final_fg_batch","fieldtype":"Link","label":"Final Finished Goods Batch","options":"Batch","read_only":1},
   {"fieldname":"roll_sequence","fieldtype":"Int","label":"Roll Sequence","read_only":1,"reqd":1,"in_list_view":1},
   {"fieldname":"quantity_section","fieldtype":"Section Break","label":"Quantity"},
   {"fieldname":"original_meter_quantity","fieldtype":"Float","label":"Original Meter Quantity","precision":"0","read_only":1,"reqd":1,"in_list_view":1},

@@ -36,6 +36,37 @@ class TestPlanningBoardGrouping(IntegrationTestCase):
 		self.assertEqual(rows[2].execution_key, rows[3].execution_key)
 		self.assertNotEqual(rows[0].execution_key, rows[2].execution_key)
 
+	def test_follow_up_packing_plan_stays_in_original_execution_group(self):
+		rows = [
+			frappe._dict(name="EXTRUSION", final_eb_bom_generator="FEBG-1", creation="2026-11-18 10:00:00", sequence=1, planning_category="Extrusion"),
+			frappe._dict(name="QC", final_eb_bom_generator="FEBG-1", creation="2026-11-18 10:00:01", sequence=2, planning_category="QC", released_from_plan_entry="EXTRUSION"),
+			frappe._dict(name="PACK-1", final_eb_bom_generator="FEBG-1", creation="2026-11-18 10:00:02", sequence=3, planning_category="Packing", released_from_plan_entry="QC"),
+			frappe._dict(name="PACK-2", final_eb_bom_generator="FEBG-1", creation="2026-11-18 11:00:00", sequence=3, planning_category="Packing", released_from_plan_entry="QC"),
+		]
+		assign_planning_execution_keys(rows)
+		self.assertEqual(rows[2].execution_key, rows[0].execution_key)
+		self.assertEqual(rows[3].execution_key, rows[0].execution_key)
+
+	def test_follow_up_packing_keeps_materials_on_the_original_card(self):
+		rows = [
+			self.make_material_row("MATERIAL", "Compound", "WO-1"),
+			self.make_row("EXTRUSION", "2026-11-18 10:00:00", 1),
+			frappe._dict(
+				name="QC", final_eb_bom_generator="FEBG-1", creation="2026-11-18 10:00:01",
+				sequence=2, planning_category="Extrusion", released_from_plan_entry="EXTRUSION",
+			),
+			frappe._dict(
+				name="PACK-1", final_eb_bom_generator="FEBG-1", creation="2026-11-18 10:00:02",
+				sequence=3, planning_category="Packing", released_from_plan_entry="QC",
+			),
+			frappe._dict(
+				name="PACK-2", final_eb_bom_generator="FEBG-1", creation="2026-11-18 11:00:00",
+				sequence=3, planning_category="Packing", released_from_plan_entry="QC",
+			),
+		]
+		assign_planning_execution_keys(rows)
+		self.assertEqual(len({row.execution_key for row in rows}), 1)
+
 	def test_material_executions_are_separated_by_work_order(self):
 		rows = [
 			frappe._dict(

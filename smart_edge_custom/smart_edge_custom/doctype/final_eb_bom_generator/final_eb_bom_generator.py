@@ -9,6 +9,7 @@ from smart_edge_custom.manufacturing.final_bom_generator import (
 	calculate_bom_preview,
 	get_generator_lifecycle_status,
 	send_generator_to_planning,
+	validate_stock_posting_mode,
 	validate_prepared_item,
 )
 
@@ -17,6 +18,8 @@ class FinalEBBOMGenerator(Document):
 	def before_validate(self):
 		if not self.production_status:
 			self.production_status = get_generator_lifecycle_status(self)
+		if not self.stock_posting_mode:
+			self.stock_posting_mode = "Legacy Non-Stock"
 
 	def before_insert(self):
 		if not self.company:
@@ -26,6 +29,7 @@ class FinalEBBOMGenerator(Document):
 			)
 
 	def validate(self):
+		validate_stock_posting_mode(self)
 		self.priority = self.priority or "Normal"
 		self.validate_initial_material_configuration()
 		validate_prepared_item(self.compound_item, "Compounds", _("Compound Item"))

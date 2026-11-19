@@ -97,6 +97,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 		with patch.object(physical_operation_stock.frappe, "get_doc", return_value=frappe._dict()), \
 			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="QC-BATCH"), \
+			patch.object(physical_operation_stock, "validate_physical_batch_for_production"), \
 			patch.object(physical_operation_stock, "_batch_source", return_value="WIP"), \
 			patch.object(physical_operation_stock, "stock_row", return_value={"item_code": "FG", "qty": 30, "conversion_factor": 4.356}):
 			rows, bundles = physical_operation_stock.final_wip_components(generator, [job])
@@ -109,6 +110,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			for index in range(2)]
 		with patch.object(physical_operation_stock.frappe, "get_doc", return_value=frappe._dict()), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="QC-BATCH"), \
+			patch.object(physical_operation_stock, "validate_physical_batch_for_production"), \
 			patch.object(physical_operation_stock, "stock_row", return_value={"item_code": "FG", "qty": 30, "conversion_factor": 2}), \
 			patch.object(physical_operation_stock, "_batch_source", return_value="WIP") as source:
 			rows, bundles = physical_operation_stock.final_wip_components(generator, jobs)
@@ -163,6 +165,8 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			patch.object(physical_operation_stock, "_batch", return_value="OUT"), \
 			patch.object(physical_operation_stock, "find_physical_input_lot", return_value="INPUT"), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="IN"), \
+			patch.object(physical_operation_stock, "validate_physical_batch_for_production"), \
+			patch.object(frappe, "get_doc", return_value=frappe._dict()), \
 			patch.object(frappe, "new_doc", return_value=Mock()), \
 			patch.object(frappe, "throw", side_effect=frappe.ValidationError("disposition")):
 			with self.assertRaisesRegex(frappe.ValidationError, "disposition"):
@@ -218,6 +222,7 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			patch.object(physical_operation_stock, "_wip_warehouse", return_value="WIP"), \
 			patch.object(physical_operation_stock, "_batch", side_effect=["EXT", "QC"]), \
 			patch.object(physical_operation_stock, "physical_input_batch", return_value="EXT"), \
+			patch.object(physical_operation_stock, "validate_physical_batch_for_production"), \
 			patch.object(physical_operation_stock, "find_physical_input_lot", side_effect=[None, "EXT-LOT"]), \
 			patch.object(physical_operation_stock, "_batch_source", return_value="WIP"), \
 			patch.object(physical_operation_stock, "_bundle", side_effect=bundle), \
@@ -242,6 +247,127 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 			self.assertEqual(balances["QC"], 30)
 			self.assertEqual(entries[1].purpose, "Repack")
 			self.assertEqual(materials.call_count, 1)
+
+	def test_incremental_packing_repack_consumes_only_physical_wip(self):
+		"""A later Packing execution moves WIP into the existing FG Batch."""
+		entries = []
+		class StockEntry:
+			def __init__(self):
+				self.items = []
+				self.name = "STE-REPACK-1"
+			def set_stock_entry_type(self):
+				self.stock_entry_type = self.purpose
+			def append(self, field, values):
+				self.items.append(frappe._dict(values))
+			def insert(self, **kwargs):
+				for row in self.items:
+					row.transfer_qty = row.qty * row.conversion_factor
+				entries.append(self)
+			def save(self, **kwargs):
+				pass
+			def submit(self):
+				self.docstatus = 1
+
+		generator = frappe._dict(name="GEN", company="Company", finished_item="FG")
+		job = frappe._dict(name="PACK-2", good_qty=3000, actual_qty_meter=3000,
+			input_production_lot="QC-LOT", plan_entry="PLAN")
+		output = frappe._dict(t_warehouse="Finished Goods", uom="Meter", stock_uom="Meter",
+			conversion_factor=1)
+		def bundle(stock, row, batch, qty, warehouse, direction):
+			row.batch_no = batch
+		fake_frappe = Mock()
+		fake_frappe.new_doc.side_effect = lambda doctype: StockEntry()
+		fake_frappe.get_all.return_value = []
+		fake_frappe.db.exists.return_value = False
+		with patch.object(physical_operation_stock, "physical_input_batch", return_value="WIP-BATCH"), \
+			patch.object(physical_operation_stock, "_batch_source", return_value="WIP"), \
+			patch.object(physical_operation_stock, "stock_row", side_effect=lambda item, qty, warehouse, inward=False: {
+				"item_code": item, "qty": qty, "uom": "Meter", "stock_uom": "Meter",
+				"conversion_factor": 1, ("t_warehouse" if inward else "s_warehouse"): warehouse,
+			}), \
+			patch.object(physical_operation_stock, "validate_posted_precision"), \
+			patch.object(physical_operation_stock, "_bundle", side_effect=bundle), \
+			patch.object(physical_operation_stock, "frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.batch_genealogy.capture_stock_entry"), \
+			patch.object(physical_operation_stock, "nowdate", return_value="2026-11-03"):
+			name = physical_operation_stock.post_incremental_packing_repack(generator, job, output, "FG-BATCH")
+
+		self.assertEqual(name, "STE-REPACK-1")
+		self.assertEqual(entries[0].purpose, "Repack")
+		self.assertEqual(len(entries[0].items), 2)
+		self.assertEqual(entries[0].items[0].s_warehouse, "WIP")
+		self.assertEqual(entries[0].items[1].t_warehouse, "Finished Goods")
+		self.assertEqual(entries[0].items[0].batch_no, "WIP-BATCH")
+		self.assertEqual(entries[0].items[1].batch_no, "FG-BATCH")
+
+	def test_incremental_packing_resolves_completed_physical_predecessor_through_qc(self):
+		job = frappe._dict(name="PACK-1", plan_entry="PACK-PLAN")
+		entry = frappe._dict(name="PACK-PLAN", released_from_production_job="QC-JOB", final_eb_bom_generator="GEN", plan_type="Final EB", sequence=3)
+		fake_frappe = Mock()
+		fake_frappe.get_doc.return_value = entry
+		fake_frappe.get_all.return_value = [frappe._dict(name="EXT-PLAN", operation_row="EXT-ROW", sequence=1)]
+		fake_frappe.db.get_value.side_effect = lambda doctype, key, field, **kwargs: (
+			None if isinstance(key, str) and key == "QC-JOB" and field == "output_production_lot"
+			else "QC-JOB" if isinstance(key, dict) and key.get("plan_entry") == "QC-PLAN" and field == "name"
+			else None if isinstance(key, str) and key == "QC-JOB" and field == "output_production_lot"
+			else "EXT-LOT" if isinstance(key, dict) and key.get("plan_entry") == "EXT-PLAN" and field == "output_production_lot"
+			else "EXT-LOT" if isinstance(key, str) and key == "EXT-JOB" and field == "output_production_lot"
+			else None
+		)
+		with patch.object(physical_operation_stock, "frappe", fake_frappe), \
+			patch("smart_edge_custom.manufacturing.planning.is_mandatory_operation", return_value=True):
+			self.assertEqual(physical_operation_stock.resolve_packing_input_lot(job), "EXT-LOT")
+
+	def test_incremental_repack_retry_reuses_submitted_entry(self):
+		fake_frappe = Mock()
+		fake_frappe.get_all.return_value = [frappe._dict(name="STE-REPACK-1", docstatus=1)]
+		fake_frappe.db.exists.return_value = False
+		generator = frappe._dict(name="GEN", company="Company", finished_item="FG")
+		job = frappe._dict(name="PACK-2", good_qty=3000, actual_qty_meter=3000)
+		with patch.object(physical_operation_stock, "frappe", fake_frappe):
+			name = physical_operation_stock.post_incremental_packing_repack(
+				generator, job, frappe._dict(t_warehouse="FG"), "FG-BATCH"
+			)
+		self.assertEqual(name, "STE-REPACK-1")
+		fake_frappe.new_doc.assert_not_called()
+
+	def test_rejected_disposition_fails_closed_without_qc_roll_evidence(self):
+		with patch.object(physical_operation_stock, "enabled", return_value=True), \
+			patch.object(frappe, "throw", side_effect=frappe.ValidationError("QC inspection and rejected roll quantities")):
+			with self.assertRaisesRegex(frappe.ValidationError, "QC inspection"):
+				physical_operation_stock._validated_rejected_roll_quantity(
+					"LOT", None, None, "WIP-BATCH", 10
+				)
+
+	def test_physical_incremental_reference_is_not_accepted_as_arbitrary_repack(self):
+		from smart_edge_custom.manufacturing import planning
+		db = Mock()
+		db.get_value.side_effect = ["SmartEdge unrelated Repack", "Repack"]
+		with patch.object(planning.frappe, "db", db):
+			self.assertFalse(planning._is_valid_incremental_packing_stock_entry("STE-1", "PACK-1"))
+
+	def test_genealogy_resolves_physical_incremental_packing_job(self):
+		from smart_edge_custom.manufacturing import batch_genealogy
+		db = Mock()
+		db.get_value.return_value = frappe._dict(name="PACK-2", plan_entry="PLAN", final_eb_bom_generator="GEN")
+		stock_entry = frappe._dict(remarks="SmartEdge incremental Packing physical Repack PACK-2")
+		with patch.object(batch_genealogy.frappe, "db", db):
+			job = batch_genealogy._incremental_packing_job(stock_entry)
+		self.assertEqual(job.name, "PACK-2")
+
+	def test_existing_packing_fg_batch_loads_stock_entry_before_extracting_movements(self):
+		generator = frappe._dict(name="GEN", finished_item="FG")
+		stock_entry = frappe._dict(name="STE-REPACK-1", purpose="Repack", docstatus=1, items=[])
+		with patch.object(physical_operation_stock.frappe, "get_all", side_effect=[
+			[frappe._dict(name="PACK-1")],
+			[frappe._dict(name="STE-REPACK-1")],
+		]), patch.object(physical_operation_stock.frappe, "get_doc", return_value=stock_entry) as get_doc, \
+			patch("smart_edge_custom.manufacturing.batch_genealogy.extract_batch_movements", return_value=[
+				{"direction": "Output", "item_code": "FG", "batch_no": "FG-BATCH"},
+			]) as extract:
+			self.assertEqual(physical_operation_stock.get_packing_fg_batch(generator), "FG-BATCH")
+		get_doc.assert_called_once_with("Stock Entry", "STE-REPACK-1")
+		extract.assert_called_once_with(stock_entry)
 
 	def test_upstream_cancellation_requires_downstream_reversal(self):
 		from smart_edge_custom.manufacturing import batch_genealogy

@@ -213,6 +213,19 @@ def ensure_pending_inspection(plan_entry, source_job=None):
 	remaining = max(checkpoint_qty - root_inspected, 0)
 	if remaining <= EPSILON:
 		return None
+	# Roll-wise QC is scoped to the physical whole rolls created for the source
+	# extrusion.  The checkpoint release quantity can still include validated
+	# non-roll loss, so it is not a safe QC eligibility source.
+	if source_job:
+		from smart_edge_custom.manufacturing.roll_tracking import get_rolls_for_qc_source
+		rolls = get_rolls_for_qc_source(source_job, None)
+		eligible = sum(
+			flt(row.current_meter_quantity)
+			for row in rolls
+			if row.qc_status in {"Pending", "Awaiting Re-QC"}
+		)
+		if eligible > EPSILON:
+			remaining = min(remaining, eligible)
 	return _new_inspection(qc_entry, remaining, source_job=source_job)
 
 
@@ -320,6 +333,22 @@ def submit_decision(
 	if (values[_("Rejected Quantity")] > EPSILON or values[_("Rework Quantity")] > EPSILON) and not str(reason or "").strip():
 		frappe.throw(_("Rejection / Rework Reason is required."))
 	status = _decision_status(values[_("Accepted Quantity")], values[_("Rejected Quantity")], values[_("Rework Quantity")])
+	# Quantity-level reinspection is allowed to reconcile only when its complete
+	# inspected quantity maps to one unresolved rework roll.  This preserves the
+	# existing whole-roll model and leaves ambiguous/multi-roll cases unchanged.
+	from smart_edge_custom.manufacturing.roll_tracking import reconcile_quantity_qc_decision
+	reconcile_quantity_qc_decision(
+		quality_inspection=doc.name,
+		source_production_job=doc.custom_source_production_job if doc.custom_source_qc else None,
+		source_production_lot=doc.custom_source_production_lot if doc.custom_source_qc else None,
+		inspected_qty=values[_("Inspected Quantity")],
+		accepted_qty=values[_("Accepted Quantity")],
+		rejected_qty=values[_("Rejected Quantity")],
+		rework_qty=values[_("Rework Quantity")],
+		employee=employee,
+		reason=reason,
+		remarks=remarks,
+	)
 	updates = {
 		"custom_smartedge_qc_status": status,
 		"custom_qc_employee": employee,
@@ -368,7 +397,8 @@ def submit_decision(
 
 
 @frappe.whitelist()
-def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=None, qc_employee=None):
+def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=None, qc_employee=None,
+	accepted_qty=None, rejected_qty=None, rework_qty=None, inspected_qty=None):
 	"""Submit whole-roll QC while keeping the existing aggregate QC authority.
 
 	The roll rows are validated server-side, converted into the exact aggregate
@@ -398,6 +428,8 @@ def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=Non
 	accepted = rejected = rework = inspected = 0
 	normalized = []
 	for item in decisions:
+		if not isinstance(item, dict):
+			frappe.throw(_("Each roll QC decision must be an object."))
 		roll_id = str(item.get("roll_id") or item.get("roll") or "").strip()
 		decision = str(item.get("decision") or "").strip()
 		if roll_id in seen or roll_id not in available:
@@ -413,9 +445,29 @@ def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=Non
 			rejected += qty
 		else:
 			rework += qty
-		normalized.append((roll_id, decision))
+		measurement = {
+			key: item.get(key) for key in (
+				"width", "thickness", "color_match", "design_match",
+				"surface_appearance", "print_quality",
+			) if item.get(key) not in (None, "")
+		}
+		for key in ("width", "thickness"):
+			if key in measurement:
+				try:
+					measurement[key] = float(measurement[key])
+				except (TypeError, ValueError):
+					frappe.throw(_("{0} must be a valid number for Roll {1}.").format(key.title(), roll_id))
+				if not math.isfinite(measurement[key]) or measurement[key] < 0:
+					frappe.throw(_("{0} cannot be negative for Roll {1}.").format(key.title(), roll_id))
+		normalized.append((roll_id, decision, measurement))
 	if abs(inspected - flt(doc.custom_eligible_qty)) > EPSILON:
 		frappe.throw(_("All eligible whole rolls must be classified; selected rolls total {0} m but the QC inspection is eligible for {1} m.").format(inspected, doc.custom_eligible_qty))
+	if inspected_qty not in (None, "") and abs(round_meter_quantity(inspected_qty) - inspected) > EPSILON:
+		frappe.throw(_("Inspected Quantity must match the whole-roll classifications."))
+	expected = {"accepted": accepted, "rejected": rejected, "rework": rework}
+	for label, supplied in (("accepted", accepted_qty), ("rejected", rejected_qty), ("rework", rework_qty)):
+		if supplied not in (None, "") and abs(round_meter_quantity(supplied) - expected[label]) > EPSILON:
+			frappe.throw(_("{0} Quantity must match the whole-roll classifications.").format(label.title()))
 	result = submit_decision(
 		quality_inspection=quality_inspection, inspected_qty=inspected,
 		accepted_qty=accepted, rejected_qty=rejected, rework_qty=rework,
@@ -423,8 +475,11 @@ def submit_roll_decision(quality_inspection, decisions, reason=None, remarks=Non
 	)
 	employee = qc_employee or doc.custom_qc_employee
 	from smart_edge_custom.manufacturing.roll_tracking import set_roll_qc_decision
-	for roll_id, decision in normalized:
-		set_roll_qc_decision(roll_id, decision, quality_inspection=quality_inspection, employee=employee, reason=reason)
+	for roll_id, decision, measurement in normalized:
+		set_roll_qc_decision(
+			roll_id, decision, quality_inspection=quality_inspection, employee=employee,
+			reason=reason, remarks=json.dumps(measurement, sort_keys=True) if measurement else remarks,
+		)
 	return {"quality_inspection": quality_inspection, "accepted_qty": accepted, "rejected_qty": rejected, "rework_qty": rework, "rolls": [row[0] for row in normalized], "context": result}
 
 
@@ -436,7 +491,8 @@ def get_rolls_for_qc(quality_inspection):
 		return []
 	from smart_edge_custom.manufacturing.roll_tracking import get_rolls_for_qc_source
 	return [
-		{"roll_id": row.name, "current_meter_quantity": row.current_meter_quantity, "decision": ""}
+		{"roll_id": row.name, "current_meter_quantity": row.current_meter_quantity, "width": None, "thickness": None,
+		 "color_match": "", "design_match": "", "surface_appearance": "", "print_quality": "", "decision": ""}
 		for row in get_rolls_for_qc_source(doc.custom_source_production_job, doc.custom_source_production_lot)
 		if row.qc_status in {"Pending", "Awaiting Re-QC"}
 	]
@@ -711,6 +767,9 @@ def get_qc_context(plan_entry):
 		"eligible_qty": flt(active.custom_eligible_qty) if active else max(
 			flt(entry.get("released_qty_meter")) - flt(data.root_inspected_qty), 0
 		),
+		# Expose the persisted inspection value for the Submit QC Decision form;
+		# this is binding data only and does not alter QC quantity calculations.
+		"inspected_qty": flt(current.custom_inspected_qty) if current else None,
 		"accepted_qty": flt(data.accepted_qty),
 		"rejected_qty": flt(data.rejected_qty),
 		"rework_qty": flt(data.unresolved_rework_qty),

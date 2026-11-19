@@ -72,6 +72,8 @@
   "input_production_lot",
   "output_production_lot",
   "quality_inspection",
+  "rework_roll",
+  "rework_quality_inspection",
   "released_to_plan_entry",
   "manufacturing_stock_entry",
   "material_transfer_stock_entry",
@@ -424,6 +426,20 @@
    "fieldname": "quality_inspection",
    "fieldtype": "Link",
    "label": "Quality Inspection",
+   "options": "Quality Inspection",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rework_roll",
+   "fieldtype": "Link",
+   "label": "Rework Roll",
+   "options": "SmartEdge Roll",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rework_quality_inspection",
+   "fieldtype": "Link",
+   "label": "Rework Quality Inspection",
    "options": "Quality Inspection",
    "read_only": 1
   },

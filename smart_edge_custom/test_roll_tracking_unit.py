@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 
@@ -75,6 +75,72 @@ class TestRollTrackingUnit(unittest.TestCase):
 		self.assertEqual(roll.process_status, "Available for Packing")
 		self.assertEqual(roll.packing_status, "Available")
 		self.assertEqual(len(roll.operation_history), 1)
+
+	def test_quantity_reinspection_reduces_same_roll_and_releases_accepted_portion(self):
+		roll = FakeRoll("SE-ROLL-1", 6407)
+		with patch.object(roll_tracking, "get_rolls_for_qc_source", return_value=[roll]), patch.object(roll_tracking.frappe, "get_doc", return_value=roll), patch.object(roll_tracking, "_save_roll"), patch.object(roll_tracking, "now_datetime", return_value="2026-11-18 18:46:48"):
+			result = roll_tracking.reconcile_quantity_qc_decision(
+				"MAT-QA-1", "SE-JOB-1", "LOT-1", 6407, 6000, 407, 0,
+				reason="Reinspection rejection", remarks="Partial loss",
+			)
+		self.assertEqual(result, "SE-ROLL-1")
+		self.assertEqual(roll.original_meter_quantity, 6407)
+		self.assertEqual(roll.current_meter_quantity, 6000)
+		self.assertEqual(roll.qc_status, "Passed")
+		self.assertEqual(roll.process_status, "Available for Packing")
+		self.assertEqual(roll.packing_status, "Available")
+		self.assertEqual(roll.operation_history[-1]["meter_loss"], 407)
+
+	def test_quantity_reinspection_is_idempotent(self):
+		roll = FakeRoll("SE-ROLL-1", 6000, status="Available for Packing", qc="Passed")
+		roll.operation_history.append({"related_quality_inspection": "MAT-QA-1"})
+		with patch.object(roll_tracking, "get_rolls_for_qc_source", return_value=[roll]), patch.object(roll_tracking.frappe, "get_doc", return_value=roll):
+			result = roll_tracking.reconcile_quantity_qc_decision("MAT-QA-1", "SE-JOB-1", "LOT-1", 6407, 6000, 407, 0)
+		self.assertEqual(result, "SE-ROLL-1")
+		self.assertEqual(len(roll.operation_history), 1)
+
+	def test_quantity_reinspection_with_unresolved_rework_does_not_release_roll(self):
+		roll = FakeRoll("SE-ROLL-1", 6407)
+		with patch.object(roll_tracking, "get_rolls_for_qc_source", return_value=[roll]):
+			result = roll_tracking.reconcile_quantity_qc_decision("MAT-QA-1", "SE-JOB-1", "LOT-1", 6407, 6000, 0, 407)
+		self.assertIsNone(result)
+		self.assertEqual(roll.process_status, "In Rework")
+
+	def test_quantity_reinspection_rejects_unbalanced_values(self):
+		roll = FakeRoll("SE-ROLL-1", 6407)
+		with patch.object(roll_tracking, "get_rolls_for_qc_source", return_value=[roll]):
+			result = roll_tracking.reconcile_quantity_qc_decision("MAT-QA-1", "SE-JOB-1", "LOT-1", 6407, 6000, 406, 0)
+		self.assertIsNone(result)
+		self.assertEqual(roll.process_status, "In Rework")
+
+	def test_final_fg_batch_is_linked_only_from_submitted_receipt(self):
+		set_value = MagicMock()
+		fake_db = SimpleNamespace(
+			exists=lambda doctype, name: True,
+			get_value=lambda doctype, name, fields, **kwargs: (
+				1 if doctype == "Stock Entry" and fields == "docstatus"
+				else "FG-ITEM" if doctype == "Final EB BOM Generator"
+				else frappe._dict(item="FG-ITEM", reference_name="STE-1")
+			),
+			set_value=set_value,
+		)
+		meta = SimpleNamespace(has_field=lambda fieldname: fieldname == "final_fg_batch")
+		job = frappe._dict(name="PACK-JOB", operation="Packing", final_eb_bom_generator="GEN")
+		roll = frappe._dict(
+			name="SE-ROLL-1", finished_item="FG-ITEM", final_fg_batch=None,
+			qc_status="Passed", process_status="Packed", packing_status="Packed",
+		)
+		with patch.object(roll_tracking.frappe, "db", fake_db), \
+			patch.object(roll_tracking.frappe, "get_meta", return_value=meta), \
+			patch.object(roll_tracking.frappe, "get_doc", return_value=frappe._dict(name="STE-1", items=[])), \
+			patch.object(roll_tracking.frappe, "get_all", side_effect=[[job], [roll]]), \
+			patch("smart_edge_custom.manufacturing.batch_genealogy.extract_batch_movements", return_value=[
+				{"direction": "Output", "batch_no": "FG-BATCH-1", "item_code": "FG-ITEM"}
+			]):
+			result = roll_tracking.link_packed_rolls_to_finished_batch("STE-1", "GEN")
+		self.assertEqual(result["batch"], "FG-BATCH-1")
+		self.assertEqual(result["linked"], 1)
+		set_value.assert_called_once_with("SmartEdge Roll", "SE-ROLL-1", "final_fg_batch", "FG-BATCH-1", update_modified=False)
 
 
 if __name__ == "__main__":

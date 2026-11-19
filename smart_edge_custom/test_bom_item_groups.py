@@ -16,11 +16,12 @@ class TestBOMItemGroups(unittest.TestCase):
 		frappe.db.savepoint(self.savepoint)
 		self.addCleanup(frappe.db.rollback, save_point=self.savepoint)
 		self.company = frappe.db.get_value("Company", {}, "name")
+		TestBOMItemGroups._ensure_finished_goods_masters()
 		self.items = {}
 		for group in ("Compounds", "Base Colour", "Additives", "Pigments", "Finished Goods"):
 			if not frappe.db.exists("Item Group", group):
 				frappe.get_doc({"doctype": "Item Group", "item_group_name": group, "parent_item_group": "All Item Groups"}).insert()
-			item = frappe.get_doc({
+			item_values = {
 				"doctype": "Item",
 				"item_code": "BOM-GROUP-" + uuid4().hex[:12],
 				"item_name": "BOM group test " + group,
@@ -32,8 +33,32 @@ class TestBOMItemGroups(unittest.TestCase):
 				"valuation_rate": 2,
 				"has_batch_no": int(group in ("Compounds", "Base Colour")),
 				"create_new_batch": int(group in ("Compounds", "Base Colour")),
-			}).insert(ignore_permissions=True, ignore_mandatory=True)
+			}
+			if group == "Finished Goods":
+				item_values.update({
+					"custom_size": "TEST-BOM-SIZE",
+					"custom_color": "TEST-BOM-COLOR",
+					"custom_product_category": "TEST-BOM-CATEGORY",
+					"custom_product_type_design_category": "TEST-BOM-MATERIAL-TYPE",
+					"custom_type_finish": "TEST-BOM-FINISH",
+					"gst_hsn_code": "39169090",
+				})
+			item = frappe.get_doc(item_values).insert(ignore_permissions=True, ignore_mandatory=True)
 			self.items[group] = item.name
+
+	@staticmethod
+	def _ensure_finished_goods_masters():
+		masters = (
+			("Size Weight", {"size_name": "TEST-BOM-SIZE", "width": 22, "thickness": 0.4, "factor": 1}),
+			("Color", {"name": "TEST-BOM-COLOR", "color": "#123456"}),
+			("Item Category", {"category_name": "TEST-BOM-CATEGORY"}),
+			("Material Type", {"material_type_name": "TEST-BOM-MATERIAL-TYPE"}),
+			("PVC Type Finish", {"type_finish": "TEST-BOM-FINISH", "abbreviation": "TBF"}),
+		)
+		for doctype, values in masters:
+			name = values.get("name") or next(iter(values.values()))
+			if not frappe.db.exists(doctype, name):
+				frappe.get_doc({"doctype": doctype, **values}).insert(ignore_permissions=True)
 
 	def make_bom(self, parent, component):
 		return frappe.get_doc({
@@ -172,7 +197,10 @@ class TestBOMItemGroups(unittest.TestCase):
 				bom.items[0].conversion_factor = 0.001
 				bom.items[0].qty = 125
 				bom.save()
-				self.assertEqual(bom.quantity, 0.375)
+				self.assertEqual(
+					bom.quantity,
+					frappe.utils.flt(0.375, frappe.get_precision("BOM", "quantity")),
+				)
 
 	def test_quantity_precision_and_incompatible_units(self):
 		from smart_edge_custom.bom import get_bom_quantity

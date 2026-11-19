@@ -55,7 +55,7 @@ MOVEMENT_FIELDS = [
 
 def sync_genealogy_from_stock_entry(doc, method=None):
 	"""Stock Entry hook: observe submitted manufacturing evidence without changing stock."""
-	if doc.purpose != "Manufacture" and not (doc.purpose == "Repack" and (doc.get("remarks") or "").startswith("SmartEdge physical operation ")):
+	if not _is_genealogy_stock_entry(doc):
 		return
 	if cint(doc.docstatus) == 2 or method == "on_cancel":
 		mark_stock_entry_cancelled(doc.name)
@@ -75,11 +75,22 @@ def refresh_genealogy_from_production_job(doc, method=None):
 def capture_stock_entry(stock_entry):
 	if isinstance(stock_entry, str):
 		stock_entry = frappe.get_doc("Stock Entry", stock_entry)
-	if (stock_entry.purpose != "Manufacture" and not (stock_entry.purpose == "Repack" and (stock_entry.get("remarks") or "").startswith("SmartEdge physical operation "))) or cint(stock_entry.docstatus) != 1:
+	if not _is_genealogy_stock_entry(stock_entry) or cint(stock_entry.docstatus) != 1:
 		return {"created": 0, "updated": 0, "skipped": 0}
 
 	movements = extract_batch_movements(stock_entry)
 	context = get_manufacturing_context(stock_entry, movements)
+	consuming_context = next(
+		(
+			row for row in context.get("operation_context") or []
+			if row.get("input_batches")
+		),
+		None,
+	)
+	finished_item = (
+		frappe.db.get_value("Final EB BOM Generator", context.get("final_eb_bom_generator"), "finished_item")
+		if context.get("final_eb_bom_generator") else None
+	)
 	created = updated = skipped = 0
 	active_keys = set()
 	for movement in movements:
@@ -87,6 +98,18 @@ def capture_stock_entry(stock_entry):
 			skipped += 1
 			continue
 		movement.update(context)
+		# A final Manufacture Stock Entry can be owned by the first Packing job,
+		# while its raw-material inputs were consumed by the Extrusion operation.
+		# Keep physical WIP Repack inputs (same finished item) on their Packing job.
+		if (
+			movement.get("direction") == "Input"
+			and finished_item
+			and movement.get("item_code") != finished_item
+			and consuming_context
+		):
+			for fieldname in ("production_job", "plan_entry", "operation", "workstation", "employee", "actual_start", "actual_end"):
+				if consuming_context.get(fieldname) is not None:
+					movement[fieldname] = consuming_context[fieldname]
 		movement["quality_inspection"] = movement.get("quality_inspection") or context.get(
 			"quality_inspection"
 		)
@@ -120,6 +143,15 @@ def capture_stock_entry(stock_entry):
 	return {"created": created, "updated": updated, "skipped": skipped}
 
 
+def _is_genealogy_stock_entry(stock_entry):
+	remarks = stock_entry.get("remarks") or ""
+	return stock_entry.purpose == "Manufacture" or (
+		stock_entry.purpose == "Repack" and remarks.startswith("SmartEdge physical operation ")
+	) or (
+		stock_entry.purpose == "Material Receipt" and remarks.startswith("SmartEdge incremental Packing receipt ")
+	)
+
+
 def mark_stock_entry_cancelled(stock_entry):
 	frappe.db.set_value(
 		MOVEMENT_DOCTYPE,
@@ -135,7 +167,12 @@ def extract_batch_movements(stock_entry, bundle_loader=None):
 	bundle_loader = bundle_loader or _load_bundle_entries
 	result = []
 	for row in stock_entry.get("items") or []:
-		direction = get_row_direction(row)
+		incremental_receipt = (
+			stock_entry.purpose == "Material Receipt"
+			and (stock_entry.get("remarks") or "").startswith("SmartEdge incremental Packing receipt ")
+			and row.get("t_warehouse") and not row.get("s_warehouse")
+		)
+		direction = "Output" if incremental_receipt else get_row_direction(row)
 		if not direction:
 			continue
 		batch_quantities = defaultdict(float)
@@ -283,6 +320,13 @@ def _get_plan_entries(stock_entry):
 			limit_page_length=20,
 		)
 	)
+	incremental_job = _incremental_packing_job(stock_entry)
+	if incremental_job:
+		rows.extend(frappe.get_all(
+			"SmartEdge Production Plan Entry",
+			filters={"name": incremental_job.plan_entry, "status": ["!=", "Cancelled"]},
+			fields=fields,
+		))
 	return _unique_rows(rows)
 
 
@@ -299,6 +343,13 @@ def _get_production_jobs(stock_entry, plan_entries):
 		order_by="actual_end desc, modified desc",
 		limit_page_length=100,
 	)
+	incremental_job = _incremental_packing_job(stock_entry)
+	if incremental_job:
+		rows.extend(frappe.get_all(
+			"SmartEdge Production Job",
+			filters={"name": incremental_job.name, "status": ["!=", "Cancelled"]},
+			fields=fields,
+		))
 	plan_names = [row.name for row in plan_entries]
 	if plan_names:
 		rows.extend(
@@ -311,6 +362,23 @@ def _get_production_jobs(stock_entry, plan_entries):
 			)
 		)
 	return _unique_rows(rows)
+
+
+def _incremental_packing_job(stock_entry):
+	remarks = stock_entry.get("remarks") if hasattr(stock_entry, "get") else frappe.db.get_value("Stock Entry", stock_entry, "remarks")
+	remarks = remarks or ""
+	for prefix in (
+		"SmartEdge incremental Packing receipt ",
+		"SmartEdge incremental Packing physical Repack ",
+	):
+		if remarks.startswith(prefix):
+			name = remarks[len(prefix):].strip()
+			if name:
+				return frappe.db.get_value(
+					"SmartEdge Production Job", name,
+					["name", "plan_entry", "final_eb_bom_generator"], as_dict=True,
+				)
+	return None
 
 
 def _get_route_operation_jobs(stock_entry, directly_related_jobs):
@@ -451,7 +519,7 @@ def _serialize_movement(row):
 
 
 def _serialize_job_context(job):
-	return {
+	result = {
 		"production_job": job.name,
 		"operation": job.operation,
 		"planning_category": job.get("planning_category"),
@@ -470,6 +538,15 @@ def _serialize_job_context(job):
 		"usable_scrap": job.usable_scrap,
 		"unusable_scrap": job.unusable_scrap,
 	}
+	if "pack" in str(job.get("planning_category") or "").lower() or "pack" in str(job.get("operation") or "").lower():
+		result["packed_rolls"] = frappe.get_all(
+			"SmartEdge Roll",
+			filters={"packing_job": job.name},
+			fields=["name", "original_meter_quantity", "current_meter_quantity", "qc_status", "packing_status"],
+			order_by="name asc",
+			limit_page_length=500,
+		)
+	return result
 
 
 def get_manufacturing_stage(stock_entry, plan_entries, operations):

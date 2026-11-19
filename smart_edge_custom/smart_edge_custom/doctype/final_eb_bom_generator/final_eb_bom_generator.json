@@ -24,6 +24,7 @@
   "weight_per_meter_kg",
   "fp_col_2",
   "status",
+  "stock_posting_mode",
   "production_status",
   "final_manufacturing_stock_entry",
   "final_stock_posted_qty",
@@ -136,6 +137,14 @@
    "label": "Production Lifecycle Status",
    "options": "Draft\nReady for Planning\nPartially Planned\nPlanned\nIn Production\nCompleted\nOn Hold\nCancelled",
    "read_only": 1
+  },
+  {
+   "default": "Legacy Non-Stock",
+   "fieldname": "stock_posting_mode",
+   "fieldtype": "Select",
+   "label": "Stock Posting Mode",
+   "options": "Legacy Non-Stock\nPhysical WIP",
+   "reqd": 1
   },
   {
    "fieldname": "final_manufacturing_stock_entry",

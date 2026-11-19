@@ -27,7 +27,7 @@ def make_fake_frappe(exists=None, get_value=None, get_all=None, get_list=None, g
 
 
 class TestWorkstationOptionResolution(TestCase):
-	def test_default_operation_exposes_active_workstations(self):
+	def test_every_operation_exposes_all_active_workstations(self):
 		fake_frappe = make_fake_frappe(
 			exists=lambda doctype, name: doctype == "Operation",
 			get_value=lambda doctype, name, fieldname, *args: "Mixer-1" if doctype == "Operation" else None,
@@ -35,47 +35,38 @@ class TestWorkstationOptionResolution(TestCase):
 		with (
 			patch.object(planning, "frappe", fake_frappe),
 			patch.object(planning, "get_active_workstations", return_value=["Mixer-2", "Mixer-1"]),
-			patch.object(planning, "filter_enabled_workstations", side_effect=lambda values: values),
 		):
 			workstations = planning.get_compatible_workstations("Mixing", include_all_active=1)
 
-		self.assertEqual(workstations, ["Mixer-1", "Mixer-2"])
+		self.assertEqual(workstations, ["Mixer-2", "Mixer-1"])
 
-	def test_explicit_operation_mapping_remains_restricted(self):
+	def test_route_mapping_does_not_restrict_active_workstations(self):
 		fake_frappe = make_fake_frappe(
 			exists=lambda doctype, name: doctype == "Operation"
 			or (doctype == "DocType" and name == "SmartEdge Operation Workstation"),
 			get_value=lambda doctype, name, fieldname, *args: "Mixer-1" if doctype == "Operation" else None,
-			get_all=lambda doctype, **kwargs: [SimpleNamespace(workstation="Dedicated-Mixer")],
 		)
 		with (
 			patch.object(planning, "frappe", fake_frappe),
-			patch.object(planning, "get_active_workstations") as active_workstations,
-			patch.object(planning, "filter_enabled_workstations", side_effect=lambda values: values),
+			patch.object(planning, "get_active_workstations", return_value=["Extruder-1", "Single Mould Extrusion"]),
 		):
-			workstations = planning.get_compatible_workstations("Mixing", include_all_active=1)
+			workstations = planning.get_compatible_workstations("Single Mould Extrusion", include_all_active=1)
 
-		self.assertEqual(workstations, ["Dedicated-Mixer", "Mixer-1"])
-		active_workstations.assert_not_called()
+		self.assertEqual(workstations, ["Extruder-1", "Single Mould Extrusion"])
 
-	def test_workstation_type_remains_the_eligibility_boundary(self):
+	def test_operation_row_and_workstation_type_do_not_restrict_results(self):
 		fake_frappe = make_fake_frappe(
 			exists=lambda doctype, name: doctype == "Operation",
-			get_value=lambda doctype, name, fieldname, *args: (
-				"Mixer-1" if doctype == "Operation" else "Mixer Type"
-			),
-			get_all=lambda doctype, **kwargs: [
-				SimpleNamespace(name="Mixer-1"),
-				SimpleNamespace(name="Mixer-2"),
-			],
 		)
 		with (
 			patch.object(planning, "frappe", fake_frappe),
-			patch.object(planning, "filter_enabled_workstations", side_effect=lambda values: values),
+			patch.object(planning, "get_active_workstations", return_value=["Mixer-1", "Extruder-1"]),
 		):
-			workstations = planning.get_compatible_workstations("Mixing", include_all_active=1)
+			workstations = planning.get_compatible_workstations(
+				"Single Mould Extrusion", operation_row="FEB-OP-1", include_all_active=1
+			)
 
-		self.assertEqual(workstations, ["Mixer-1", "Mixer-2"])
+		self.assertEqual(workstations, ["Mixer-1", "Extruder-1"])
 
 	def test_disabled_or_inaccessible_workstations_are_filtered(self):
 		fake_frappe = make_fake_frappe(get_list=lambda doctype, **kwargs: ["Mixer-2"])
@@ -86,7 +77,7 @@ class TestWorkstationOptionResolution(TestCase):
 			)
 		fake_frappe.get_list.assert_called_once()
 
-	def test_server_rejects_ineligible_selected_workstation(self):
+	def test_server_accepts_any_active_selected_workstation(self):
 		class Workstation:
 			disabled = 0
 
@@ -101,12 +92,8 @@ class TestWorkstationOptionResolution(TestCase):
 			exists=lambda doctype, name: True,
 			get_doc=lambda doctype, name: workstation,
 		)
-		with (
-			patch.object(planning, "frappe", fake_frappe),
-			patch.object(planning, "get_compatible_workstations", return_value=["Mixer-1"]),
-		):
-			with self.assertRaises(frappe.ValidationError):
-				planning.validate_workstation_compatibility("Mixing", None, "Mixer-2")
+		with patch.object(planning, "frappe", fake_frappe):
+			planning.validate_workstation_compatibility("Mixing", None, "Mixer-2")
 
 	def test_schedule_persists_the_selected_workstation(self):
 		class PlanEntry:
