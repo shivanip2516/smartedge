@@ -15,14 +15,14 @@ vm.runInContext(fs.readFileSync(require.resolve("./public/js/batch_list.js"), "u
 const settings = context.frappe.listview_settings.Batch;
 assert.equal(JSON.stringify(settings.get_indicator({ batch_qty: 10 })), active);
 assert.equal(settings.get_indicator({ disabled: 1 })[0], "Disabled");
-assert.equal(settings.get_indicator({ disabled: 1, batch_qty: 0, custom_batch_purpose: "Operation Traceability" })[0], "Completed — Traceability");
+assert.equal(JSON.stringify(settings.get_indicator({ disabled: 1, batch_qty: 0, custom_batch_purpose: "Operation Traceability" })), JSON.stringify(settings.get_indicator({ disabled: 1, batch_qty: 0, custom_batch_purpose: "Physical Stock" })));
 assert.ok(settings.add_fields.includes("custom_operation_name"));
 assert.ok(settings.add_fields.includes("reference_name"));
 assert.ok(settings.add_fields.includes("item_name"));
 assert.equal(settings.filters, undefined);
 assert.ok(settings.add_fields.includes("batch_qty"));
-assert.equal(context.frappe.get_indicator({ disabled: 1, custom_batch_purpose: "Operation Traceability" }, "Batch")[0], "Completed — Traceability");
+assert.equal(JSON.stringify(context.frappe.get_indicator({ disabled: 1, custom_batch_purpose: "Operation Traceability" }, "Batch")), JSON.stringify(context.frappe.get_indicator({ disabled: 1, custom_batch_purpose: "Physical Stock" }, "Batch")));
 assert.equal(context.frappe.get_indicator({ disabled: 1 }, "Batch")[0], "Disabled");
 assert.equal(context.frappe.get_indicator({ batch_qty: 10 }, "Batch")[0], "Active");
-assert.equal(settings.get_indicator({ disabled: 0, batch_qty: 0, custom_batch_purpose: "Operation Traceability" })[0], "Completed — Traceability");
-console.log("Standard Batch List: trace indicator, physical indicators, Item/job fields and default filters verified");
+assert.equal(JSON.stringify(settings.get_indicator({ disabled: 0, batch_qty: 0, custom_batch_purpose: "Operation Traceability" })), JSON.stringify(settings.get_indicator({ disabled: 0, batch_qty: 0, custom_batch_purpose: "Physical Stock" })));
+console.log("Standard Batch List: indicators are independent of custom_batch_purpose");

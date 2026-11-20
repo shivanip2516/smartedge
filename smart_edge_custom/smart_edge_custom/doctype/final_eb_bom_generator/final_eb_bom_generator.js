@@ -1,5 +1,9 @@
 frappe.ui.form.on("Final EB BOM Generator", {
 	setup(frm) {
+		if (frm.is_new() && !frm.doc.stock_posting_mode) {
+			frm.set_value("stock_posting_mode", "Physical WIP");
+		}
+
 		frm.set_query("finished_item", () => ({
 			filters: {
 				include_item_in_manufacturing: 1,

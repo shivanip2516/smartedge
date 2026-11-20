@@ -19,7 +19,9 @@ class FinalEBBOMGenerator(Document):
 		if not self.production_status:
 			self.production_status = get_generator_lifecycle_status(self)
 		if not self.stock_posting_mode:
-			self.stock_posting_mode = "Legacy Non-Stock"
+			# New generators opt into physical WIP.  Existing documents retain
+			# their persisted mode and are never retroactively converted.
+			self.stock_posting_mode = "Physical WIP"
 
 	def before_insert(self):
 		if not self.company:

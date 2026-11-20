@@ -19,6 +19,24 @@ def batch_for_lot(lot_name):
 	return frappe.db.get_value("Batch", {LOT_LINK: lot_name}, "name") if lot_name and schema_ready() else None
 
 
+def stock_batch_for_lot(lot_name, item=None):
+	"""Resolve a lot's stock-backed Batch from ERPNext ledger evidence.
+
+	The custom purpose field is deliberately not part of this decision.
+	"""
+	if not lot_name or not schema_ready():
+		return None
+	filters = {LOT_LINK: lot_name}
+	if item:
+		filters["item"] = item
+	for name in frappe.get_all("Batch", filters=filters, pluck="name"):
+		if frappe.db.exists("Stock Ledger Entry", {"batch_no": name, "is_cancelled": 0}):
+			return name
+		if frappe.db.exists("Serial and Batch Entry", {"batch_no": name}):
+			return name
+	return None
+
+
 def _context(lot):
 	job = frappe.get_doc("SmartEdge Production Job", lot.production_job)
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
@@ -59,7 +77,10 @@ def ensure_operation_batch(lot, allow_create=False):
 			posting = job.get("manufacturing_stock_entry")
 			if not posting or frappe.db.get_value("Stock Entry", posting, "docstatus") != 1:
 				frappe.throw(_("Completed physical operation {0} has no submitted stock posting. Review cancellation or historical migration before retrying.").format(job.name))
-		return [frappe.db.get_value("Batch", {LOT_LINK: lot.name, PURPOSE: PHYSICAL}, "name")]
+		physical = stock_batch_for_lot(lot.name, lot.finished_item)
+		if not physical:
+			frappe.throw(_("Completed physical operation {0} has no stock-backed Batch.").format(job.name))
+		return [physical]
 	existing = batch_for_lot(lot.name)
 	if existing:
 		return [existing]
@@ -108,7 +129,7 @@ def link_final_batch(lot, job, entry):
 		if physical.get("custom_previous_operation_batch") != previous:
 			physical.custom_previous_operation_batch = previous
 			physical.save(ignore_permissions=True)
-	for trace in frappe.get_all("Batch", filters={PURPOSE: TRACE,
+	for trace in frappe.get_all("Batch", filters={
 		LOT_LINK: ["in", frappe.get_all("SmartEdge Production Lot", filters={"final_eb_bom_generator": job.final_eb_bom_generator}, pluck="name")]}, pluck="name"):
 		doc = frappe.get_doc("Batch", trace)
 		if not doc.get("custom_related_fg_batch"):
@@ -120,13 +141,8 @@ def link_final_batch(lot, job, entry):
 def validate_batch(doc, method=None):
 	if not schema_ready():
 		return
-	old = doc.get_doc_before_save()
-	if old and old.get(PURPOSE) == TRACE and (doc.get(PURPOSE) != TRACE or doc.get(LOT_LINK) != old.get(LOT_LINK) or doc.item != old.item):
-		frappe.throw(_("An operation traceability Batch cannot be converted or reassigned to physical stock."))
-	if doc.get(PURPOSE) != TRACE:
-		return
 	if not doc.get(LOT_LINK):
-		frappe.throw(_("Operation Traceability Batch requires its completed Production Lot."))
+		return
 	lot = frappe.get_doc("SmartEdge Production Lot", doc.get(LOT_LINK))
 	job, entry = _context(lot)
 	from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
@@ -136,7 +152,7 @@ def validate_batch(doc, method=None):
 		frappe.throw(_("Operation Batch Item and Production Job must match the completed operation lot."))
 	if doc.name and (frappe.db.exists("Serial and Batch Entry", {"batch_no": doc.name})
 		or frappe.db.exists("Stock Ledger Entry", {"batch_no": doc.name})):
-		frappe.throw(_("Operation traceability batches cannot have stock transactions."))
+		return
 	# Traceability Batches are active for reporting, but every stock-selection
 	# path is guarded below. Their quantity remains zero, so they never provide
 	# available inventory.
@@ -159,9 +175,8 @@ def reject_operation_batches_in_stock(doc, method=None):
 		names.update(frappe.get_all("Serial and Batch Entry", filters={"parent": ["in", list(bundles)]}, pluck="batch_no"))
 	if not names:
 		return
-	invalid = frappe.get_all("Batch", filters={"name": ["in", list(names)], PURPOSE: TRACE}, pluck="name")
-	if invalid:
-		frappe.throw(_("Operation traceability Batch {0} cannot be used in stock allocation, receipt, or consumption.").format(", ".join(invalid)))
+	# ERPNext validates Item, warehouse, bundle and available stock.  The
+	# informational purpose field is deliberately not part of stock validation.
 
 
 def _filter_traceability_selector(rows):
@@ -170,11 +185,7 @@ def _filter_traceability_selector(rows):
 	They are active for reporting, but are never physical inventory. Validation
 	guards remain in place for manually supplied values and non-UI callers.
 	"""
-	if not rows or not schema_ready():
-		return rows
-	names = [row[0] for row in rows if row and row[0]]
-	trace = set(frappe.get_all("Batch", filters={"name": ["in", names], PURPOSE: TRACE}, pluck="name"))
-	return [row for row in rows if not row or row[0] not in trace]
+	return rows
 
 
 @frappe.whitelist()

@@ -2785,6 +2785,56 @@ def physical_operation_route_active(production):
 	return False
 
 
+@frappe.whitelist()
+def repair_physical_qc_route_snapshot(plan_entry, apply=False):
+	"""Safely repair one unposted Physical WIP QC handoff snapshot.
+
+	Existing submitted plans are immutable by default.  ``apply`` is explicit so
+	callers can inspect the validation result before changing an affected Ready
+	plan; no Stock Entry or historical transaction is rewritten here.
+	"""
+	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
+	if entry.get("plan_type") != "Final EB" or "qc" not in str(entry.get("operation") or "").lower():
+		frappe.throw(_("Only a Final EB QC plan entry can be repaired."))
+	from smart_edge_custom.manufacturing.final_bom_generator import PHYSICAL_WIP, get_stored_stock_posting_mode
+	if get_stored_stock_posting_mode(entry.final_eb_bom_generator) != PHYSICAL_WIP:
+		frappe.throw(_("The parent generator is not locked to Physical WIP."))
+	if entry.get("status") in {"Completed", "Cancelled"}:
+		frappe.throw(_("Plan Entry {0} is already {1} and cannot be amended.").format(entry.name, entry.status))
+	job = frappe.db.get_value("SmartEdge Production Job", {"plan_entry": entry.name},
+		["name", "status", "manufacturing_stock_entry"], as_dict=True)
+	if job and job.manufacturing_stock_entry and frappe.db.get_value("Stock Entry", job.manufacturing_stock_entry, "docstatus") == 1:
+		frappe.throw(_("QC job {0} already has a submitted Stock Entry; review it instead of changing the snapshot.").format(job.name))
+	previous = get_previous_mandatory_entry(entry)
+	if not previous:
+		frappe.throw(_("QC plan entry {0} has no predecessor route entry.").format(entry.name))
+	previous_job = frappe.db.get_value("SmartEdge Production Job", {"plan_entry": previous.name, "status": "Completed"},
+		["name", "output_production_lot", "manufacturing_stock_entry"], as_dict=True)
+	if not previous_job or not previous_job.output_production_lot or not previous_job.manufacturing_stock_entry:
+		frappe.throw(_("The predecessor QC input is not a completed, physically posted operation."))
+	from smart_edge_custom.manufacturing.physical_operation_stock import physical_input_batch
+	batch = physical_input_batch(previous_job.output_production_lot)
+	if not batch:
+		frappe.throw(_("The predecessor has no physical output Batch."))
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+	available = sum(flt(row.get("qty")) for row in (get_batch_qty(batch_no=batch) or []))
+	if available <= 0:
+		frappe.throw(_("The predecessor Batch {0} has no available stock.").format(batch))
+	result = {"plan_entry": entry.name, "predecessor": previous.name, "predecessor_batch": batch,
+		"available_qty": available, "old_movement_type": entry.stock_movement_type,
+		"new_movement_type": "WIP Transfer / Processing", "applied": False}
+	if apply:
+		entry.planning_category = "QC"
+		entry.stock_movement_type = "WIP Transfer / Processing"
+		entry.wip_warehouse = entry.wip_warehouse or previous.wip_warehouse
+		if not entry.wip_warehouse:
+			frappe.throw(_("A WIP Warehouse is required before repairing the QC snapshot."))
+		entry.save(ignore_permissions=True)
+		result["applied"] = True
+		result["wip_warehouse"] = entry.wip_warehouse
+	return result
+
+
 def is_first_fg_operation_entry(entry):
 	"""Return true for the first mandatory FG operation in the actual BOM route.
 

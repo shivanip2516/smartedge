@@ -15,6 +15,24 @@ WIP_PROCESSING = "WIP Transfer / Processing"
 PHYSICAL_TYPES = {STOCKABLE_OUTPUT, WIP_PROCESSING}
 
 
+def _posting_log(entry, reason, **details):
+	"""Emit one compact diagnostic record for physical-posting decisions."""
+	try:
+		context = {
+			"plan_entry": entry.get("name") if entry else None,
+			"generator": entry.get("final_eb_bom_generator") if entry else None,
+			"operation": entry.get("operation") if entry else None,
+			"sequence": entry.get("sequence") if entry else None,
+			"movement_type": movement_type(entry),
+			"reason": reason,
+			**details,
+		}
+		frappe.logger("smartedge.physical_operation_stock").info(context)
+	except Exception:
+		# Diagnostics must never affect completion or rollback behavior.
+		pass
+
+
 def enabled():
 	return cint(frappe.conf.get("smartedge_physical_operation_stock")) == 1
 
@@ -25,6 +43,8 @@ def movement_type(entry):
 
 def should_post_operation(entry):
 	"""Only an explicitly configured, non-final route stage creates physical WIP."""
+	if not entry:
+		return False
 	production = entry.get("final_eb_bom_generator")
 	if production:
 		from smart_edge_custom.manufacturing.final_bom_generator import get_stored_stock_posting_mode
@@ -33,6 +53,7 @@ def should_post_operation(entry):
 		if mode == "Legacy Non-Stock":
 			return False
 		if mode == "Physical WIP":
+			from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
 			if _is_first_material_consumption_entry(entry) and _has_material_requirements(production):
 				if movement_type(entry) not in PHYSICAL_TYPES:
 					frappe.throw(_(
@@ -43,7 +64,16 @@ def should_post_operation(entry):
 				# raises the existing clear batch-count/stock errors when missing.
 				return True
 			if movement_type(entry) not in PHYSICAL_TYPES:
-				return False
+				# QC checkpoints and the final warehouse posting have their own
+				# approved workflows. A normal mandatory manufacturing stage in a
+				# Physical WIP route must never silently complete without stock.
+				is_qc = (entry.get("planning_category") or "").upper() == "QC"
+				if is_qc or is_final_stock_posting_entry(entry):
+					return False
+				frappe.throw(_(
+					"Physical WIP operation {0} has a non-physical route snapshot "
+					"({1}); correct the route before completing it."
+				).format(entry.get("operation") or entry.get("name") or _("current operation"), movement_type(entry)))
 		else:
 			if not production_uses_physical_stock(production):
 				return False
@@ -224,8 +254,8 @@ def stock_row(item_code, quantity, warehouse, inward=False):
 
 
 def _physical_batch_for_lot(lot_name):
-	from smart_edge_custom.manufacturing.operation_batch import LOT_LINK, PHYSICAL, PURPOSE
-	return frappe.db.get_value("Batch", {LOT_LINK: lot_name, PURPOSE: PHYSICAL}, "name")
+	from smart_edge_custom.manufacturing.operation_batch import stock_batch_for_lot
+	return stock_batch_for_lot(lot_name)
 
 
 def find_physical_input_lot(lot_name):
@@ -260,7 +290,7 @@ def physical_input_batch(lot_name):
 				limit_page_length=50,
 			)
 			for row in rows:
-				if row.item_code == lot.finished_item and frappe.db.get_value("Batch", row.batch_no, PURPOSE) == PHYSICAL:
+				if row.item_code == lot.finished_item and frappe.db.exists("Stock Ledger Entry", {"batch_no": row.batch_no, "is_cancelled": 0}):
 					return row.batch_no
 	if not name:
 		frappe.throw(_("Predecessor Production Lot {0} has no transaction-backed physical output Batch. Complete and submit its predecessor operation first; no stock was fabricated.").format(lot_name))
@@ -327,16 +357,16 @@ def final_wip_components(generator, jobs):
 
 
 def _batch(lot, job, entry, batch_id, previous_entry):
-	from smart_edge_custom.manufacturing.operation_batch import LOT_LINK, PHYSICAL, PURPOSE
-	physical = frappe.db.get_value("Batch", {LOT_LINK: lot.name, PURPOSE: PHYSICAL}, "name")
+	from smart_edge_custom.manufacturing.operation_batch import LOT_LINK, PHYSICAL, PURPOSE, stock_batch_for_lot
+	physical = stock_batch_for_lot(lot.name, lot.finished_item)
 	if physical:
 		return physical
 	# A lot may have a legacy metadata-only Batch. Keep that historical record
 	# intact and create a separate stock-backed Batch only after the new Stock
 	# Entry succeeds; never convert a Batch that already has stock evidence.
-	legacy = frappe.db.get_value("Batch", {LOT_LINK: lot.name}, ["name", PURPOSE], as_dict=True)
-	if legacy and legacy.get(PURPOSE) not in (None, "", "Operation Traceability"):
-		frappe.throw(_("Operation Batch {0} already exists with unsupported purpose {1}.").format(legacy.name, legacy.get(PURPOSE)))
+	# An existing Batch with this lot link is only an identity hint.  Stock
+	# eligibility is established by ledger/bundle evidence, never by its
+	# informational purpose value.
 	if not frappe.db.get_value("Item", lot.finished_item, "has_batch_no"):
 		frappe.throw(_("Finished Goods Item {0} must be batch-controlled before physical operation posting.").format(lot.finished_item))
 	previous_lot = (lot.input_production_lot if previous_entry else None) or (frappe.db.get_value(
@@ -347,7 +377,10 @@ def _batch(lot, job, entry, batch_id, previous_entry):
 		"item_name": frappe.db.get_value("Item", lot.finished_item, "item_name"),
 		"reference_doctype": "SmartEdge Production Job", "reference_name": job.name,
 		"manufacturing_date": getdate(job.actual_end), "disabled": 0,
-		PURPOSE: None, LOT_LINK: lot.name,
+		# This Batch is created only inside the same transaction as the physical
+		# Stock Entry. If posting fails, Frappe rolls back both records; a
+		# persisted trace-only Batch is never used as physical stock.
+		PURPOSE: PHYSICAL, LOT_LINK: lot.name,
 		"custom_operation_name": lot.operation, "custom_operation_sequence": lot.operation_sequence,
 		"custom_operation_output_quantity": job.actual_qty_meter,
 		"custom_operation_completed_at": job.actual_end,
@@ -663,6 +696,7 @@ def post_operation(lot, job, entry, batch_name, batch_id_factory):
 	identified by the Production Job and retries reuse the submitted reference.
 	"""
 	if not should_post_operation(entry):
+		_posting_log(entry, "posting_not_required", production_job=job.get("name") if job else None)
 		return None
 	from smart_edge_custom.manufacturing.quality_control import validate_downstream_quantity
 
@@ -693,6 +727,7 @@ def post_operation(lot, job, entry, batch_name, batch_id_factory):
 		if existing[0].docstatus != 1:
 			frappe.throw(_("Draft physical Stock Entry {0} exists; review it before retrying completion.").format(existing[0].name))
 		link_operation_posting(lot, job, existing[0].name)
+		_posting_log(entry, "reused_submitted_stock_entry", production_job=job.name, stock_entry=existing[0].name)
 		return existing[0].name
 	if frappe.db.exists("Stock Entry", {"remarks": reference, "docstatus": 2}):
 		frappe.throw(_("Physical posting for {0} was cancelled; use an approved recovery workflow.").format(job.name))
@@ -774,12 +809,22 @@ def post_operation(lot, job, entry, batch_name, batch_id_factory):
 		attach_storage_bundle(stock_entry, unusable_pair)
 	stock_entry.save(ignore_permissions=True)
 	stock_entry.submit()
+	_posting_log(
+		entry,
+		"submitted",
+		production_job=job.name,
+		stock_entry=stock_entry.name,
+		output_batch=batch_name,
+		input_lot=lot.input_production_lot,
+		accepted_output=flt(job.good_qty) or flt(job.actual_qty_meter),
+	)
 	if unusable_scrap_lot:
 		from smart_edge_custom.manufacturing.unusable_scrap import mark_stored
 		mark_stored([unusable_scrap_lot], stock_entry.name)
 	from smart_edge_custom.manufacturing.scrap_recovery import mark_recovered_components_consumed
 	mark_recovered_components_consumed(recovered_allocations, stock_entry.name)
-	# Purpose is promoted only after ERPNext accepted the inventory transaction.
+	# Reassert the purpose only after ERPNext accepted the inventory transaction;
+	# this keeps retries and older pending records consistent.
 	batch = frappe.get_doc("Batch", batch_name)
 	batch.custom_batch_purpose = "Physical Stock"
 	batch.save(ignore_permissions=True)

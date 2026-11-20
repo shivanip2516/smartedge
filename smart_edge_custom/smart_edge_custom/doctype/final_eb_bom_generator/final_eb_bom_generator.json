@@ -139,7 +139,7 @@
    "read_only": 1
   },
   {
-   "default": "Legacy Non-Stock",
+   "default": "Physical WIP",
    "fieldname": "stock_posting_mode",
    "fieldtype": "Select",
    "label": "Stock Posting Mode",

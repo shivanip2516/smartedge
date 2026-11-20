@@ -733,9 +733,9 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 		if not safe_link("Item", doc.item):
 			return False
 		node = {"batch_no": name, "item_code": doc.item, "item_name": doc.item_name,
-			"batch_purpose": doc.get("custom_batch_purpose") or "Physical Stock", "batch_quantity": doc.batch_qty,
+			"batch_purpose": doc.get("custom_batch_purpose"), "batch_quantity": doc.batch_qty,
 			"stock_uom": frappe.db.get_value("Item", doc.item, "stock_uom"),
-			"stock_eligibility": "Not eligible" if doc.get("custom_batch_purpose") == TRACE else "Standard ERPNext validation"}
+			"stock_eligibility": "Standard ERPNext validation"}
 		if context:
 			lot, job, entry = context
 			node.update({"operation": lot.operation, "operation_status": "Completed", "production_job": job.name,
@@ -799,8 +799,7 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 					and s.final_eb_bom_generator == target[1].final_eb_bom_generator), None)
 				is_material = basis == "Submitted manufacturing input" and material_evidence
 				from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
-				is_final = bool(final_evidence and target and is_final_stock_posting_entry(target[2])
-					and frappe.db.get_value("Batch", target_batch, PURPOSE) == PHYSICAL)
+				is_final = bool(final_evidence and target and is_final_stock_posting_entry(target[2]))
 				quantity = material_evidence.quantity if is_material else (final_evidence.quantity if is_final else row.quantity)
 				uom = material_evidence.uom if is_material else (final_evidence.uom if is_final else row.uom)
 				quantity_type = "Consumed" if is_material else ("Final FG Posted" if is_final else "Transferred")
@@ -1170,7 +1169,7 @@ def build_genealogy_tree(key, graph, details, path, counter):
 		"manufacturing_date": batch.get("manufacturing_date"),
 		"expiry_date": batch.get("expiry_date"),
 		"batch_quantity": batch.get("batch_qty"),
-		"batch_status": "Completed — Traceability" if batch.get("custom_batch_purpose") == "Operation Traceability" else ("Disabled" if cint(batch.get("disabled")) else "Active"),
+		"batch_status": "Disabled" if cint(batch.get("disabled")) else "Active",
 		"manufacturing_stage": batch.get("manufacturing_stage"),
 		"production_quantity": batch.get("production_quantity"),
 		"production_uom": batch.get("production_uom"),

@@ -76,6 +76,20 @@ class TestStockPostingMode(unittest.TestCase):
 			with self.assertRaisesRegex(Exception, "locked route snapshot"):
 				physical_operation_stock.should_post_operation(entry)
 
+	def test_physical_intermediate_operation_does_not_silently_skip_stock(self):
+		entry = frappe._dict(
+			name="PLAN-2",
+			final_eb_bom_generator="FEBG-TEST",
+			operation="Intermediate Extrusion",
+			planning_category="Manufacturing",
+			stock_movement_type="Non-Stock Operation",
+		)
+		with patch("smart_edge_custom.manufacturing.final_bom_generator.get_stored_stock_posting_mode", return_value=PHYSICAL_WIP), \
+			patch.object(physical_operation_stock, "_is_first_material_consumption_entry", return_value=False), \
+			patch("smart_edge_custom.manufacturing.planning.is_final_stock_posting_entry", return_value=False):
+			with self.assertRaisesRegex(Exception, "non-physical route snapshot"):
+				physical_operation_stock.should_post_operation(entry)
+
 
 if __name__ == "__main__":
 	unittest.main()

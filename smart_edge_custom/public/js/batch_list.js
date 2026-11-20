@@ -6,8 +6,6 @@
 		"reference_doctype", "reference_name", "item_name"] )];
 	const operation_quantity = frappe.meta?.get_docfield?.("Batch", "custom_operation_output_quantity");
 	if (operation_quantity) operation_quantity.label = __("Operation Quantity (Meter)");
-	settings.get_indicator = (doc) => doc.custom_batch_purpose === "Operation Traceability"
-		? [__("Completed — Traceability"), "blue", "custom_batch_purpose,=,Operation Traceability"]
-		: originalIndicator?.(doc);
+	settings.get_indicator = (doc) => originalIndicator?.(doc);
 	frappe.listview_settings.Batch = settings;
 })();

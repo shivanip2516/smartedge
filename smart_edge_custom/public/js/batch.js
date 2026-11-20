@@ -38,11 +38,7 @@
 			frm.operation_trace_request = request;
 			if (frm.is_new()) return;
 			const name = frm.doc.name;
-			const trace = frm.doc.custom_batch_purpose === "Operation Traceability";
-			const operation = trace || Boolean(frm.doc.custom_operation_lot);
-			if (trace) {
-				frm.page.set_indicator(__("Completed — Traceability"), "blue");
-			}
+			const operation = Boolean(frm.doc.custom_operation_lot);
 			frm.dashboard.parent.find(".se-batch-traceability").remove();
 			const section = frm.dashboard.add_section(__("Loading verified batch genealogy…"), __("Batch Traceability"), "custom se-batch-traceability");
 			frm.dashboard.show();
@@ -66,7 +62,7 @@
 					[__("Batch Purpose"), escape(frm.doc.custom_batch_purpose || "Physical Stock")],
 					[__("Item"), `${link("Item", frm.doc.item)} — ${escape(frm.doc.item_name)}`],
 					[__("Operation"), link("Operation", node.operation || frm.doc.custom_operation_name)],
-					[__("Production Job"), link("SmartEdge Production Job", node.production_job || (trace ? frm.doc.reference_name : null))],
+					[__("Production Job"), link("SmartEdge Production Job", node.production_job || (operation ? frm.doc.reference_name : null))],
 					[__("Operation Status"), escape(node.operation_status || (operation ? "Completed" : "Not applicable"))],
 					[__("Physical Stock Quantity"), `${format_uom_quantity(frm.doc.batch_qty, node.stock_uom)} ${escape(node.stock_uom || "")}`],
 					[__("Operation Output Quantity"), node.operation_output_quantity != null
@@ -74,7 +70,7 @@
 						: (operation ? `${format_uom_quantity(frm.doc.custom_operation_output_quantity, "Meter")} ${__("Meter")}` : __("Not applicable"))],
 					[__("Operation Output UOM"), node.operation_output_uom || (operation ? __("Meter") : __("Not applicable"))],
 					[__("Input Material Summary"), material_summary(node.input_materials)],
-					[__("Stock Consumption Eligibility"), trace ? __("Not eligible") : __("Standard ERPNext validation")],
+					[__("Stock Consumption Eligibility"), __("Standard ERPNext validation")],
 					[__("Parent Input Batches"), links("Batch", backward.parent_batches || [])],
 					[__("Child Output Batches"), links("Batch", forward.child_batches || [])],
 					[__("Final Finished Goods Batches"), links("Batch", [...(backward.final_batches || []), ...(forward.final_batches || [])])],

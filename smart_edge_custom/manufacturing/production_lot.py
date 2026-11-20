@@ -63,8 +63,8 @@ def get_label_context(production_lot):
 	batch = frappe.db.get_value("Batch", {"custom_operation_lot": lot.name}, "name") if meta.has_field("custom_operation_lot") else None
 	if not batch:
 		frappe.throw(_("No traceability Batch is linked to Production Lot {0}.").format(lot.name))
-	batch_purpose = frappe.db.get_value("Batch", batch, "custom_batch_purpose") if meta.has_field("custom_batch_purpose") else None
-	if not lot.is_stock_inventory_batch and batch_purpose != "Physical Stock":
+	stock_evidence = frappe.db.exists("Stock Ledger Entry", {"batch_no": batch, "is_cancelled": 0})
+	if not lot.is_stock_inventory_batch and not stock_evidence:
 		frappe.throw(_("Labels are disabled for non-stock Production Lot {0}.").format(lot.name))
 	item = _label_item_values(lot.finished_item)
 	return {
@@ -775,7 +775,7 @@ def attach_lot_details(rows):
 	physical_by_lot = {}
 	if lot_names and frappe.get_meta("Batch").has_field("custom_operation_lot"):
 		physical_batches = frappe.get_all("Batch", filters={
-			"custom_operation_lot": ["in", list(lot_names)], "custom_batch_purpose": "Physical Stock",
+			"custom_operation_lot": ["in", list(lot_names)],
 		}, fields=["name", "custom_operation_lot"])
 		batch_to_lot = {batch.name: batch.custom_operation_lot for batch in physical_batches}
 		stock_movements = frappe.get_all("SmartEdge Batch Genealogy Movement", filters={

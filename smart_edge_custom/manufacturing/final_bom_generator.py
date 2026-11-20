@@ -731,6 +731,13 @@ def get_route_operations(doc, route_doc):
 		operation_name = route_operation.operation
 		workstation = route_operation.workstation
 		planning_category = route_operation.get("planning_category") or get_operation_planning_category(operation_name)
+		# Older route masters may carry the extrusion category onto the QC
+		# checkpoint.  Normalize the generated snapshot from the operation's
+		# authoritative name so QC remains an intentional non-stock checkpoint
+		# unless its route row explicitly selects a physical movement type.
+		operation_text = str(operation_name or "")
+		if planning_category != "QC" and ("qc" in operation_text.lower() or "quality" in operation_text.lower()):
+			planning_category = "QC"
 		stock_movement_type = route_operation.get("stock_movement_type") or "Non-Stock Operation"
 		if not frappe.db.exists("Operation", operation_name):
 			warnings.append(_("Missing Operation: {0}").format(operation_name))
