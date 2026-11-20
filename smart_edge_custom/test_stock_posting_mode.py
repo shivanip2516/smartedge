@@ -48,6 +48,34 @@ class TestStockPostingMode(unittest.TestCase):
 				frappe._dict(stock_movement_type="Stockable WIP Output", final_eb_bom_generator="FEBG-TEST")
 			))
 
+	def test_physical_first_material_operation_uses_dynamic_route_gate(self):
+		entry = frappe._dict(
+			name="PLAN-1",
+			final_eb_bom_generator="FEBG-TEST",
+			operation="Configured Material Step",
+			operation_row="ROW-1",
+			stock_movement_type="Stockable WIP Output",
+		)
+		with patch("smart_edge_custom.manufacturing.final_bom_generator.get_stored_stock_posting_mode", return_value=PHYSICAL_WIP), \
+			patch.object(physical_operation_stock, "_is_first_material_consumption_entry", return_value=True), \
+			patch.object(physical_operation_stock, "_has_material_requirements", return_value=True), \
+			patch("smart_edge_custom.manufacturing.planning.is_final_stock_posting_entry", return_value=False):
+			self.assertTrue(physical_operation_stock.should_post_operation(entry))
+
+	def test_physical_material_operation_rejects_nonphysical_route_snapshot(self):
+		entry = frappe._dict(
+			name="PLAN-1",
+			final_eb_bom_generator="FEBG-TEST",
+			operation="Configured Material Step",
+			operation_row="ROW-1",
+			stock_movement_type="Non-Stock Operation",
+		)
+		with patch("smart_edge_custom.manufacturing.final_bom_generator.get_stored_stock_posting_mode", return_value=PHYSICAL_WIP), \
+			patch.object(physical_operation_stock, "_is_first_material_consumption_entry", return_value=True), \
+			patch.object(physical_operation_stock, "_has_material_requirements", return_value=True):
+			with self.assertRaisesRegex(Exception, "locked route snapshot"):
+				physical_operation_stock.should_post_operation(entry)
+
 
 if __name__ == "__main__":
 	unittest.main()

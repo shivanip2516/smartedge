@@ -25,16 +25,53 @@ def movement_type(entry):
 
 def should_post_operation(entry):
 	"""Only an explicitly configured, non-final route stage creates physical WIP."""
-	if movement_type(entry) not in PHYSICAL_TYPES:
-		return False
 	production = entry.get("final_eb_bom_generator")
 	if production:
-		if not production_uses_physical_stock(production):
+		from smart_edge_custom.manufacturing.final_bom_generator import get_stored_stock_posting_mode
+
+		mode = get_stored_stock_posting_mode(production)
+		if mode == "Legacy Non-Stock":
 			return False
-	elif not enabled():
-		return False
+		if mode == "Physical WIP":
+			if _is_first_material_consumption_entry(entry) and _has_material_requirements(production):
+				if movement_type(entry) not in PHYSICAL_TYPES:
+					frappe.throw(_(
+						"Physical WIP material-consuming operation {0} must use Stockable WIP Output "
+						"or WIP Transfer / Processing in the locked route snapshot."
+					).format(entry.get("operation") or entry.get("name") or _("current operation")))
+				# post_operation() revalidates the persisted allocation rows and
+				# raises the existing clear batch-count/stock errors when missing.
+				return True
+			if movement_type(entry) not in PHYSICAL_TYPES:
+				return False
+		else:
+			if not production_uses_physical_stock(production):
+				return False
+	else:
+		if not enabled():
+			return False
+		if movement_type(entry) not in PHYSICAL_TYPES:
+			return False
 	from smart_edge_custom.manufacturing.planning import is_final_stock_posting_entry
 	return not is_final_stock_posting_entry(entry)
+
+
+def _is_first_material_consumption_entry(entry):
+	"""Resolve the first FG route stage without depending on its name."""
+	from smart_edge_custom.manufacturing.planning import is_first_fg_operation_entry
+
+	return is_first_fg_operation_entry(entry)
+
+
+def _has_material_requirements(production):
+	"""Detect configured raw materials without reading frontend-only values."""
+	generator = frappe.get_doc("Final EB BOM Generator", production)
+	return bool(
+		generator.get("compound_item")
+		or generator.get("base_colour_item")
+		or flt(generator.get("compound_total_required"))
+		or flt(generator.get("shade_total_required"))
+	)
 
 
 def production_uses_physical_stock(production):

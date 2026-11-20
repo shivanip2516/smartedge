@@ -614,6 +614,9 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 			<div><span>${__("Physically Transferred")}</span><strong>${lot_quantity(card.physical_transferred_quantity)}</strong></div>
 			<div><span>${__("Physical Available WIP")}</span><strong>${lot_quantity(card.physical_available_quantity)}</strong></div>
 			<div><span>${__("Stock Entry")}</span><strong>${trace_link("stock-entry", card.physical_stock_entry)}</strong></div>` : "";
+		const material_details = card.material_stock_entry ? `
+			<div><span>${__("Material Stock Entry")}</span><strong>${trace_link("stock-entry", card.material_stock_entry)} (${frappe.utils.escape_html(card.material_stock_entry_purpose || "")}, ${frappe.utils.escape_html(card.material_stock_entry_status || "")})</strong></div>
+			${(card.material_stock_consumption || []).map((material) => `<div><span>${frappe.utils.escape_html(material.item_code || "")} / ${frappe.utils.escape_html(material.batch_no || "")}</span><strong>${se_format_uom_quantity(material.quantity_consumed, material.uom)} ${__("consumed")} · ${se_format_uom_quantity(material.remaining_quantity, material.uom)} ${__("remaining")}</strong></div>`).join("")}` : "";
 		const qc_details = card.qc_required ? `
 			<div><span>${__("QC Checkpoint")}</span><strong>${frappe.utils.escape_html(card.qc_checkpoint_operation || card.operation || "")}</strong></div>
 			<div><span>${__("QC Status")}</span><strong>${frappe.utils.escape_html(card.qc_display_status || "QC Pending")}</strong></div>
@@ -664,6 +667,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 						${card.bom_no ? `<div><span>${__("BOM")}</span><strong>${frappe.utils.escape_html(card.bom_no)}</strong></div>` : ""}
 						${card.shift ? `<div><span>${__("Shift")}</span><strong>${frappe.utils.escape_html(card.shift)}</strong></div>` : ""}
 						${lot_details}
+						${material_details}
 						${qc_details}
 					</div>
 					<div class="se-operation-state">${this.get_status_line_html(card, planned_time, status_class)}</div>

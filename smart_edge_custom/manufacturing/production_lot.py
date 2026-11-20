@@ -839,6 +839,51 @@ def attach_lot_details(rows):
 			row.physical_transferred_quantity = physical["transferred"] / factor
 			stock_available = max((physical["posted"] - physical["transferred"]) / factor, 0)
 			row.physical_available_quantity = min(stock_available, flt(balance.get("available")))
+		_attach_material_stock_details(row, job)
+
+
+def _attach_material_stock_details(row, job):
+	"""Expose submitted raw-material movements and ledger balances on the operation."""
+	stock_entry_name = job.get("manufacturing_stock_entry")
+	if (
+		not stock_entry_name
+		or not job.get("final_eb_bom_generator")
+		or frappe.db.get_value("Stock Entry", stock_entry_name, "docstatus") != 1
+	):
+		return
+	stock_entry = frappe.get_doc("Stock Entry", stock_entry_name)
+	if stock_entry.purpose not in {"Manufacture", "Material Issue"}:
+		return
+	generator = frappe.get_doc("Final EB BOM Generator", job.final_eb_bom_generator)
+	material_items = {generator.get("compound_item"), generator.get("base_colour_item")} - {None, ""}
+	if not material_items:
+		return
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+
+	details = []
+	for movement in extract_batch_movements(stock_entry):
+		if movement.get("direction") != "Input" or movement.get("item_code") not in material_items:
+			continue
+		batch_no = movement.get("batch_no")
+		warehouse = movement.get("warehouse")
+		remaining = sum(
+			flt(stock_row.get("qty"))
+			for stock_row in (get_batch_qty(batch_no=batch_no, warehouse=warehouse) or [])
+		)
+		details.append({
+			"item_code": movement.get("item_code"),
+			"batch_no": batch_no,
+			"warehouse": warehouse,
+			"quantity_consumed": flt(movement.get("quantity")),
+			"remaining_quantity": max(remaining, 0),
+			"uom": movement.get("uom"),
+		})
+	if details:
+		row.material_stock_entry = stock_entry_name
+		row.material_stock_entry_purpose = stock_entry.purpose
+		row.material_stock_entry_status = "Submitted"
+		row.material_stock_consumption = details
 
 
 def reconcile_final_production(production_name, stock_entry=None):
