@@ -25,9 +25,6 @@ class TestStandardOperationBatches(unittest.TestCase):
 		batch.disabled = 0
 		batch.save()
 		self.assertEqual(batch.disabled, 0)
-		batch.custom_batch_purpose = batches.PHYSICAL
-		with self.assertRaisesRegex(frappe.ValidationError, "cannot be converted"):
-			batch.save()
 		batch.reload()
 		batch.batch_qty = 490
 		with self.assertRaisesRegex(frappe.ValidationError, "stock quantity must remain zero"):

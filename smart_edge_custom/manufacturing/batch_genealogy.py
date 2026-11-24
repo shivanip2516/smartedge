@@ -14,8 +14,6 @@ CANCELLED = "Cancelled"
 MAX_DEPTH = 12
 MAX_BATCH_NODES = 250
 MAX_MOVEMENTS_PER_LEVEL = 2000
-PURPOSE = "custom_batch_purpose"
-PHYSICAL = "Physical Stock"
 
 MOVEMENT_FIELDS = [
 	"name",
@@ -146,7 +144,10 @@ def capture_stock_entry(stock_entry):
 def _is_genealogy_stock_entry(stock_entry):
 	remarks = stock_entry.get("remarks") or ""
 	return stock_entry.purpose == "Manufacture" or (
-		stock_entry.purpose == "Repack" and remarks.startswith("SmartEdge physical operation ")
+		stock_entry.purpose == "Repack" and (
+			remarks.startswith("SmartEdge physical operation ")
+			or remarks.startswith("SmartEdge physical rework roll ")
+		)
 	) or (
 		stock_entry.purpose == "Material Receipt" and remarks.startswith("SmartEdge incremental Packing receipt ")
 	)
@@ -378,6 +379,15 @@ def _incremental_packing_job(stock_entry):
 					"SmartEdge Production Job", name,
 					["name", "plan_entry", "final_eb_bom_generator"], as_dict=True,
 				)
+	roll_prefix = "SmartEdge physical Packing roll "
+	if remarks.startswith(roll_prefix):
+		roll_name = remarks[len(roll_prefix):].strip()
+		job_name = frappe.db.get_value("SmartEdge Roll", roll_name, "packing_job")
+		if job_name:
+			return frappe.db.get_value(
+				"SmartEdge Production Job", job_name,
+				["name", "plan_entry", "final_eb_bom_generator"], as_dict=True,
+			)
 	return None
 
 
@@ -646,7 +656,7 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 	No edges are persisted and no allocation is inferred from sequence or names.
 	Physical quantities and operation output retain their separate recorded units.
 	"""
-	from smart_edge_custom.manufacturing.operation_batch import TRACE, _context, schema_ready
+	from smart_edge_custom.manufacturing.operation_batch import _context, schema_ready
 
 	if not schema_ready():
 		return {}
@@ -733,7 +743,7 @@ def project_operation_batches(batch_no, roots, direction, max_depth=MAX_DEPTH):
 		if not safe_link("Item", doc.item):
 			return False
 		node = {"batch_no": name, "item_code": doc.item, "item_name": doc.item_name,
-			"batch_purpose": doc.get("custom_batch_purpose"), "batch_quantity": doc.batch_qty,
+			"batch_quantity": doc.batch_qty,
 			"stock_uom": frappe.db.get_value("Item", doc.item, "stock_uom"),
 			"stock_eligibility": "Standard ERPNext validation"}
 		if context:
@@ -1119,8 +1129,6 @@ def get_batch_details(keys):
 	batch_fields = ["name", "item", "manufacturing_date", "expiry_date", "batch_qty"]
 	if frappe.get_meta("Batch", cached=True).has_field("disabled"):
 		batch_fields.append("disabled")
-	if frappe.get_meta("Batch", cached=True).has_field("custom_batch_purpose"):
-		batch_fields.append("custom_batch_purpose")
 	rows = frappe.get_list(
 		"Batch",
 		filters={"name": ["in", batch_names]},

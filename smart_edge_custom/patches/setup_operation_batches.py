@@ -4,8 +4,6 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 def execute():
 	fields = [
-		{"fieldname": "custom_batch_purpose", "label": "Batch Purpose", "fieldtype": "Select",
-			"options": "Physical Stock\nOperation Traceability", "default": "Physical Stock", "in_list_view": 1, "in_standard_filter": 1},
 		{"fieldname": "custom_operation_lot", "label": "Operation Lot", "fieldtype": "Link", "options": "SmartEdge Production Lot", "unique": 1},
 		{"fieldname": "custom_operation_name", "label": "Operation Name", "fieldtype": "Link", "options": "Operation", "in_list_view": 1},
 		{"fieldname": "custom_operation_sequence", "label": "Operation Sequence", "fieldtype": "Int"},

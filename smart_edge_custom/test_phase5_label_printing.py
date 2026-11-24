@@ -20,7 +20,7 @@ class TestPhase5LabelPrintingContract(unittest.TestCase):
 
 	def test_server_gate_requires_qc_and_stock_lot(self):
 		source = (ROOT / "manufacturing" / "production_lot.py").read_text()
-		for required in ("is_stock_inventory_batch", "custom_batch_purpose", "Physical Stock", "custom_smartedge_qc_status", "custom_accepted_qty", "docstatus", "get_print_label_url"):
+		for required in ("is_stock_inventory_batch", "custom_smartedge_qc_status", "custom_accepted_qty", "docstatus", "get_print_label_url"):
 			self.assertIn(required, source)
 
 

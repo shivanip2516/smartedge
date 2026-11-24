@@ -279,11 +279,6 @@ def _make_finished_bundle(doc, row, batch_count, weight_per_batch):
 				}
 			)
 		)
-		# Compound/Base Colour production batches are physical inventory batches,
-		# unlike SmartEdge operation trace records.  Keep the custom purpose in
-		# sync with the real ERPNext batch created for the stock transaction.
-		if frappe.get_meta("Batch", cached=True).has_field("custom_batch_purpose"):
-			frappe.db.set_value("Batch", batch_no, "custom_batch_purpose", "Physical Stock", update_modified=False)
 		batches[batch_no] = weight_per_batch
 
 	bundle = SerialBatchCreation(

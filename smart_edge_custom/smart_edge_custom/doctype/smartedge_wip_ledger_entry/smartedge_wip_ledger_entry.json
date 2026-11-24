@@ -6,8 +6,8 @@
  "engine": "InnoDB",
  "field_order": [
   "movement_section", "movement_key", "movement_type", "posting_datetime", "status",
-  "context_section", "final_eb_bom_generator", "finished_item", "production_job", "source_plan_entry", "destination_plan_entry", "employee", "reference_doctype", "reference_name",
-  "flow_section", "source_production_lot", "source_stock_batch", "source_operation", "destination_production_lot", "destination_stock_batch", "destination_operation",
+  "context_section", "final_eb_bom_generator", "finished_item", "planning_route", "production_job", "source_plan_entry", "destination_plan_entry", "employee", "reference_doctype", "reference_name",
+ "flow_section", "roll", "operation_sequence", "stock_entry", "source_warehouse", "destination_warehouse", "source_production_lot", "source_stock_batch", "source_operation", "destination_production_lot", "destination_stock_batch", "destination_operation",
   "quantity_section", "quantity", "uom", "quantity_kg", "remarks"
  ],
  "fields": [
@@ -19,6 +19,7 @@
   {"fieldname":"context_section","fieldtype":"Section Break","label":"Manufacturing Context"},
   {"fieldname":"final_eb_bom_generator","fieldtype":"Link","label":"Final EB BOM Generator","options":"Final EB BOM Generator","read_only":1,"reqd":1,"in_standard_filter":1},
   {"fieldname":"finished_item","fieldtype":"Link","label":"Finished Item","options":"Item","read_only":1,"reqd":1,"in_list_view":1,"in_standard_filter":1},
+  {"fieldname":"planning_route","fieldtype":"Link","label":"Planning Route","options":"SmartEdge Process Route","read_only":1,"in_standard_filter":1},
   {"fieldname":"production_job","fieldtype":"Link","label":"Production Job","options":"SmartEdge Production Job","read_only":1,"in_standard_filter":1},
   {"fieldname":"source_plan_entry","fieldtype":"Link","label":"Source Plan Entry","options":"SmartEdge Production Plan Entry","read_only":1},
   {"fieldname":"destination_plan_entry","fieldtype":"Link","label":"Destination Plan Entry","options":"SmartEdge Production Plan Entry","read_only":1},
@@ -26,6 +27,11 @@
   {"fieldname":"reference_doctype","fieldtype":"Link","label":"Reference DocType","options":"DocType","read_only":1},
   {"fieldname":"reference_name","fieldtype":"Dynamic Link","label":"Reference Document","options":"reference_doctype","read_only":1},
   {"fieldname":"flow_section","fieldtype":"Section Break","label":"Lot and Operation Flow"},
+  {"fieldname":"roll","fieldtype":"Link","label":"Roll","options":"SmartEdge Roll","read_only":1,"in_standard_filter":1},
+  {"fieldname":"operation_sequence","fieldtype":"Int","label":"Operation Sequence","read_only":1,"in_list_view":1},
+  {"fieldname":"stock_entry","fieldtype":"Link","label":"Stock Entry","options":"Stock Entry","read_only":1,"in_list_view":1},
+  {"fieldname":"source_warehouse","fieldtype":"Link","label":"Source Warehouse","options":"Warehouse","read_only":1},
+  {"fieldname":"destination_warehouse","fieldtype":"Link","label":"Target Warehouse","options":"Warehouse","read_only":1},
   {"fieldname":"source_production_lot","fieldtype":"Link","label":"Source Production Lot","options":"SmartEdge Production Lot","read_only":1,"in_standard_filter":1},
   {"fieldname":"source_stock_batch","fieldtype":"Link","label":"Source ERPNext Batch","options":"Batch","read_only":1},
   {"fieldname":"source_operation","fieldtype":"Link","label":"Source Operation","options":"Operation","read_only":1},

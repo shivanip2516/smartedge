@@ -5,7 +5,7 @@
  "istable": 1,
  "fields": [
   {"fieldname":"event_datetime","fieldtype":"Datetime","label":"Event Time","reqd":1},
-  {"fieldname":"event_type","fieldtype":"Select","label":"Event","options":"Created\nQC Decision\nRework Completed\nRe-QC Decision\nReserved for Packing\nPacking Completed\nReleased","reqd":1},
+  {"fieldname":"event_type","fieldtype":"Select","label":"Event","options":"Created\nQC Decision\nRework Completed\nRe-QC Decision\nReserved for Packing\nPacking Completed\nReleased\nStock Movement","reqd":1},
   {"fieldname":"operation","fieldtype":"Link","label":"Operation","options":"Operation"},
   {"fieldname":"operation_job","fieldtype":"Link","label":"Production Job","options":"SmartEdge Production Job"},
   {"fieldname":"operation_plan_entry","fieldtype":"Link","label":"Plan Entry","options":"SmartEdge Production Plan Entry"},
@@ -17,7 +17,16 @@
   {"fieldname":"related_quality_inspection","fieldtype":"Link","label":"Quality Inspection","options":"Quality Inspection"},
   {"fieldname":"employee","fieldtype":"Link","label":"Employee","options":"Employee"},
   {"fieldname":"reason","fieldtype":"Small Text","label":"Reason"},
-  {"fieldname":"remarks","fieldtype":"Small Text","label":"Remarks"}
+  {"fieldname":"remarks","fieldtype":"Small Text","label":"Remarks"},
+  {"fieldname":"operation_sequence","fieldtype":"Int","label":"Operation Sequence"},
+  {"fieldname":"quantity","fieldtype":"Float","label":"Processed Quantity","precision":"6"},
+  {"fieldname":"source_batch","fieldtype":"Link","label":"Source Batch","options":"Batch"},
+  {"fieldname":"output_batch","fieldtype":"Link","label":"Output Batch","options":"Batch"},
+  {"fieldname":"source_warehouse","fieldtype":"Link","label":"Source Warehouse","options":"Warehouse"},
+  {"fieldname":"target_warehouse","fieldtype":"Link","label":"Target Warehouse","options":"Warehouse"},
+  {"fieldname":"stock_entry","fieldtype":"Link","label":"Stock Entry","options":"Stock Entry"},
+  {"fieldname":"movement_status","fieldtype":"Select","label":"Movement Status","options":"Submitted\nPending\nFailed"},
+  {"fieldname":"movement_type","fieldtype":"Data","label":"Movement Type"}
  ],
  "permissions": []
 }

@@ -5,7 +5,7 @@ const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<",
 let handlers, markup = "", indicator;
 const trace = {
 	root: { batch_no: "EXT", item_code: "FG", item_name: "<Finished>", stock_uom: "Kg",
-		batch_purpose: "Operation Traceability", operation_status: "Completed", batch_quantity: 0,
+		operation_status: "Completed", batch_quantity: 0,
 		operation: "Extrusion", production_job: "JOB-EXT", operation_output_quantity: 100, operation_output_uom: "Meter", children: [] },
 	parent_batches: ["CMP", "BASE"], child_batches: ["QC"], final_batches: ["FG-001"], stock_entries: ["STE-1"],
 	edges: [{ source: "CMP", target: "EXT", evidence: "LEDGER-1", quantity: 20, uom: "Kg", quantity_type: "Consumed",
@@ -21,18 +21,17 @@ const context = vm.createContext({
 });
 vm.runInContext(fs.readFileSync(require.resolve("./public/js/batch.js"), "utf8"), context);
 const frm = { is_new: () => false, doc: { name: "EXT", item: "FG", item_name: "<Finished>", batch_qty: 0,
-	custom_batch_purpose: "Operation Traceability" },
+	},
 	page: { set_indicator: (label) => { indicator = label; } },
 	dashboard: { parent: { find: () => ({ remove() {} }) }, show() {}, add_section: () => ({ html: (value) => { markup = value; } }) },
 };
 (async () => {
 	await handlers.refresh(frm);
-	assert.equal(indicator, "Completed — Traceability");
-	for (const label of ["Not eligible", "Parent Input Batches", "Child Output Batches", "FG-001", "STE-1", "100 Meter", "Operation Output UOM", "Input Material Summary", "20 Kg", "Consumed", "ROW-1", "Stores"]) assert.ok(markup.includes(label), label);
+	for (const label of ["Parent Input Batches", "Child Output Batches", "FG-001", "STE-1", "100 Meter", "Operation Output UOM", "Input Material Summary", "20 Kg", "Consumed", "ROW-1", "Stores"]) assert.ok(markup.includes(label), label);
 	assert.ok(markup.includes("&lt;Finished&gt;"));
 	assert.ok(!markup.includes("<Finished>"));
 	frm.doc = { name: "QC", item: "FG", item_name: "Finished", batch_qty: 39.784206,
-		custom_batch_purpose: "Physical Stock", custom_operation_lot: "QC-LOT", custom_operation_output_quantity: 39.784206 };
+		custom_operation_lot: "QC-LOT", custom_operation_output_quantity: 39.784206 };
 	context.frappe.call = async () => ({ message: { operation_batch_trace: {
 		root: { batch_no: "QC", stock_uom: "Meter", operation_output_quantity: 39.784206, operation_output_uom: "Meter" },
 	} } });
@@ -44,12 +43,12 @@ const frm = { is_new: () => false, doc: { name: "EXT", item: "FG", item_name: "<
 	assert.ok(markup.includes("0 Meter"));
 	assert.ok(markup.includes("40 Meter"));
 	assert.equal(frm.doc.custom_operation_output_quantity, 39.784206);
-	frm.doc = { name: "CMP", item: "COMPOUND", item_name: "Compound", batch_qty: 0, custom_batch_purpose: "Physical Stock" };
+	frm.doc = { name: "CMP", item: "COMPOUND", item_name: "Compound", batch_qty: 0 };
 	context.frappe.call = async () => ({ message: { root: { events: [{ stock_entry: "STE-MIX", children: [{ batch_no: "ADDITIVE" }] }] } } });
 	await handlers.refresh(frm);
 	assert.ok(markup.includes("ADDITIVE"));
 	assert.ok(markup.includes("STE-MIX"));
-	assert.ok(!markup.includes("Not eligible"));
+	assert.ok(markup.includes("Stock Consumption Eligibility"));
 	const resolvers = [];
 	context.frappe.call = () => new Promise((done) => { resolvers.push(done); });
 	const pending = handlers.refresh(frm);
@@ -64,7 +63,7 @@ const frm = { is_new: () => false, doc: { name: "EXT", item: "FG", item_name: "<
 	vm.runInContext(fs.readFileSync(require.resolve("./smart_edge_custom/page/smartedge_batch_genealogy/smartedge_batch_genealogy.js"), "utf8"), context);
 	const page = vm.runInContext("Object.create(SmartEdgeBatchGenealogy.prototype)", context);
 	const html = page.render_operation_batch(trace.root, 0);
-	assert.match(html, /Operation Traceability/);
+	assert.match(html, /Completed/);
 	assert.match(html, /Completed/);
 	assert.match(html, /100 Meter/);
 	assert.match(html, /&lt;Finished&gt;/);

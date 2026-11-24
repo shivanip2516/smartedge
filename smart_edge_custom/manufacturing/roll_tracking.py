@@ -54,9 +54,42 @@ def _save_roll(doc):
 	doc.save(ignore_permissions=True)
 
 
+def append_stock_movement_history(
+	roll_name, *, operation=None, operation_sequence=None, production_job=None,
+	plan_entry=None, quantity=0, source_batch=None, output_batch=None,
+	source_warehouse=None, target_warehouse=None, stock_entry=None,
+	movement_type=None, status="Submitted",
+):
+	"""Persist submitted ERPNext stock evidence on a Roll without duplicating it."""
+	doc = frappe.get_doc(ROLL, roll_name)
+	history = doc.get("operation_history") if hasattr(doc, "get") else getattr(doc, "operation_history", None)
+	if any(row.get("stock_entry") == stock_entry for row in (history or [])):
+		return doc.name
+	doc.append("operation_history", {
+		"event_datetime": now_datetime(), "event_type": "Stock Movement",
+		"operation": operation or doc.source_operation,
+		"operation_job": production_job or doc.source_production_job,
+		"operation_plan_entry": plan_entry or doc.source_plan_entry,
+		"new_status": doc.process_status, "new_meter_quantity": doc.current_meter_quantity,
+		"previous_meter_quantity": doc.current_meter_quantity,
+		"operation_sequence": operation_sequence, "quantity": flt(quantity),
+		"source_batch": source_batch, "output_batch": output_batch,
+		"source_warehouse": source_warehouse, "target_warehouse": target_warehouse,
+		"stock_entry": stock_entry, "movement_status": status,
+		"movement_type": movement_type,
+		"remarks": "Submitted physical stock movement",
+	})
+	_save_roll(doc)
+	return doc.name
+
+
 def _source_batch(lot):
 	if not lot:
 		return None
+	from smart_edge_custom.manufacturing.operation_batch import stock_batch_for_lot
+	physical = stock_batch_for_lot(lot)
+	if physical:
+		return physical
 	meta = frappe.get_meta("Batch", cached=True)
 	return frappe.db.get_value("Batch", {"custom_operation_lot": lot}, "name") if meta.has_field("custom_operation_lot") else None
 
@@ -94,6 +127,8 @@ def create_rolls_for_extrusion(job, entry, roll_rows):
 		doc.source_operation = entry.operation
 		doc.source_production_lot = lot
 		doc.source_batch = batch
+		doc.destination_warehouse = row.get("destination_warehouse")
+		doc.transfer_status = "Pending" if doc.destination_warehouse else "Not Requested"
 		doc.roll_sequence = sequence
 		doc.original_meter_quantity = round_meter_quantity(row["meter_quantity"])
 		doc.current_meter_quantity = doc.original_meter_quantity
@@ -103,7 +138,113 @@ def create_rolls_for_extrusion(job, entry, roll_rows):
 		_append_history(doc, "Created", "", "Available for QC", 0, doc.current_meter_quantity)
 		doc.insert(ignore_permissions=True)
 		created.append(doc.name)
+	for name in created:
+		destination = frappe.db.get_value(ROLL, name, "destination_warehouse")
+		if destination:
+			transfer_roll_to_warehouse(name, destination)
 	return created
+
+
+@frappe.whitelist()
+def transfer_roll_to_warehouse(roll, destination_warehouse):
+	"""Move one Roll's existing shared-Batch stock to a selected warehouse."""
+	doc = frappe.get_doc(ROLL, roll)
+	if not doc.source_batch:
+		frappe.throw(_("Roll {0} has no physical Batch-backed output yet.").format(doc.name))
+	if not destination_warehouse:
+		frappe.throw(_("Destination Warehouse is required for Roll {0}.").format(doc.name))
+	job = frappe.get_doc("SmartEdge Production Job", doc.source_production_job)
+	company = job.company
+	if job.status != "Completed":
+		frappe.throw(_("Roll {0} cannot transfer before its Production Job is completed.").format(doc.name))
+	aggregate_entry = job.get("manufacturing_stock_entry")
+	if not aggregate_entry and job.final_eb_bom_generator:
+		aggregate_entry = frappe.db.get_value("Final EB BOM Generator", job.final_eb_bom_generator, "final_manufacturing_stock_entry")
+	if not aggregate_entry or frappe.db.get_value("Stock Entry", aggregate_entry, "docstatus") != 1:
+		frappe.throw(_("Roll {0} cannot transfer until its aggregate manufacturing Stock Entry is submitted.").format(doc.name))
+	# Resolve the Batch from the submitted aggregate output, not from a
+	# trace-only Batch that happens to share the Production Lot link.
+	from smart_edge_custom.manufacturing.batch_genealogy import extract_batch_movements
+	aggregate_doc = frappe.get_doc("Stock Entry", aggregate_entry)
+	output_batches = list(dict.fromkeys(
+		movement.get("batch_no") for movement in extract_batch_movements(aggregate_doc)
+		if movement.get("direction") == "Output"
+		and movement.get("item_code") == doc.finished_item
+		and movement.get("batch_no")
+	))
+	if len(output_batches) == 1 and doc.source_batch != output_batches[0]:
+		doc.source_batch = output_batches[0]
+		doc.save(ignore_permissions=True)
+	if not doc.source_batch or (output_batches and doc.source_batch not in output_batches):
+		frappe.throw(_("Roll {0} is not linked to the Batch produced by aggregate Stock Entry {1}.").format(doc.name, aggregate_entry))
+	aggregate_warehouses = {movement.get("warehouse") for movement in extract_batch_movements(aggregate_doc)
+		if movement.get("direction") == "Output" and movement.get("item_code") == doc.finished_item and movement.get("warehouse")}
+	from smart_edge_custom.manufacturing.planning import get_required_conversion_factor, validate_stock_item, validate_stock_warehouse
+	item = validate_stock_item(doc.finished_item)
+	destination_warehouse = validate_stock_warehouse(destination_warehouse, company, _("Destination Warehouse"))
+	qty = flt(doc.current_meter_quantity)
+	if qty <= 0:
+		frappe.throw(_("Roll {0} has no positive quantity to transfer.").format(doc.name))
+	factor = get_required_conversion_factor(doc.finished_item, "Meter", item.stock_uom)
+	required_stock_qty = qty * factor
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+	rows = [row for row in (get_batch_qty(batch_no=doc.source_batch, item_code=doc.finished_item) or []) if flt(row.get("qty")) > 0]
+	eligible = [(row.get("warehouse"), flt(row.get("qty"))) for row in rows if row.get("warehouse")]
+	if aggregate_warehouses:
+		aggregate_eligible = [row for row in eligible if row[0] in aggregate_warehouses]
+		if aggregate_eligible:
+			eligible = aggregate_eligible
+	eligible = [(warehouse, available) for warehouse, available in eligible if available + 0.000001 >= required_stock_qty]
+	if len(eligible) != 1:
+		frappe.throw(_("Roll {0} does not have enough available Batch stock for transfer.").format(doc.name))
+	source_warehouse = validate_stock_warehouse(eligible[0][0], company, _("Source Warehouse"))
+	doc.destination_warehouse = destination_warehouse
+	doc.source_warehouse = source_warehouse
+	if source_warehouse == destination_warehouse:
+		doc.transfer_status = "No Transfer Required"
+		doc.save(ignore_permissions=True)
+		return {"roll": doc.name, "status": doc.transfer_status, "stock_entry": None, "batch": doc.source_batch}
+	reference = f"SmartEdge Roll warehouse transfer {doc.name}"
+	existing = frappe.get_all("Stock Entry", filters={"remarks": reference, "docstatus": ["<", 2]}, fields=["name", "docstatus"])
+	if existing:
+		if existing[0].docstatus != 1:
+			frappe.throw(_("Draft warehouse transfer {0} exists for Roll {1}.").format(existing[0].name, doc.name))
+		doc.transfer_stock_entry = existing[0].name
+		doc.transfer_status = "Transferred"
+		doc.save(ignore_permissions=True)
+		return {"roll": doc.name, "status": doc.transfer_status, "stock_entry": existing[0].name, "batch": doc.source_batch}
+	from erpnext.stock.serial_batch_bundle import SerialBatchCreation
+	stock_entry = frappe.new_doc("Stock Entry")
+	stock_entry.company = company
+	stock_entry.purpose = "Material Transfer"
+	stock_entry.set_stock_entry_type()
+	stock_entry.posting_date = frappe.utils.nowdate()
+	stock_entry.set_posting_time = 1
+	stock_entry.remarks = reference
+	row = stock_entry.append("items", {
+		"item_code": doc.finished_item, "qty": qty, "uom": "Meter", "stock_uom": item.stock_uom,
+		"conversion_factor": factor, "s_warehouse": source_warehouse, "t_warehouse": destination_warehouse,
+	})
+	stock_entry.insert(ignore_permissions=True)
+	from smart_edge_custom.manufacturing.physical_operation_stock import validate_posted_precision
+	validate_posted_precision(stock_entry)
+	outward = SerialBatchCreation({
+		"item_code": row.item_code, "warehouse": source_warehouse, "posting_date": stock_entry.posting_date,
+		"posting_time": stock_entry.posting_time, "voucher_type": stock_entry.doctype, "voucher_no": stock_entry.name,
+		"voucher_detail_no": row.name, "qty": -flt(row.transfer_qty), "type_of_transaction": "Outward",
+		"company": company, "do_not_submit": True,
+	}).make_serial_and_batch_bundle(batch_nos={doc.source_batch: flt(row.transfer_qty)})
+	row.serial_and_batch_bundle = outward.name
+	row.use_serial_batch_fields = 0
+	stock_entry.save(ignore_permissions=True)
+	stock_entry.submit()
+	doc.destination_warehouse = destination_warehouse
+	doc.transfer_stock_entry = stock_entry.name
+	doc.transfer_status = "Transferred"
+	doc.save(ignore_permissions=True)
+	from smart_edge_custom.manufacturing.batch_genealogy import capture_stock_entry
+	capture_stock_entry(stock_entry)
+	return {"roll": doc.name, "status": doc.transfer_status, "stock_entry": stock_entry.name, "batch": doc.source_batch}
 
 
 def get_rolls_for_job(production_job, eligible_only=False):
@@ -297,8 +438,8 @@ def create_rework_production_job(roll, quality_inspection, rework_plan_entry, op
 		frappe.throw(_("Rework operation {0} is not available for a new execution.").format(entry.operation))
 	if "rework" not in str(entry.operation or "").lower():
 		frappe.throw(_("Rework must use a configured Rework operation."))
-	if entry.get("stock_movement_type") != "Non-Stock Operation":
-		frappe.throw(_("Rework operation {0} must be non-stock.").format(entry.operation))
+	if entry.get("stock_movement_type") not in {"Non-Stock Operation", "WIP Transfer / Processing"}:
+		frappe.throw(_("Rework operation {0} must be Non-Stock Operation or WIP Transfer / Processing.").format(entry.operation))
 	if not entry.workstation:
 		frappe.throw(_("Configure a workstation for Rework before starting it."))
 
@@ -342,7 +483,7 @@ def mark_rolls_packed_for_job(production_job):
 		_save_roll(doc)
 
 
-def link_packed_rolls_to_finished_batch(stock_entry, production_name=None):
+def link_packed_rolls_to_finished_batch(stock_entry, production_name=None, roll_name=None):
 	"""Link packed rolls to the submitted FG Batch evidenced by one Stock Entry.
 
 	The source Batch remains the Extrusion traceability Batch.  This optional field
@@ -375,23 +516,43 @@ def link_packed_rolls_to_finished_batch(stock_entry, production_name=None):
 		if production_item and production_item != batch.item:
 			frappe.throw(_("Finished Goods Batch {0} does not belong to production {1}.").format(batch_name, production_name))
 
-	job_filters = {"manufacturing_stock_entry": stock_entry, "status": "Completed"}
-	if production_name:
-		job_filters["final_eb_bom_generator"] = production_name
-	jobs = frappe.get_all(
-		"SmartEdge Production Job",
-		filters=job_filters,
-		fields=["name", "operation", "final_eb_bom_generator"],
-		limit_page_length=500,
-	)
+	if roll_name:
+		roll = frappe.db.get_value(ROLL, roll_name,
+			["name", "packing_job", "qc_status", "process_status", "packing_status",
+				"finished_item", "final_fg_batch"], as_dict=True)
+		if not roll:
+			frappe.throw(_("SmartEdge Roll {0} does not exist.").format(roll_name))
+		if not roll.packing_job:
+			frappe.throw(_("SmartEdge Roll {0} has no Packing Production Job.").format(roll_name))
+		if production_name and frappe.db.get_value(
+			"SmartEdge Production Job", roll.packing_job, "final_eb_bom_generator"
+		) != production_name:
+			frappe.throw(_("SmartEdge Roll {0} does not belong to production {1}.").format(roll_name, production_name))
+		if roll.packing_job and frappe.db.get_value("SmartEdge Production Job", roll.packing_job, "status") != "Completed":
+			frappe.throw(_("Packing job for Roll {0} is not completed.").format(roll_name))
+		jobs = [{"name": roll.packing_job, "operation": "Packing", "final_eb_bom_generator": production_name}]
+		roll_rows = [roll]
+	else:
+		job_filters = {"manufacturing_stock_entry": stock_entry, "status": "Completed"}
+		if production_name:
+			job_filters["final_eb_bom_generator"] = production_name
+		jobs = frappe.get_all(
+			"SmartEdge Production Job",
+			filters=job_filters,
+			fields=["name", "operation", "final_eb_bom_generator"],
+			limit_page_length=500,
+		)
 	linked = 0
 	for job in jobs:
-		if "pack" not in str(job.operation or "").lower():
+		# frappe.get_all(..., as_dict=True) returns dict-like rows, while callers
+		# may provide a Document.  Document.get() and dict.get() both preserve the
+		# intended behavior without assuming attribute access.
+		if "pack" not in str(job.get("operation") or "").lower():
 			continue
-		rolls = frappe.get_all(
+		rolls = roll_rows if roll_name else frappe.get_all(
 			ROLL,
 			filters={
-				"packing_job": job.name,
+				"packing_job": job.get("name"),
 				"qc_status": "Passed",
 				"process_status": "Packed",
 				"packing_status": "Packed",

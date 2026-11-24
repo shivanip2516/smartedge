@@ -32,7 +32,8 @@ def _value(row, fieldname):
 
 
 def _normalize_product_size(value):
-	return " ".join(str(value or "").strip().lower().split())
+	value = " ".join(str(value or "").strip().lower().split())
+	return value.replace(" x ", "x").replace(" x", "x").replace("x ", "x")
 
 
 def _request_cache():
@@ -800,15 +801,34 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 	workstation = workstation or _value(row, "workstation")
 	if not workstation or workstation == _("Unassigned"):
 		return {"applicable": 0}
+	if rate_rows is None:
+		rate_rows = get_capacity_rate_rows([workstation])
 	expected = get_expected_capacity(category)
 	match = None
+	product_size = _value(row, "custom_size")
+	explicit_units = {
+		_value(candidate, "capacity_uom")
+		for candidate in rate_rows
+		if _value(candidate, "workstation") == workstation
+		and product_size
+		and _normalize_product_size(_value(candidate, "product_size")) == _normalize_product_size(product_size)
+		and (not _value(candidate, "company") or _value(candidate, "company") == _value(row, "company"))
+		and flt(_value(candidate, "capacity_rate")) > 0
+	}
+	explicit_definition = None
+	if len(explicit_units) == 1:
+		capacity_uom = next(iter(explicit_units))
+		quantity_field, quantity_uom = CAPACITY_UNITS[capacity_uom]
+		explicit_definition = {"capacity_uom": capacity_uom, "quantity_field": quantity_field, "quantity_uom": quantity_uom}
 	if expected:
-		definition = {
+		definition = explicit_definition or {
 			"capacity_uom": expected[0],
 			"quantity_field": expected[1],
 			"quantity_uom": expected[2],
 		}
-		if rate_rows is None:
+		if explicit_definition:
+			match = _select_capacity_rate_for_unit(rate_rows, row, workstation, definition["capacity_uom"])
+		elif rate_rows is None:
 			match = get_capacity_rate(
 				workstation,
 				definition["capacity_uom"],
@@ -821,8 +841,6 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 		else:
 			match = _select_capacity_rate_for_unit(rate_rows, row, workstation, definition["capacity_uom"])
 	else:
-		if rate_rows is None:
-			rate_rows = get_capacity_rate_rows([workstation])
 		definition = _infer_capacity_definition(row, workstation, rate_rows)
 	if not definition:
 		if category in NON_CAPACITY_CATEGORIES:
@@ -855,12 +873,18 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 			)
 		),
 	}
+	missing_message = _(
+		"Capacity unavailable for Operation {0} on Workstation {1} (Company: {2}, Product Size: {3}, Required Unit: {4})."
+	).format(
+		_value(row, "operation") or _("not specified"), workstation,
+		_value(row, "company") or _("shared"), product_size or _("not specified"), quantity_uom,
+	)
 	if not match:
 		base.update(
 			{
 				"configured": 0,
 				"configuration_status": "Not Configured",
-				"message": _("Capacity not configured for this Workstation and production specification."),
+				"message": missing_message,
 			}
 		)
 		return base
@@ -870,7 +894,7 @@ def get_rate_payload(row, workstation=None, rate_rows=None):
 			{
 				"configured": 0,
 				"configuration_status": "Not Configured",
-				"message": _("Capacity not configured for this Workstation and production specification."),
+				"message": missing_message,
 			}
 		)
 		return base

@@ -263,7 +263,7 @@ class SmartEdgeProductionJob(Document):
 			if is_extrusion_operation(entry) and self.get("roll_packing_details"):
 				from smart_edge_custom.manufacturing.roll_tracking import create_rolls_for_extrusion
 				create_rolls_for_extrusion(self, entry, [
-					{"roll_no": row.roll_no, "meter_quantity": row.meter_quantity}
+					{"roll_no": row.roll_no, "meter_quantity": row.meter_quantity, "destination_warehouse": row.get("destination_warehouse")}
 					for row in self.get("roll_packing_details")
 				])
 			from smart_edge_custom.manufacturing.quality_control import activate_qc_after_completion

@@ -79,16 +79,15 @@ class TestBoardOperationLots(unittest.TestCase):
 		stock = frappe.get_doc("Stock Entry", self.doc.final_manufacturing_stock_entry)
 		self.assertEqual(stock.docstatus, 1)
 		self.assertEqual(frappe.db.count("Stock Entry"), stock_count + 1)
-		self.assertEqual(frappe.db.count("Batch", {"item": self.doc.finished_item, "custom_batch_purpose": "Physical Stock"}), 1)
-		self.assertEqual(frappe.db.count("Batch", {"item": self.doc.finished_item, "custom_batch_purpose": "Operation Traceability"}), 2)
+		self.assertEqual(frappe.db.count("Batch", {"item": self.doc.finished_item}), 3)
 		self.assertEqual(frappe.db.count("Item"), item_count)
 		self.assertEqual(material_batch_counts, {item: frappe.db.count("Batch", {"item": item}) for item in material_batch_counts})
 		# The standard Batch List uses get_list; active trace metadata remains visible.
 		listed = frappe.get_list("Batch", filters={"item": self.doc.finished_item},
-			fields=["name", "item_name", "custom_batch_purpose", "custom_operation_name", "batch_qty"])
+			fields=["name", "item_name", "custom_operation_name", "batch_qty"])
 		self.assertEqual(len(listed), 3)
 		trace_names = [batch_for_lot(name) for name in lots[:2]]
-		physical = next(row for row in listed if row.custom_batch_purpose == "Physical Stock")
+		physical = next(row for row in listed if row.batch_qty > 0)
 		self.assertEqual(frappe.db.get_value("Batch", physical.name, "custom_previous_operation_batch"), trace_names[1])
 		for name in trace_names:
 			self.assertEqual(frappe.db.get_value("Batch", name, "custom_related_fg_batch"), physical.name)

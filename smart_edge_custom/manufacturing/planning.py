@@ -48,6 +48,11 @@ CATEGORY_COLORS = {
 MATERIAL_PLAN_TYPE = "Required Material"
 MATERIAL_DISPLAY_ORDER = {"Compound": 1, "Base Colour": 2}
 ACCOUNTED_OPERATION_STATUSES = {"Planned", "In Progress", "On Hold", "Completed"}
+
+
+def planning_board_qr_verification_enabled():
+	"""Feature flag for the Planning Board QR gate only; default is disabled."""
+	return cint(frappe.conf.get("enable_planning_board_qr_verification", 0)) == 1
 READY_OPERATION_STATUS = "Ready"
 CAPACITY_CONFIRMATION_TTL_SECONDS = 300
 CAPACITY_CONFIRMATION_CACHE_PREFIX = "smartedge:capacity-confirmation:"
@@ -1308,7 +1313,7 @@ def get_workstation_booking_conflict_projection(entry, workstation, planned_date
 def check_schedule_capacity(
 	plan_entry,
 	planned_date,
-	workstation,
+	workstation=None,
 	planned_start="09:00",
 	duration_hours=None,
 	override_capacity=0,
@@ -1320,6 +1325,12 @@ def check_schedule_capacity(
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
 	entry.check_permission("write")
 	validate_plan_entry(entry)
+	# The Plan Entry is authoritative when the board omits the optional
+	# workstation argument.  An explicitly supplied workstation is still
+	# validated below and cannot silently replace the route assignment.
+	workstation = workstation or entry.get("workstation")
+	if not workstation:
+		frappe.throw(_("Select a Workstation for {0} before checking capacity.").format(entry.operation or entry.name))
 	validate_workstation_reassignment_allowed(entry, workstation)
 	validate_selected_workstation(entry, workstation)
 	packing_roll_selection = get_packing_roll_selection(entry, roll_ids)
@@ -1878,6 +1889,59 @@ def is_packing_plan_entry(entry):
 	)
 
 
+def validate_packing_rolls_for_completion(entry, job, completion_type):
+	"""Require the complete accepted quantity before physical Packing posting.
+
+	Packing uses a specialized FG receipt after ``complete_job``.  A partial
+	reservation must not be allowed to mark the Job complete and then receipt a
+	smaller quantity than the accepted Job output.  This validation is limited to
+	Physical WIP parents; legacy non-stock Packing remains unchanged.
+	"""
+	if not is_packing_plan_entry(entry) or not physical_operation_route_active(entry.final_eb_bom_generator):
+		return
+	if completion_type != "Full Completion":
+		return
+
+	rolls = frappe.get_all(
+		"SmartEdge Roll",
+		filters={
+			"packing_job": job.name,
+			"qc_status": "Passed",
+			"process_status": "Packed",
+			"packing_status": "Packed",
+		},
+		fields=["name", "current_meter_quantity"],
+		limit_page_length=1000,
+	)
+	if not rolls:
+		rolls = frappe.get_all(
+			"SmartEdge Roll",
+			filters={
+				"reserved_for_production_job": job.name,
+				"qc_status": "Passed",
+				"process_status": "Reserved for Packing",
+				"packing_status": "Reserved",
+			},
+			fields=["name", "current_meter_quantity"],
+			limit_page_length=1000,
+		)
+	if not rolls:
+		frappe.throw(
+			_("Select and reserve QC-approved whole Rolls before completing Packing Job {0}.").format(job.name),
+			title=_("Packing Rolls Required"),
+		)
+	roll_quantity = sum(flt(row.current_meter_quantity) for row in rolls)
+	expected_quantity = flt(job.good_qty) or flt(job.actual_qty_meter)
+	if expected_quantity <= 0 or abs(roll_quantity - expected_quantity) > 0.000001:
+		frappe.throw(
+			_(
+				"Packing Job {0} has {1} m of reserved QC-approved Rolls, "
+				"but its accepted completion quantity is {2} m. Select the complete Roll set before completing."
+			).format(job.name, roll_quantity, expected_quantity),
+			title=_("Packing Quantity Does Not Reconcile"),
+		)
+
+
 def get_packing_roll_selection(entry, roll_ids):
 	if not is_packing_plan_entry(entry):
 		return None
@@ -2163,6 +2227,9 @@ def update_generator_planning_status(production):
 		fields=["status"],
 	)
 	if not rows:
+		doc = frappe.get_doc("Final EB BOM Generator", production)
+		if doc.get("selected_route") and doc.get("finished_item"):
+			set_generator_status(production, "Ready for Planning")
 		return
 	statuses = [row.status for row in rows]
 	if any(status == "In Progress" for status in statuses):
@@ -2174,6 +2241,18 @@ def update_generator_planning_status(production):
 	else:
 		status = "Ready for Planning"
 	set_generator_status(production, status)
+
+
+@frappe.whitelist()
+def synchronize_generator_status(production):
+	"""Idempotently recalculate and persist one Generator's lifecycle status."""
+	update_generator_planning_status(production)
+	doc = frappe.get_doc("Final EB BOM Generator", production)
+	return {
+		"name": doc.name,
+		"status": doc.get("status"),
+		"production_status": doc.get("production_status"),
+	}
 
 
 def get_completed_parent_status(production):
@@ -2275,7 +2354,11 @@ def set_generator_status(production, status):
 	doc = frappe.get_doc("Final EB BOM Generator", production)
 	if status == "Completed":
 		create_final_manufacturing_stock_entry(doc)
+	# ``production_status`` is the lifecycle source used by server validation,
+	# while ``status`` is the visible DocType field. Keep both synchronized so
+	# refresh/reload cannot show a stale legacy status.
 	doc.db_set("production_status", status, update_modified=False)
+	doc.db_set("status", status, update_modified=False)
 	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 	refresh_material_readiness(production)
 
@@ -2307,6 +2390,15 @@ def create_final_manufacturing_stock_entry(doc):
 				)
 		show_existing_stock_entry_message(existing_stock_entry)
 		return existing_stock_entry
+	# Physical Packing posts one submitted Repack per roll.  Treat the complete
+	# set of those receipts as the final evidence and never create a second
+	# job-level Manufacture/Repack for the same accepted quantity.
+	roll_evidence = _physical_packing_roll_evidence(doc)
+	if roll_evidence:
+		doc.db_set("final_manufacturing_stock_entry", roll_evidence[-1]["stock_entry"], update_modified=False)
+		if doc.meta.has_field("final_stock_posted_qty"):
+			doc.db_set("final_stock_posted_qty", roll_evidence[-1]["total_qty"], update_modified=False)
+		return roll_evidence[-1]["stock_entry"]
 	if get_completed_parent_status(doc.name) != "Completed":
 		frappe.throw(_("Final manufacturing Stock Entry can only be created after all mandatory operations are completed."))
 
@@ -2393,6 +2485,35 @@ def create_final_manufacturing_stock_entry(doc):
 		), alert=True, indicator="green",
 	)
 	return stock_entry.name
+
+
+def _physical_packing_roll_evidence(doc):
+	"""Return complete submitted roll receipts for a Physical Packing final job."""
+	if not doc or not physical_operation_route_active(doc.name):
+		return None
+	final_jobs = get_final_finished_jobs(doc.name)
+	job_names = [job.name for job in final_jobs]
+	if not job_names:
+		return None
+	rolls = frappe.get_all(
+		"SmartEdge Roll",
+		filters={"packing_job": ["in", job_names], "process_status": "Packed", "packing_status": "Packed", "qc_status": "Passed"},
+		fields=["name", "current_meter_quantity"], limit_page_length=1000,
+	)
+	if not rolls:
+		return None
+	entries = []
+	for roll in rolls:
+		remark = f"SmartEdge physical Packing roll {roll.name}"
+		row = frappe.db.get_value("Stock Entry", {"remarks": remark, "docstatus": 1}, ["name"], as_dict=True)
+		if not row:
+			return None
+		entries.append({"stock_entry": row.name, "qty": flt(roll.current_meter_quantity)})
+	total_qty = sum(row["qty"] for row in entries)
+	expected_qty = sum(flt(job.stock_posting_qty) for job in final_jobs)
+	if expected_qty <= 0 or abs(total_qty - expected_qty) > 0.000001:
+		return None
+	return [{"stock_entry": entries[-1]["stock_entry"], "total_qty": total_qty}]
 
 
 def get_unposted_final_packing_jobs(final_jobs):
@@ -2627,13 +2748,19 @@ def validate_final_job_stock_entry_matches_parent(production, final_jobs, parent
 
 
 def _is_valid_incremental_packing_stock_entry(stock_entry, job_name):
-	"""Allow only the two exact SmartEdge incremental Packing references."""
+	"""Allow only approved Packing receipt references for this job."""
 	remarks = frappe.db.get_value("Stock Entry", stock_entry, "remarks") or ""
 	purpose = frappe.db.get_value("Stock Entry", stock_entry, "purpose")
 	if remarks == f"SmartEdge incremental Packing receipt {job_name}":
 		return purpose == "Material Receipt"
 	if remarks == f"SmartEdge incremental Packing physical Repack {job_name}":
 		return purpose == "Repack"
+	roll_prefix = "SmartEdge physical Packing roll "
+	if remarks.startswith(roll_prefix):
+		roll_name = remarks[len(roll_prefix):].strip()
+		return purpose == "Repack" and frappe.db.get_value(
+			"SmartEdge Roll", roll_name, "packing_job"
+		) == job_name
 	return False
 
 
@@ -2647,6 +2774,8 @@ def link_final_manufacturing_stock_entry(doc, final_jobs, stock_entry, finished_
 	# final Stock Entry has been validated and recorded.
 	if get_generator_lifecycle_status(doc) != "Cancelled" and doc.meta.has_field("production_status"):
 		doc.db_set("production_status", "Completed", update_modified=False)
+		if doc.meta.has_field("status"):
+			doc.db_set("status", "Completed", update_modified=False)
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 		refresh_material_readiness(doc.name)
 	job_meta = frappe.get_meta("SmartEdge Production Job", cached=True)
@@ -2786,16 +2915,16 @@ def physical_operation_route_active(production):
 
 
 @frappe.whitelist()
-def repair_physical_qc_route_snapshot(plan_entry, apply=False):
-	"""Safely repair one unposted Physical WIP QC handoff snapshot.
+def repair_physical_route_snapshot(plan_entry, apply=False):
+	"""Safely repair one unposted Physical WIP route snapshot.
 
 	Existing submitted plans are immutable by default.  ``apply`` is explicit so
 	callers can inspect the validation result before changing an affected Ready
 	plan; no Stock Entry or historical transaction is rewritten here.
 	"""
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", plan_entry)
-	if entry.get("plan_type") != "Final EB" or "qc" not in str(entry.get("operation") or "").lower():
-		frappe.throw(_("Only a Final EB QC plan entry can be repaired."))
+	if entry.get("plan_type") != "Final EB":
+		frappe.throw(_("Only a Final EB physical route plan entry can be repaired."))
 	from smart_edge_custom.manufacturing.final_bom_generator import PHYSICAL_WIP, get_stored_stock_posting_mode
 	if get_stored_stock_posting_mode(entry.final_eb_bom_generator) != PHYSICAL_WIP:
 		frappe.throw(_("The parent generator is not locked to Physical WIP."))
@@ -2804,35 +2933,53 @@ def repair_physical_qc_route_snapshot(plan_entry, apply=False):
 	job = frappe.db.get_value("SmartEdge Production Job", {"plan_entry": entry.name},
 		["name", "status", "manufacturing_stock_entry"], as_dict=True)
 	if job and job.manufacturing_stock_entry and frappe.db.get_value("Stock Entry", job.manufacturing_stock_entry, "docstatus") == 1:
-		frappe.throw(_("QC job {0} already has a submitted Stock Entry; review it instead of changing the snapshot.").format(job.name))
+		frappe.throw(_("Production Job {0} already has a submitted Stock Entry; review it instead of changing the snapshot.").format(job.name))
+	generator = frappe.get_doc("Final EB BOM Generator", entry.final_eb_bom_generator)
+	route_row = next((row for row in generator.get("operation_preview") or []
+		if row.name == entry.operation_row or (row.operation == entry.operation and row.sequence == entry.sequence)), None)
+	if not route_row or route_row.stock_movement_type not in {"Stockable WIP Output", "WIP Transfer / Processing"}:
+		frappe.throw(_("The selected route does not explicitly configure {0} as a physical stock handoff.").format(entry.operation))
 	previous = get_previous_mandatory_entry(entry)
-	if not previous:
-		frappe.throw(_("QC plan entry {0} has no predecessor route entry.").format(entry.name))
-	previous_job = frappe.db.get_value("SmartEdge Production Job", {"plan_entry": previous.name, "status": "Completed"},
-		["name", "output_production_lot", "manufacturing_stock_entry"], as_dict=True)
-	if not previous_job or not previous_job.output_production_lot or not previous_job.manufacturing_stock_entry:
-		frappe.throw(_("The predecessor QC input is not a completed, physically posted operation."))
-	from smart_edge_custom.manufacturing.physical_operation_stock import physical_input_batch
-	batch = physical_input_batch(previous_job.output_production_lot)
-	if not batch:
-		frappe.throw(_("The predecessor has no physical output Batch."))
-	from erpnext.stock.doctype.batch.batch import get_batch_qty
-	available = sum(flt(row.get("qty")) for row in (get_batch_qty(batch_no=batch) or []))
-	if available <= 0:
-		frappe.throw(_("The predecessor Batch {0} has no available stock.").format(batch))
-	result = {"plan_entry": entry.name, "predecessor": previous.name, "predecessor_batch": batch,
-		"available_qty": available, "old_movement_type": entry.stock_movement_type,
-		"new_movement_type": "WIP Transfer / Processing", "applied": False}
+	result = {"plan_entry": entry.name, "predecessor": previous.name if previous else None,
+		"old_movement_type": entry.stock_movement_type, "new_movement_type": route_row.stock_movement_type,
+		"old_wip_warehouse": entry.wip_warehouse, "new_wip_warehouse": route_row.wip_warehouse,
+		"applied": False}
+	if previous:
+		previous_job = frappe.db.get_value("SmartEdge Production Job", {"plan_entry": previous.name, "status": "Completed"},
+			["name", "output_production_lot", "manufacturing_stock_entry"], as_dict=True)
+		if not previous_job or not previous_job.output_production_lot or not previous_job.manufacturing_stock_entry:
+			frappe.throw(_("The predecessor input is not a completed, physically posted operation."))
+		from smart_edge_custom.manufacturing.physical_operation_stock import physical_input_batch
+		batch = physical_input_batch(previous_job.output_production_lot)
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+		available = sum(flt(row.get("qty")) for row in (get_batch_qty(batch_no=batch) or []))
+		if available <= 0:
+			frappe.throw(_("The predecessor Batch {0} has no available stock.").format(batch))
+		result.update({"predecessor_batch": batch, "available_qty": available})
 	if apply:
-		entry.planning_category = "QC"
-		entry.stock_movement_type = "WIP Transfer / Processing"
-		entry.wip_warehouse = entry.wip_warehouse or previous.wip_warehouse
+		entry.planning_category = route_row.planning_category or entry.planning_category or "Other"
+		entry.stock_movement_type = route_row.stock_movement_type
+		entry.wip_warehouse = entry.wip_warehouse or route_row.wip_warehouse
 		if not entry.wip_warehouse:
-			frappe.throw(_("A WIP Warehouse is required before repairing the QC snapshot."))
+			entry.wip_warehouse = _route_wip_warehouse(
+				generator, frappe._dict(wip_warehouse=None), entry.stock_movement_type
+			)
+		if not entry.wip_warehouse:
+			frappe.throw(_("A WIP Warehouse is required before repairing the physical route snapshot."))
+		validate_stock_warehouse(entry.wip_warehouse, generator.company, _("Physical WIP Warehouse"))
 		entry.save(ignore_permissions=True)
 		result["applied"] = True
 		result["wip_warehouse"] = entry.wip_warehouse
 	return result
+
+
+@frappe.whitelist()
+def repair_physical_qc_route_snapshot(plan_entry, apply=False):
+	"""Backward-compatible wrapper for the original QC repair endpoint."""
+	entry = frappe.db.get_value("SmartEdge Production Plan Entry", plan_entry, ["operation"], as_dict=True)
+	if not entry or "qc" not in str(entry.operation or "").lower():
+		frappe.throw(_("Only a Final EB QC plan entry can be repaired."))
+	return repair_physical_route_snapshot(plan_entry, apply=apply)
 
 
 def is_first_fg_operation_entry(entry):
@@ -3482,8 +3629,7 @@ def get_complete_job_context(plan_entry):
 	)
 	completion_quantity_context = get_completion_quantity_context(entry, job, production=production)
 	context.update(completion_quantity_context)
-	from smart_edge_custom.manufacturing.packing import operation_qr_required
-	context["packing_qr_required"] = operation_qr_required(entry.operation)
+	context["packing_qr_required"] = False
 	context["is_extrusion_operation"] = is_extrusion_operation(entry)
 	context["existing_roll_packing_details"] = [
 		{"roll_no": cint(row.roll_no), "meter_quantity": flt(row.meter_quantity)}
@@ -3513,7 +3659,9 @@ def get_complete_job_context(plan_entry):
 			actual_qty_meter=preview_qty,
 			good_qty=preview_qty,
 		)
-		context["show_batch_consumption"] = 1
+		# Keep the calculation available for stock validation, but hide the
+		# optional Planning Board summary unless explicitly re-enabled.
+		context["show_batch_consumption"] = cint(frappe.conf.get("enable_batch_consumption_summary", 0)) == 1
 	return context
 
 
@@ -3568,8 +3716,8 @@ def validate_roll_packing_details(entry, job, roll_count, roll_packing_details, 
 	seen_roll_numbers = set()
 	total = 0
 	for row in roll_packing_details:
-		if not isinstance(row, dict) or set(row) - {"roll_no", "meter_quantity"}:
-			frappe.throw(_("Each roll entry must contain only Roll No and Meter Quantity."))
+		if not isinstance(row, dict) or set(row) - {"roll_no", "meter_quantity", "destination_warehouse"}:
+			frappe.throw(_("Each roll entry must contain only Roll No, Meter Quantity and Destination Warehouse."))
 		try:
 			roll_no_text = str(row.get("roll_no")).strip()
 			meter_text = str(row.get("meter_quantity")).strip()
@@ -3582,7 +3730,7 @@ def validate_roll_packing_details(entry, job, roll_count, roll_packing_details, 
 		if roll_no in seen_roll_numbers or roll_no < 1 or roll_no > roll_count_value:
 			frappe.throw(_("Roll numbers must be unique and sequential from 1 to {0}.").format(roll_count_value))
 		seen_roll_numbers.add(roll_no)
-		rows.append({"roll_no": roll_no, "meter_quantity": meter_quantity})
+		rows.append({"roll_no": roll_no, "meter_quantity": meter_quantity, "destination_warehouse": row.get("destination_warehouse")})
 		total += meter_quantity
 	if seen_roll_numbers != set(range(1, roll_count_value + 1)):
 		frappe.throw(_("Roll numbers must be sequential from 1 to {0}.").format(roll_count_value))
@@ -4394,12 +4542,6 @@ def complete_production_job(
 		)
 	elif is_extrusion and roll_packing_details not in (None, "", [], "[]"):
 		roll_rows = []
-	from smart_edge_custom.manufacturing.packing import operation_qr_required
-	if operation_qr_required(entry.operation):
-		if not job.get("packing_qr_verified_lot") or job.get("packing_qr_verified_lot") != job.get("input_production_lot"):
-			frappe.throw(_("Verify the previous operation Production Lot QR before completing Packing."))
-		if flt(job.get("packing_qr_verified_qty")) + 0.000001 < flt(actual_qty_meter or good_qty):
-			frappe.throw(_("Verified QR quantity does not cover the Packing quantity."))
 	from smart_edge_custom.manufacturing.quality_control import is_qc_entry, validate_downstream_quantity
 
 	if is_qc_entry(entry) and not getattr(frappe.flags, "smartedge_qc_decision", False):
@@ -4443,6 +4585,7 @@ def complete_production_job(
 		# request (including Kg/scrap-to-meter conversion).
 		validate_roll_packing_details(entry, job, len(roll_rows), roll_rows, actual_qty_meter, enforce_accounting=True)
 	if job.status == "Completed" and entry.get("plan_type") != MATERIAL_PLAN_TYPE:
+		validate_packing_rolls_for_completion(entry, job, completion_type or "Full Completion")
 		is_packing = "pack" in str(entry.get("planning_category") or "").lower() or "pack" in str(entry.get("operation") or "").lower()
 		previous_defer = getattr(frappe.flags, "smartedge_defer_packing_reconciliation", False)
 		if is_packing:
@@ -4530,6 +4673,7 @@ def complete_production_job(
 	if entry.get("plan_type") != MATERIAL_PLAN_TYPE:
 		validate_downstream_quantity(entry, max(flt(job.actual_qty_meter), flt(job.good_qty)))
 	completion_type = completion_type or "Full Completion"
+	validate_packing_rolls_for_completion(entry, job, completion_type)
 	if material_result:
 		job.manufacturing_stock_entry = material_result["stock_entry"]
 		job.stock_posted_qty = material_result["quantity"]
@@ -4544,6 +4688,7 @@ def complete_production_job(
 				{
 					"roll_no": roll_offset + row["roll_no"],
 					"meter_quantity": row["meter_quantity"],
+					"destination_warehouse": row.get("destination_warehouse"),
 				},
 			)
 	is_packing = "pack" in str(entry.get("planning_category") or "").lower() or "pack" in str(entry.get("operation") or "").lower()
@@ -4577,7 +4722,11 @@ def complete_production_job(
 
 
 def post_completed_physical_packing(production_job):
-	"""Post one completed Physical WIP Packing job without waiting for the route."""
+	"""Post one submitted Physical WIP Repack per eligible packed roll.
+
+	Each roll has its own stable Stock Entry reference, so retries can resume a
+	partially completed job without reposting a roll that already succeeded.
+	"""
 	job = frappe.get_doc("SmartEdge Production Job", production_job)
 	entry = frappe.get_doc("SmartEdge Production Plan Entry", job.plan_entry)
 	if job.status != "Completed" or not is_packing_plan_entry(entry):
@@ -4585,28 +4734,45 @@ def post_completed_physical_packing(production_job):
 	from smart_edge_custom.manufacturing import physical_operation_stock as physical_stock
 	if not physical_stock.production_uses_physical_stock(job.final_eb_bom_generator):
 		return None
+	# Preserve the established job-level transaction when one already exists;
+	# never split or repost a submitted historical receipt.
 	if job.get("manufacturing_stock_entry"):
 		if frappe.db.get_value("Stock Entry", job.manufacturing_stock_entry, "docstatus") == 1:
 			return job.manufacturing_stock_entry
 		frappe.throw(_("Completed Physical Packing Job {0} has an unresolved Stock Entry reference.").format(job.name))
 	lock_final_eb_bom_generator(job.final_eb_bom_generator)
 	generator = frappe.get_doc("Final EB BOM Generator", job.final_eb_bom_generator)
-	quantity = flt(job.good_qty) or flt(job.actual_qty_meter)
-	output = get_finished_stock_row(generator, quantity, get_finished_goods_warehouse(generator))
-	stock_entry = physical_stock.post_incremental_packing_repack(
-		generator, job, frappe._dict(output), physical_stock.get_packing_fg_batch(generator)
-	)
-	job.db_set("manufacturing_stock_entry", stock_entry, update_modified=False)
-	if job.meta.has_field("stock_posted_qty"):
-		job.db_set("stock_posted_qty", quantity, update_modified=False)
-	lot = job.get("output_production_lot")
-	if lot and frappe.db.exists("SmartEdge Production Lot", lot):
-		frappe.db.set_value("SmartEdge Production Lot", lot, "stock_entry", stock_entry, update_modified=False)
 	from smart_edge_custom.manufacturing.roll_tracking import link_packed_rolls_to_finished_batch
-	link_packed_rolls_to_finished_batch(stock_entry, generator.name)
 	from smart_edge_custom.manufacturing.production_lot import reconcile_final_production
-	reconcile_final_production(generator.name, stock_entry)
-	return stock_entry
+	rolls = frappe.get_all("SmartEdge Roll", filters={
+		"packing_job": job.name, "qc_status": "Passed",
+		"process_status": "Packed", "packing_status": "Packed",
+	}, fields=["name", "current_meter_quantity"], order_by="roll_sequence asc, name asc", limit_page_length=500)
+	if not rolls:
+		frappe.throw(_("Physical Packing Job {0} has no eligible QC-approved packed Rolls.").format(job.name))
+	fg_batch = physical_stock.get_packing_fg_batch(generator)
+	posted = []
+	for roll in rolls:
+		quantity = flt(roll.current_meter_quantity)
+		if quantity <= 0:
+			frappe.throw(_("SmartEdge Roll {0} has no positive packing quantity.").format(roll.name))
+		output = get_finished_stock_row(generator, quantity, get_finished_goods_warehouse(generator))
+		stock_entry = physical_stock.post_incremental_packing_repack(
+			generator, job, frappe._dict(output), fg_batch, roll_name=roll.name
+		)
+		posted.append(stock_entry)
+		link_packed_rolls_to_finished_batch(stock_entry, generator.name, roll_name=roll.name)
+		reconcile_final_production(generator.name, stock_entry)
+		if not fg_batch:
+			fg_batch = physical_stock.get_packing_fg_batch(generator)
+	if job.meta.has_field("stock_posted_qty"):
+		job.db_set("stock_posted_qty", sum(flt(roll.current_meter_quantity) for roll in rolls), update_modified=False)
+	lot = job.get("output_production_lot")
+	if lot and frappe.db.exists("SmartEdge Production Lot", lot) and posted:
+		# Keep the lot auditable without making one roll's receipt the job-level
+		# idempotency key.  Retries are keyed by each roll reference above.
+		frappe.db.set_value("SmartEdge Production Lot", lot, "stock_entry", posted[-1], update_modified=False)
+	return posted[0] if len(posted) == 1 else posted
 
 
 def lock_production_job(production_job):
@@ -4614,6 +4780,26 @@ def lock_production_job(production_job):
 
 
 def get_open_job(plan_entry, include_completed=False):
+	# A Plan Entry can outlive its Production Job if historical data was
+	# removed outside the normal lifecycle.  Detect that dangling reference
+	# explicitly before querying active jobs; recreating a Job here would risk
+	# duplicate stock posting and would lose the original audit trail.
+	plan_link = frappe.db.get_value(
+		"SmartEdge Production Plan Entry",
+		plan_entry,
+		["production_job", "operation"],
+		as_dict=True,
+	)
+	linked_job = plan_link.get("production_job") if plan_link else None
+	if linked_job and not frappe.db.exists("SmartEdge Production Job", linked_job):
+		frappe.throw(
+			_(
+				"Plan Entry {0} references missing Production Job {1}. "
+				"Restore the original Job or use the controlled replanning workflow "
+				"after reconciling its Lots, Rolls, QC decisions, and Stock Entries."
+			).format(plan_entry, linked_job),
+			title=_("Missing Production Job"),
+		)
 	jobs = frappe.get_all(
 		"SmartEdge Production Job",
 		filters={"plan_entry": plan_entry, "status": ["!=", "Cancelled"]},

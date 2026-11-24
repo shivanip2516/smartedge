@@ -34,10 +34,6 @@ function get_server_error_message(error, fallback) {
 	return response.message || error?.message || fallback;
 }
 
-function get_qr_verification_error_message(error) {
-	return get_server_error_message(error, __("The scanned QR could not be verified."));
-}
-
 function get_completion_quantity_defaults(context = {}, card = {}) {
 	const has_recorded_output = Boolean(
 		flt(context.actual_qty_meter) > 0 ||
@@ -1448,8 +1444,8 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				dialog.set_value("packing_roll_quantity", quantity);
 				dialog.fields_dict.packing_rolls.$wrapper.html(rolls.length ? `
 					<div class="se-packing-roll-selection">
-						<table class="table table-bordered"><thead><tr><th></th><th>${__("Roll ID")}</th><th>${__("Current Quantity (m)")}</th></tr></thead><tbody>
-						${rolls.map((row) => `<tr><td><input type="checkbox" class="se-packing-roll-check" data-roll-id="${frappe.utils.escape_html(row.name)}" ${selected.has(row.name) ? "checked" : ""}></td><td>${frappe.utils.escape_html(row.name)}</td><td>${se_format_meter(row.current_meter_quantity)}</td></tr>`).join("")}
+						<table class="table table-bordered"><thead><tr><th></th><th>${__("Roll ID")}</th><th>${__("Current Quantity (m)")}</th><th>${__("Batch")}</th><th>${__("Destination")}</th><th>${__("Transfer Stock Entry")}</th><th>${__("Transfer Status")}</th></tr></thead><tbody>
+						${rolls.map((row) => `<tr><td><input type="checkbox" class="se-packing-roll-check" data-roll-id="${frappe.utils.escape_html(row.name)}" ${selected.has(row.name) ? "checked" : ""}></td><td>${frappe.utils.escape_html(row.name)}</td><td>${se_format_meter(row.current_meter_quantity)}</td><td>${frappe.utils.escape_html(row.source_batch || "")}</td><td>${frappe.utils.escape_html(row.destination_warehouse || "")}</td><td>${row.transfer_stock_entry ? `<a href="/app/stock-entry/${encodeURIComponent(row.transfer_stock_entry)}" target="_blank">${frappe.utils.escape_html(row.transfer_stock_entry)}</a>` : ""}</td><td>${frappe.utils.escape_html(row.transfer_status || "Not Requested")}</td></tr>`).join("")}
 						</tbody></table>
 						${!rolls.length ? `<p class="text-danger">${__("No QC-approved whole rolls are available for Packing.")}</p>` : ""}
 					</div>` : `<p class="text-danger">${__("No QC-approved whole rolls are available for Packing.")}</p>`);
@@ -1799,7 +1795,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 		const kg_required = flt(context.planned_qty_kg) > 0;
 		const quantity_calculation_enabled = is_material || kg_required;
 		let completing = false;
-		let verified_qr = null;
 		let completion_quantity_request = 0;
 		let completion_quantity_error = quantity_calculation_enabled;
 		let completion_quantity_error_message = null;
@@ -1838,9 +1833,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					hidden: !context.show_batch_consumption,
 					options: render_batch_consumption_summary(context.batch_consumption_preview),
 				},
-				{ fieldtype: "Section Break", label: __("Input Material Verification"), hidden: !context.packing_qr_required },
-				{ fieldtype: "Data", fieldname: "packing_qr", label: __("Scan Production Lot QR"), hidden: !context.packing_qr_required, description: __("Scan the previous operation label and press Enter.") },
-				{ fieldtype: "HTML", fieldname: "packing_qr_status", hidden: !context.packing_qr_required, options: `<div class="text-muted">${__("Not scanned")}</div>` },
 				{ fieldtype: "Section Break", label: __("Completion Details") },
 				{
 					fieldtype: "Select",
@@ -1867,6 +1859,13 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					reqd: roll_packing_enabled,
 					hidden: !roll_packing_enabled,
 					default: roll_packing_enabled ? 1 : 0,
+				},
+				{
+					fieldtype: "Link",
+					fieldname: "roll_destination_warehouse",
+					label: __("Roll Destination Warehouse"),
+					options: "Warehouse",
+					hidden: !roll_packing_enabled,
 				},
 				{ fieldtype: "HTML", fieldname: "roll_packing_inputs", hidden: !roll_packing_enabled, options: "" },
 				{
@@ -1953,9 +1952,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				const $primary = dialog.get_primary_btn();
 				$primary.prop("disabled", true);
 				try {
-					if (context.packing_qr_required) {
-						await verify_input_qr(current_values.actual_qty_meter);
-					}
 					const completion_args = {
 						method: `${this.method}.complete_production_job`,
 						args: {
@@ -2085,7 +2081,7 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 					return null;
 				}
 				const meter_quantity = Number(value);
-				rows.push({ roll_no: index + 1, meter_quantity });
+				rows.push({ roll_no: index + 1, meter_quantity, destination_warehouse: dialog.get_value("roll_destination_warehouse") || null });
 				total += meter_quantity;
 			}
 			dialog.set_value("total_roll_quantity", total);
@@ -2111,35 +2107,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				dialog.fields_dict[fieldname]?.$input?.on("input change", update_roll_total);
 			}
 		}
-		const set_qr_status = (message, indicator = "muted") => {
-			const wrapper = dialog.fields_dict.packing_qr_status?.$wrapper;
-			if (wrapper) wrapper.html(`<div class="text-${indicator}">${frappe.utils.escape_html(message)}</div>`);
-		};
-		const verify_input_qr = async (quantity) => {
-			const payload = String(dialog.get_value("packing_qr") || "").trim();
-			if (!payload) {
-				verified_qr = null;
-				set_qr_status(__("Not scanned"));
-				frappe.throw(__("Scan the input Production Lot QR before completing this operation."));
-			}
-			set_qr_status(__("Verifying QR…"));
-			const response = await frappe.call({
-				method: "smart_edge_custom.manufacturing.packing.verify_packing_qr",
-				args: { plan_entry: card.id, payload, quantity: quantity ?? dialog.get_value("actual_qty_meter") },
-			});
-			verified_qr = response.message || null;
-			const batch_text = verified_qr.batch ? ` | ${__("Batch")}: ${verified_qr.batch}` : "";
-			set_qr_status(__("QR Verified — Lot: {0} | Operation: {1} | Item: {2}{3} | Qty: {4} {5} | QC: {6}", [
-				verified_qr.production_lot,
-				verified_qr.source_operation || "N/A",
-				verified_qr.item || "N/A",
-				batch_text,
-				verified_qr.quantity,
-				verified_qr.uom || "",
-				verified_qr.qc_status || "N/A",
-			]), "success");
-			return verified_qr;
-		};
 		dialog.show();
 		if (roll_packing_enabled) render_roll_inputs(1);
 		const set_completion_quantity_message = (message, indicator = "muted") => {
@@ -2201,30 +2168,6 @@ smart_edge_custom.ProductionPlanningBoard = class ProductionPlanningBoard {
 				field.$input?.on("input change", schedule_completion_refresh);
 			}
 			schedule_completion_refresh();
-		}
-		if (context.packing_qr_required) {
-			const qr_input = dialog.fields_dict.packing_qr?.$input;
-			qr_input?.on("input", () => {
-				verified_qr = null;
-				set_qr_status(__("Scan pending verification"));
-			});
-			qr_input?.on("keydown", async (event) => {
-				if (event.key !== "Enter") return;
-				event.preventDefault();
-				try {
-					await verify_input_qr(dialog.get_value("actual_qty_meter"));
-				} catch (error) {
-					verified_qr = null;
-					set_qr_status(__("Verification failed"), "danger");
-					frappe.msgprint({ title: __("QR Verification Failed"), message: get_qr_verification_error_message(error), indicator: "red" });
-				}
-			});
-			const quantity_input = dialog.fields_dict.actual_qty_meter?.$input;
-			quantity_input?.on("input change", () => {
-				if (!verified_qr) return;
-				verified_qr = null;
-				set_qr_status(__("Quantity changed; scan again to verify."), "warning");
-			});
 		}
 		if (context.show_batch_consumption) {
 			let preview_request = 0;

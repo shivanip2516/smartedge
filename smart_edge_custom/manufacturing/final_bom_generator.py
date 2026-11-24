@@ -53,6 +53,33 @@ PHYSICAL_WIP = "Physical WIP"
 PHYSICAL_MOVEMENT_TYPES = {"Stockable WIP Output", "WIP Transfer / Processing"}
 
 
+def _route_wip_warehouse(doc, route_operation, movement_type):
+	"""Resolve a physical route row's WIP warehouse without a site-specific name."""
+	warehouse = route_operation.get("wip_warehouse")
+	if warehouse or movement_type not in PHYSICAL_MOVEMENT_TYPES:
+		return warehouse
+	if get_stock_posting_mode(doc) != PHYSICAL_WIP or not doc.get("company"):
+		return warehouse
+	# Company configuration is authoritative; never hardcode a warehouse name.
+	warehouse = frappe.db.get_value("Company", doc.company, "default_wip_warehouse") or warehouse
+	if warehouse:
+		return warehouse
+	abbr = frappe.db.get_value("Company", doc.company, "abbr")
+	if abbr:
+		candidate = f"Work In Progress - {abbr}"
+		if frappe.db.exists("Warehouse", {"name": candidate, "company": doc.company, "is_group": 0}):
+			return candidate
+	# A unique enabled leaf WIP warehouse is safe to infer; ambiguity is left
+	# unresolved so normal validation can request an explicit choice.
+	rows = frappe.get_all(
+		"Warehouse",
+		filters={"company": doc.company, "is_group": 0, "name": ["like", "%Work In Progress%"]},
+		pluck="name",
+		limit_page_length=10,
+	)
+	return rows[0] if len(rows) == 1 else None
+
+
 class InsufficientMaterialQuantityError(frappe.ValidationError):
 	pass
 
@@ -739,6 +766,8 @@ def get_route_operations(doc, route_doc):
 		if planning_category != "QC" and ("qc" in operation_text.lower() or "quality" in operation_text.lower()):
 			planning_category = "QC"
 		stock_movement_type = route_operation.get("stock_movement_type") or "Non-Stock Operation"
+		physical_processing_mode = route_operation.get("physical_processing_mode") or "New Operation Batch Transformation"
+		wip_warehouse = _route_wip_warehouse(doc, route_operation, stock_movement_type)
 		if not frappe.db.exists("Operation", operation_name):
 			warnings.append(_("Missing Operation: {0}").format(operation_name))
 			rows.append(
@@ -748,7 +777,8 @@ def get_route_operations(doc, route_doc):
 					"planning_category": planning_category or "Other",
 					"mandatory": route_operation.mandatory,
 					"stock_movement_type": stock_movement_type,
-					"wip_warehouse": route_operation.get("wip_warehouse"),
+					"physical_processing_mode": physical_processing_mode,
+					"wip_warehouse": wip_warehouse,
 				}
 			)
 			continue
@@ -781,7 +811,8 @@ def get_route_operations(doc, route_doc):
 				"labour_cost": labour_cost,
 				"mandatory": route_operation.mandatory,
 				"stock_movement_type": stock_movement_type,
-				"wip_warehouse": route_operation.get("wip_warehouse"),
+				"physical_processing_mode": physical_processing_mode,
+				"wip_warehouse": wip_warehouse,
 				"is_qc": 1 if planning_category == "QC" else 0,
 				"is_printing": 1 if planning_category == "Printing" else 0,
 				"is_slitting": 1 if planning_category == "Slitting" else 0,
@@ -1342,6 +1373,7 @@ def classify_stock_posting_modes():
 				and (
 					remarks.startswith("SmartEdge physical operation ")
 					or remarks.startswith("SmartEdge incremental Packing physical Repack ")
+					or remarks.startswith("SmartEdge physical Packing roll ")
 					or (stock_entry == row.final_manufacturing_stock_entry and purpose == "Repack")
 				)
 			)
@@ -1486,6 +1518,7 @@ def create_planning_entries(doc):
 		entry.workstation = operation.workstation
 		entry.planning_category = operation.planning_category or "Other"
 		entry.stock_movement_type = operation.get("stock_movement_type") or "Non-Stock Operation"
+		entry.physical_processing_mode = operation.get("physical_processing_mode") or "New Operation Batch Transformation"
 		entry.wip_warehouse = operation.get("wip_warehouse")
 		entry.sequence = operation.sequence
 		entry.production_quantity = doc.production_quantity

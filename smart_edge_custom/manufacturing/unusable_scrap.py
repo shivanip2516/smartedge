@@ -95,7 +95,6 @@ def _create_batch(lot, item):
 		"doctype": "Batch", "batch_id": batch_id, "item": item.name,
 		"item_name": frappe.db.get_value("Item", item.name, "item_name"), "disabled": 0,
 		"manufacturing_date": get_datetime(lot.movement_datetime).date(),
-		"custom_batch_purpose": "Physical Stock",
 		"custom_smartedge_recovery_stage": "Unusable Scrap",
 		"custom_smartedge_source_batch": lot.source_batch,
 		"custom_smartedge_source_production_job": lot.production_job,

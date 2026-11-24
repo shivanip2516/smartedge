@@ -59,7 +59,6 @@
 				const node = backward.root || forward.root || {};
 				const rows = [
 					[__("Batch"), link("Batch", name)],
-					[__("Batch Purpose"), escape(frm.doc.custom_batch_purpose || "Physical Stock")],
 					[__("Item"), `${link("Item", frm.doc.item)} — ${escape(frm.doc.item_name)}`],
 					[__("Operation"), link("Operation", node.operation || frm.doc.custom_operation_name)],
 					[__("Production Job"), link("SmartEdge Production Job", node.production_job || (operation ? frm.doc.reference_name : null))],

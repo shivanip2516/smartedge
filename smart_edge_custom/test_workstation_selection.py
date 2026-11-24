@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
+import inspect
 
 import frappe
 
@@ -27,6 +28,33 @@ def make_fake_frappe(exists=None, get_value=None, get_all=None, get_list=None, g
 
 
 class TestWorkstationOptionResolution(TestCase):
+	def test_capacity_api_resolves_workstation_from_plan_entry_when_omitted(self):
+		entry = frappe._dict(
+			name="SE-PLAN-2026-00514", operation="Printing", workstation="Packing",
+			planned_shift=None, final_eb_bom_generator="FEBG-1",
+		)
+		entry.check_permission = Mock()
+		with (
+			patch("smart_edge_custom.manufacturing.operator_access.require_planning_supervisor"),
+			patch.object(planning.frappe, "get_doc", return_value=entry),
+			patch.object(planning, "validate_plan_entry"),
+			patch.object(planning, "validate_workstation_reassignment_allowed") as reassignment,
+			patch.object(planning, "validate_selected_workstation"),
+			patch.object(planning, "get_schedule_capacity_projection", return_value={"status": "ok"}),
+			patch.object(planning, "get_working_hours_projection", return_value={}),
+			patch.object(planning, "get_workstation_booking_conflict_projection", return_value={}),
+			patch.object(planning, "can_confirm_capacity_overload", return_value=False),
+		):
+			result = planning.check_schedule_capacity(
+				"SE-PLAN-2026-00514", "2026-11-24", planned_start="11:35:03", duration_hours=1
+			)
+		self.assertEqual(result["status"], "ok")
+		reassignment.assert_called_once_with(entry, "Packing")
+
+	def test_capacity_api_exposes_optional_workstation_parameter(self):
+		signature = inspect.signature(planning.check_schedule_capacity)
+		self.assertIsNone(signature.parameters["workstation"].default)
+
 	def test_every_operation_exposes_all_active_workstations(self):
 		fake_frappe = make_fake_frappe(
 			exists=lambda doctype, name: doctype == "Operation",

@@ -146,7 +146,6 @@ def _create_recovery_batch(item_code, batch_id, stage, source_batch=None, produc
 		"item_name": frappe.db.get_value("Item", item_code, "item_name"),
 		"manufacturing_date": getdate(manufacturing_date or nowdate()),
 		"disabled": 0,
-		"custom_batch_purpose": "Physical Stock",
 		"custom_smartedge_recovery_stage": stage,
 		"custom_smartedge_source_batch": source_batch,
 		"custom_smartedge_source_production_job": production_job,

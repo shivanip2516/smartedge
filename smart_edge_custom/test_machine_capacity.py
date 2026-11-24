@@ -780,10 +780,7 @@ class TestOperationCapacityPayload(TestCase):
 			)
 		)
 		self.assertFalse(payload["configured"])
-		self.assertEqual(
-			payload["message"],
-			"Capacity not configured for this Workstation and production specification.",
-		)
+		self.assertIn("Capacity unavailable for Operation", payload["message"])
 
 	def test_configured_rate_without_quantity_is_not_available(self):
 		rows = [
@@ -890,10 +887,7 @@ class TestBoardCapacityMetrics(TestCase):
 			"configured": 1, "net_hours": 8, "reservation_hours_by_reference": {"plan:PLAN-A": 1},
 		}
 		capacity.attach_board_capacity_details([row])
-		self.assertEqual(
-			row.machine_capacity["message"],
-			"Capacity not configured for this Workstation and production specification.",
-		)
+		self.assertIn("Capacity unavailable for Operation", row.machine_capacity["message"])
 		self.assertIsNone(row.machine_capacity["workstation_utilization"])
 		self.assertIsNone(row.machine_capacity["available_capacity"])
 

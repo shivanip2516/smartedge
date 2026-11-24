@@ -5,6 +5,7 @@ import frappe
 
 from smart_edge_custom.manufacturing import physical_operation_stock
 from smart_edge_custom.manufacturing import final_bom_generator
+from smart_edge_custom import setup as smartedge_setup
 from smart_edge_custom.manufacturing.final_bom_generator import (
 	LEGACY_NON_STOCK,
 	PHYSICAL_WIP,
@@ -89,6 +90,52 @@ class TestStockPostingMode(unittest.TestCase):
 			patch("smart_edge_custom.manufacturing.planning.is_final_stock_posting_entry", return_value=False):
 			with self.assertRaisesRegex(Exception, "non-physical route snapshot"):
 				physical_operation_stock.should_post_operation(entry)
+
+	def test_physical_qc_handoff_is_posted_when_route_is_explicitly_physical(self):
+		"""QC checkpoints use the same physical handoff path when configured as WIP."""
+		for category in ("QC", "Printing", "Manufacturing"):
+			entry = frappe._dict(
+				name="PLAN-2",
+				final_eb_bom_generator="FEBG-TEST",
+				operation="QC After Extrusion" if category == "QC" else category,
+				planning_category=category,
+				stock_movement_type="WIP Transfer / Processing",
+			)
+			with patch("smart_edge_custom.manufacturing.final_bom_generator.get_stored_stock_posting_mode", return_value=PHYSICAL_WIP), \
+				patch("smart_edge_custom.manufacturing.planning.is_final_stock_posting_entry", return_value=False):
+				self.assertTrue(physical_operation_stock.should_post_operation(entry))
+
+	def test_physical_qc_with_posted_predecessor_cannot_silently_skip(self):
+		entry = frappe._dict(
+			name="PLAN-QC",
+			final_eb_bom_generator="FEBG-TEST",
+			operation="QC After Extrusion",
+			planning_category="QC",
+			stock_movement_type="Non-Stock Operation",
+		)
+		with patch("smart_edge_custom.manufacturing.final_bom_generator.get_stored_stock_posting_mode", return_value=PHYSICAL_WIP), \
+			patch.object(physical_operation_stock, "_is_first_material_consumption_entry", return_value=False), \
+			patch.object(physical_operation_stock, "_has_physical_predecessor", return_value=True):
+			with self.assertRaisesRegex(Exception, "non-physical route snapshot"):
+				physical_operation_stock.should_post_operation(entry)
+
+	def test_physical_route_uses_company_wip_warehouse_without_hardcoding(self):
+		doc = frappe._dict(company="Company - SE", stock_posting_mode=PHYSICAL_WIP)
+		with patch.object(final_bom_generator, "get_stock_posting_mode", return_value=PHYSICAL_WIP), \
+			patch.object(final_bom_generator.frappe.db, "get_value", return_value="Work In Progress - SE"):
+			self.assertEqual(
+				final_bom_generator._route_wip_warehouse(
+					doc, frappe._dict(stock_movement_type="WIP Transfer / Processing"),
+					"WIP Transfer / Processing",
+				),
+				"Work In Progress - SE",
+			)
+
+	def test_default_route_movement_mapping_uses_sequence_and_operation_role(self):
+		self.assertEqual(smartedge_setup.infer_stock_movement_type("Extrusion", 1), "Stockable WIP Output")
+		self.assertEqual(smartedge_setup.infer_stock_movement_type("QC After Extrusion", 2), "WIP Transfer / Processing")
+		self.assertEqual(smartedge_setup.infer_stock_movement_type("Printing", 3), "WIP Transfer / Processing")
+		self.assertEqual(smartedge_setup.infer_stock_movement_type("Packing", 4), "Non-Stock Operation")
 
 
 if __name__ == "__main__":

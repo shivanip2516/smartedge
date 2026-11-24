@@ -979,10 +979,14 @@ def refresh_material_readiness(production):
 	# need quantities/statuses and must not acquire Workstation read permissions.
 	context = build_material_planning_context(doc, include_planning_details=False)
 	lifecycle_status = get_generator_lifecycle_status(doc)
+	lifecycle_options = {"Draft", "Ready for Planning", "Partially Planned", "Planned", "In Progress", "Completed", "On Hold", "Cancelled"}
 	updates = {
 		"material_readiness_status": context["overall_status"],
 		"production_status": lifecycle_status,
-		"status": "Cancelled" if lifecycle_status == "Cancelled" else context["workflow_status"],
+		# Material readiness has its own fields. Once manufacturing lifecycle
+		# status is established, never replace the visible Generator status with
+		# a material-only value such as "Material Production In Progress".
+		"status": lifecycle_status if lifecycle_status in lifecycle_options else context["workflow_status"],
 	}
 	for requirement in context["requirements"]:
 		config = MATERIAL_CONFIG[requirement["material_type"]]

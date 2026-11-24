@@ -236,7 +236,6 @@ def record_completed_job(job, allow_create=True):
 	lot = _create_completed_operation_lot(job, entry, production, input_lot)
 	produced_qty = lot.produced_quantity
 	link_job_lots(job, input_lot, lot.name)
-
 	record_movement(
 		"Production Output",
 		("output", job.name),
@@ -615,6 +614,11 @@ def record_movement(
 	source_operation=None,
 	destination_operation=None,
 	destination_plan_entry=None,
+	roll=None,
+	operation_sequence=None,
+	stock_entry=None,
+	source_warehouse=None,
+	destination_warehouse=None,
 	reference_doctype="SmartEdge Production Job",
 	reference_name=None,
 	remarks=None,
@@ -630,9 +634,21 @@ def record_movement(
 	doc.status = ACTIVE
 	doc.final_eb_bom_generator = job.final_eb_bom_generator
 	doc.finished_item = production.finished_item
+	if doc.meta.has_field("planning_route"):
+		doc.planning_route = frappe.db.get_value("Final EB BOM Generator", job.final_eb_bom_generator, "selected_route")
 	doc.production_job = job.name
 	doc.source_plan_entry = entry.name
 	doc.destination_plan_entry = destination_plan_entry
+	if doc.meta.has_field("roll"):
+		doc.roll = roll
+	if doc.meta.has_field("operation_sequence"):
+		doc.operation_sequence = operation_sequence
+	if doc.meta.has_field("stock_entry"):
+		doc.stock_entry = stock_entry
+	if doc.meta.has_field("source_warehouse"):
+		doc.source_warehouse = source_warehouse
+	if doc.meta.has_field("destination_warehouse"):
+		doc.destination_warehouse = destination_warehouse
 	doc.employee = job.operator_employee
 	doc.reference_doctype = reference_doctype
 	doc.reference_name = reference_name or job.name
@@ -650,6 +666,16 @@ def record_movement(
 		doc.insert(ignore_permissions=True)
 	except frappe.DuplicateEntryError:
 		return frappe.db.exists(LEDGER_DOCTYPE, movement_key)
+	if roll and stock_entry:
+		from smart_edge_custom.manufacturing.roll_tracking import append_stock_movement_history
+		append_stock_movement_history(
+			roll, operation=destination_operation or source_operation,
+			operation_sequence=operation_sequence, production_job=job.name,
+			plan_entry=entry.name, quantity=quantity, source_batch=source_batch,
+			output_batch=destination_batch, source_warehouse=source_warehouse,
+			target_warehouse=destination_warehouse, stock_entry=stock_entry,
+			movement_type=movement_type, status="Submitted",
+		)
 	return doc.name
 
 

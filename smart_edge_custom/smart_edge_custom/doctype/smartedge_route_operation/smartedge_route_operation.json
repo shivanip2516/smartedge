@@ -11,6 +11,7 @@
   "planning_category",
   "mandatory",
   "stock_movement_type",
+  "physical_processing_mode",
   "wip_warehouse"
  ],
  "fields": [
@@ -64,6 +65,15 @@
    "label": "Stock Movement",
    "options": "Non-Stock Operation\nStockable WIP Output\nWIP Transfer / Processing",
    "reqd": 1
+  },
+  {
+   "columns": 2,
+   "default": "New Operation Batch Transformation",
+   "fieldname": "physical_processing_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Physical Processing Mode",
+   "options": "Same Batch Material Transfer\nNew Operation Batch Transformation\nFinal Finished Goods Transformation"
   },
   {
    "columns": 3,

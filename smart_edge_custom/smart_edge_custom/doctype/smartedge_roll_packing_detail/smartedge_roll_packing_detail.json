@@ -5,7 +5,8 @@
  "istable": 1,
  "fields": [
   {"fieldname": "roll_no", "fieldtype": "Int", "label": "Roll No", "reqd": 1},
-  {"fieldname": "meter_quantity", "fieldtype": "Float", "label": "Meter Quantity", "precision": "0", "reqd": 1}
+  {"fieldname": "meter_quantity", "fieldtype": "Float", "label": "Meter Quantity", "precision": "0", "reqd": 1},
+  {"fieldname": "destination_warehouse", "fieldtype": "Link", "label": "Destination Warehouse", "options": "Warehouse"}
  ],
  "permissions": []
 }

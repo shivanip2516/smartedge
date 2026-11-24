@@ -299,6 +299,7 @@ def ensure_process_routes():
 		doc.extrusion_type = route["extrusion_type"]
 		doc.slitting_type = route["slitting_type"]
 		for sequence, (operation, workstation) in enumerate(route["operations"], start=1):
+			movement = infer_stock_movement_type(operation, sequence)
 			doc.append(
 				"operations",
 				{
@@ -306,6 +307,7 @@ def ensure_process_routes():
 					"operation": operation,
 					"workstation": workstation,
 					"planning_category": infer_planning_category(operation),
+					"stock_movement_type": movement,
 					"mandatory": 1,
 				},
 			)
@@ -327,3 +329,13 @@ def infer_planning_category(operation):
 	if "packing" in operation_text:
 		return "Packing"
 	return "Other"
+
+
+def infer_stock_movement_type(operation, sequence=1):
+	"""Seed only known physical route stages; leave packing/inspection-only rows non-stock."""
+	text = (operation or "").lower()
+	if sequence == 1 and ("extrusion" in text or "printing" in text):
+		return "Stockable WIP Output"
+	if any(token in text for token in ("extrusion", "printing", "slitting", "qc")):
+		return "WIP Transfer / Processing"
+	return "Non-Stock Operation"

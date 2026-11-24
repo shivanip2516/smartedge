@@ -130,10 +130,12 @@ class TestRollTrackingUnit(unittest.TestCase):
 			name="SE-ROLL-1", finished_item="FG-ITEM", final_fg_batch=None,
 			qc_status="Passed", process_status="Packed", packing_status="Packed",
 		)
+		# Include a dict-like row without operation; it must be ignored rather
+		# than raising AttributeError.
 		with patch.object(roll_tracking.frappe, "db", fake_db), \
 			patch.object(roll_tracking.frappe, "get_meta", return_value=meta), \
 			patch.object(roll_tracking.frappe, "get_doc", return_value=frappe._dict(name="STE-1", items=[])), \
-			patch.object(roll_tracking.frappe, "get_all", side_effect=[[job], [roll]]), \
+			patch.object(roll_tracking.frappe, "get_all", side_effect=[[job, {"name": "OTHER-JOB"}], [roll]]), \
 			patch("smart_edge_custom.manufacturing.batch_genealogy.extract_batch_movements", return_value=[
 				{"direction": "Output", "batch_no": "FG-BATCH-1", "item_code": "FG-ITEM"}
 			]):
@@ -141,6 +143,27 @@ class TestRollTrackingUnit(unittest.TestCase):
 		self.assertEqual(result["batch"], "FG-BATCH-1")
 		self.assertEqual(result["linked"], 1)
 		set_value.assert_called_once_with("SmartEdge Roll", "SE-ROLL-1", "final_fg_batch", "FG-BATCH-1", update_modified=False)
+
+	def test_stock_movement_history_is_idempotent_and_keeps_transaction_links(self):
+		roll = FakeRoll("SE-ROLL-1", 800, status="Available for Packing", qc="Passed")
+		with patch.object(roll_tracking.frappe, "get_doc", return_value=roll), patch.object(roll_tracking, "_save_roll") as save, patch.object(roll_tracking, "now_datetime", return_value="2026-11-24 00:00:00"):
+			roll_tracking.append_stock_movement_history(
+				roll.name, operation="Printing", operation_sequence=3,
+				production_job="SE-JOB-2", plan_entry="SE-PLAN-2", quantity=800,
+				source_batch="QC-BATCH", output_batch="PRINT-BATCH",
+				source_warehouse="WIP", target_warehouse="WIP",
+				stock_entry="MAT-STE-1", movement_type="Repack",
+			)
+			roll_tracking.append_stock_movement_history(
+				roll.name, operation="Printing", operation_sequence=3,
+				production_job="SE-JOB-2", plan_entry="SE-PLAN-2", quantity=800,
+				source_batch="QC-BATCH", output_batch="PRINT-BATCH",
+				stock_entry="MAT-STE-1", movement_type="Repack",
+			)
+		self.assertEqual(len(roll.operation_history), 1)
+		self.assertEqual(roll.operation_history[0]["stock_entry"], "MAT-STE-1")
+		self.assertEqual(roll.operation_history[0]["output_batch"], "PRINT-BATCH")
+		save.assert_called_once()
 
 
 if __name__ == "__main__":

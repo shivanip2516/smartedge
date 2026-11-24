@@ -5,9 +5,6 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, getdate
 
-TRACE = "Operation Traceability"
-PHYSICAL = "Physical Stock"
-PURPOSE = "custom_batch_purpose"
 LOT_LINK = "custom_operation_lot"
 
 
@@ -16,7 +13,11 @@ def schema_ready():
 
 
 def batch_for_lot(lot_name):
-	return frappe.db.get_value("Batch", {LOT_LINK: lot_name}, "name") if lot_name and schema_ready() else None
+	if not lot_name or not schema_ready():
+		return None
+	# Prefer the actual stock-bearing Batch when a historical trace Batch and a
+	# physical output Batch share the same Production Lot.
+	return stock_batch_for_lot(lot_name) or frappe.db.get_value("Batch", {LOT_LINK: lot_name}, "name")
 
 
 def stock_batch_for_lot(lot_name, item=None):
@@ -77,6 +78,12 @@ def ensure_operation_batch(lot, allow_create=False):
 			posting = job.get("manufacturing_stock_entry")
 			if not posting or frappe.db.get_value("Stock Entry", posting, "docstatus") != 1:
 				frappe.throw(_("Completed physical operation {0} has no submitted stock posting. Review cancellation or historical migration before retrying.").format(job.name))
+		from smart_edge_custom.manufacturing.physical_operation_stock import physical_processing_mode
+		if physical_processing_mode(entry) == "Same Batch Material Transfer":
+			physical = stock_batch_for_lot(lot.input_production_lot, lot.finished_item) if lot.input_production_lot else None
+			if not physical:
+				frappe.throw(_("Same-Batch material transfer for {0} has no physical input Batch.").format(job.name))
+			return [physical]
 		physical = stock_batch_for_lot(lot.name, lot.finished_item)
 		if not physical:
 			frappe.throw(_("Completed physical operation {0} has no stock-backed Batch.").format(job.name))
@@ -97,7 +104,7 @@ def ensure_operation_batch(lot, allow_create=False):
 		"item": lot.finished_item, "item_name": frappe.db.get_value("Item", lot.finished_item, "item_name"),
 		"reference_doctype": "SmartEdge Production Job", "reference_name": job.name,
 		"manufacturing_date": getdate(job.actual_end), "disabled": 0,
-		PURPOSE: TRACE, LOT_LINK: lot.name,
+		LOT_LINK: lot.name,
 		"custom_operation_name": lot.operation, "custom_operation_sequence": lot.operation_sequence,
 		"custom_operation_output_quantity": job.actual_qty_meter, "custom_operation_completed_at": job.actual_end,
 		"custom_previous_operation_batch": batch_for_lot(previous),
