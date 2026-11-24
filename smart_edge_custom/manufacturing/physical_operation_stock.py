@@ -1,8 +1,7 @@
-"""Opt-in physical WIP posting for operation Batches.
+"""Physical WIP posting for operation Batches.
 
-The feature is disabled unless ``smartedge_physical_operation_stock`` is set in
-site config.  Normal traceability Batches and the live accounting flow are
-unchanged by default.
+Physical WIP is enabled by default for every site where the app is installed.
+The site setting remains an explicit opt-out: ``0``/``false`` disables it.
 """
 import frappe
 from frappe import _
@@ -34,7 +33,25 @@ def _posting_log(entry, reason, **details):
 
 
 def enabled():
-	return cint(frappe.conf.get("smartedge_physical_operation_stock")) == 1
+	"""Return the current site's Physical WIP setting.
+
+	Do not cache this value: one Bench can serve multiple sites in the same
+	process.  Missing configuration intentionally means enabled; only an
+	explicit false/zero value opts out.
+	"""
+	value = frappe.conf.get("smartedge_physical_operation_stock")
+	if value is None:
+		return True
+	if isinstance(value, bool):
+		return value
+	if isinstance(value, str):
+		normalized = value.strip().lower()
+		if normalized in {"0", "false", "no", "off", "disabled"}:
+			return False
+		if normalized in {"1", "true", "yes", "on", "enabled"}:
+			return True
+		return True
+	return cint(value) != 0
 
 
 def movement_type(entry):

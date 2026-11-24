@@ -16,13 +16,21 @@ class TestPhysicalOperationStockSafety(unittest.TestCase):
 		self.enterContext(patch.object(physical_operation_stock, "nowdate", return_value="2026-11-03"))
 		self.enterContext(patch("frappe.translate.get_all_translations", return_value={}))
 
-	def test_feature_is_disabled_by_default(self):
+	def test_feature_is_enabled_by_default_when_site_setting_is_missing(self):
 		with patch.object(frappe, "conf", {}):
-			self.assertFalse(physical_operation_stock.enabled())
+			self.assertTrue(physical_operation_stock.enabled())
 
 	def test_feature_requires_explicit_site_flag(self):
 		with patch.object(frappe, "conf", {"smartedge_physical_operation_stock": 1}):
 			self.assertTrue(physical_operation_stock.enabled())
+
+	def test_feature_accepts_boolean_and_string_values(self):
+		for value in (True, 1, "1", "true", "enabled"):
+			with self.subTest(value=value), patch.object(frappe, "conf", {"smartedge_physical_operation_stock": value}):
+				self.assertTrue(physical_operation_stock.enabled())
+		for value in (False, 0, "0", "false", "disabled"):
+			with self.subTest(value=value), patch.object(frappe, "conf", {"smartedge_physical_operation_stock": value}):
+				self.assertFalse(physical_operation_stock.enabled())
 
 	def test_packing_receipt_reference_is_unique_per_roll(self):
 		self.assertEqual(
