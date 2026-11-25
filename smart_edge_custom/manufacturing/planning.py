@@ -16,6 +16,9 @@ from smart_edge_custom.manufacturing.fifo_batch_selection import (
 	get_kg_to_stock_factor,
 )
 from smart_edge_custom.manufacturing.final_bom_generator import (
+	GENERATOR_VISIBLE_STATUSES,
+	LEGACY_TO_VISIBLE_STATUS,
+	get_bom_generator_status,
 	get_generator_lifecycle_status,
 	get_operation_planning_category,
 	get_prepared_component_batch_weight,
@@ -2210,37 +2213,7 @@ def update_generator_planning_status(production):
 	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 
 	refresh_material_readiness(production)
-	status = get_completed_parent_status(production)
-	if status:
-		set_generator_status(production, status)
-		return
-	if get_generator_lifecycle_status(frappe.get_doc("Final EB BOM Generator", production)) == "Completed":
-		return
-
-	rows = frappe.get_all(
-		"SmartEdge Production Plan Entry",
-		filters={
-			"final_eb_bom_generator": production,
-			"plan_type": ["!=", "Required Material"],
-			"status": ["!=", "Cancelled"],
-		},
-		fields=["status"],
-	)
-	if not rows:
-		doc = frappe.get_doc("Final EB BOM Generator", production)
-		if doc.get("selected_route") and doc.get("finished_item"):
-			set_generator_status(production, "Ready for Planning")
-		return
-	statuses = [row.status for row in rows]
-	if any(status == "In Progress" for status in statuses):
-		status = "In Production"
-	elif all(status in {"Ready", "Planned", "Completed"} for status in statuses):
-		status = "Planned"
-	elif any(status in {"Ready", "Planned", "In Progress", "Completed"} for status in statuses):
-		status = "Partially Planned"
-	else:
-		status = "Ready for Planning"
-	set_generator_status(production, status)
+	set_generator_status(production, get_bom_generator_status(production))
 
 
 @frappe.whitelist()
@@ -2253,6 +2226,25 @@ def synchronize_generator_status(production):
 		"status": doc.get("status"),
 		"production_status": doc.get("production_status"),
 	}
+
+
+@frappe.whitelist()
+def reconcile_generator_status(production, apply=False):
+	"""Return a safe status reconciliation; only ``apply`` persists the result."""
+	doc = frappe.get_doc("Final EB BOM Generator", production)
+	proposed = get_bom_generator_status(doc)
+	result = {
+		"name": doc.name,
+		"current_status": doc.get("status"),
+		"current_production_status": doc.get("production_status"),
+		"proposed_status": proposed,
+		"applied": False,
+	}
+	if cint(apply):
+		set_generator_status(doc.name, proposed)
+		result["applied"] = True
+		result["status"] = frappe.db.get_value("Final EB BOM Generator", doc.name, "status")
+	return result
 
 
 def get_completed_parent_status(production):
@@ -2346,19 +2338,31 @@ def get_completed_job_for_plan_entry(entry):
 
 
 def set_generator_status(production, status):
-	current_status = get_generator_lifecycle_status(frappe.get_doc("Final EB BOM Generator", production))
+	doc = frappe.get_doc("Final EB BOM Generator", production)
+	current_status = get_generator_lifecycle_status(doc)
 	if current_status == "Cancelled":
 		return
-	if current_status == status and status != "Completed":
+	visible_status = status if status in GENERATOR_VISIBLE_STATUSES else LEGACY_TO_VISIBLE_STATUS.get(status, status)
+	legacy_status = status if status not in GENERATOR_VISIBLE_STATUSES else {
+		"Material Planning Pending": "Draft",
+		"Material Planning Completed": "Ready to Send to Planning",
+		"Material Production Pending": "Material Production In Progress",
+		"Material Ready": "Materials Produced",
+		"Production Planning Pending": "Ready for Planning",
+		"Partially Planned": "Partially Planned",
+		"Fully Planned": "Planned",
+		"In Production": "In Production",
+		"Completed": "Completed",
+	}.get(status, status)
+	if doc.get("status") == visible_status and doc.get("production_status") == legacy_status and status != "Completed":
 		return
-	doc = frappe.get_doc("Final EB BOM Generator", production)
-	if status == "Completed":
+	if visible_status == "Completed":
 		create_final_manufacturing_stock_entry(doc)
 	# ``production_status`` is the lifecycle source used by server validation,
 	# while ``status`` is the visible DocType field. Keep both synchronized so
 	# refresh/reload cannot show a stale legacy status.
-	doc.db_set("production_status", status, update_modified=False)
-	doc.db_set("status", status, update_modified=False)
+	doc.db_set("production_status", legacy_status, update_modified=False)
+	doc.db_set("status", visible_status, update_modified=False)
 	from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
 	refresh_material_readiness(production)
 

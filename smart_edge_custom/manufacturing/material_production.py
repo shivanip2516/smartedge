@@ -983,10 +983,6 @@ def refresh_material_readiness(production):
 	updates = {
 		"material_readiness_status": context["overall_status"],
 		"production_status": lifecycle_status,
-		# Material readiness has its own fields. Once manufacturing lifecycle
-		# status is established, never replace the visible Generator status with
-		# a material-only value such as "Material Production In Progress".
-		"status": lifecycle_status if lifecycle_status in lifecycle_options else context["workflow_status"],
 	}
 	for requirement in context["requirements"]:
 		config = MATERIAL_CONFIG[requirement["material_type"]]

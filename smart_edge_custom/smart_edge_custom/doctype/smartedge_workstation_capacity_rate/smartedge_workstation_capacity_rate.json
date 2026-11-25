@@ -116,10 +116,6 @@
    "options": "Item"
   },
   {
-   "fieldname": "matching_col_2",
-   "fieldtype": "Column Break"
-  },
-  {
    "fieldname": "process_route",
    "hidden": 1,
    "fieldtype": "Link",

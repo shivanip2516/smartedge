@@ -32,6 +32,32 @@ GENERATOR_LIFECYCLE_STATUSES = {
 	"On Hold",
 	"Cancelled",
 }
+GENERATOR_VISIBLE_STATUSES = (
+	"Material Planning Pending",
+	"Material Planning Completed",
+	"Material Production Pending",
+	"Material Ready",
+	"Production Planning Pending",
+	"Partially Planned",
+	"Fully Planned",
+	"In Production",
+	"Completed",
+)
+LEGACY_TO_VISIBLE_STATUS = {
+	"Draft": "Material Planning Pending",
+	"Material Configuration Pending": "Material Planning Pending",
+	"Material Production In Progress": "Material Production Pending",
+	"Material Production Planned": "Material Production Pending",
+	"Ready to Send to Planning": "Material Planning Completed",
+	"Sent to Planning": "Production Planning Pending",
+	"Materials Produced": "Material Ready",
+	"Production Completed": "Completed",
+	"Ready for Planning": "Production Planning Pending",
+	"Partially Planned": "Partially Planned",
+	"Planned": "Fully Planned",
+	"In Production": "In Production",
+	"Completed": "Completed",
+}
 WEIGHT_FACTOR_LOCKED_STATUSES = {
 	"Ready for Planning",
 	"Partially Planned",
@@ -1083,6 +1109,54 @@ def get_generator_lifecycle_status(doc):
 	if doc.get("status") in GENERATOR_LIFECYCLE_STATUSES:
 		return doc.get("status")
 	return "Draft"
+
+
+def get_bom_generator_status(production):
+	"""Calculate the visible nine-state status from persisted planning records."""
+	doc = frappe.get_doc("Final EB BOM Generator", production) if isinstance(production, str) else production
+	if doc.get("docstatus") == 2 or get_generator_lifecycle_status(doc) == "Cancelled":
+		return doc.get("status") if doc.get("status") in GENERATOR_VISIBLE_STATUSES else "Material Planning Pending"
+	configured = bool(doc.get("compound_item") and doc.get("base_colour_item")
+		and cint(doc.get("compound_consumption_batches")) > 0
+		and cint(doc.get("shade_consumption_batches")) > 0)
+	if not configured:
+		return "Material Planning Pending"
+	try:
+		from smart_edge_custom.manufacturing.material_production import build_material_planning_context
+		context = build_material_planning_context(doc, include_planning_details=False)
+	except Exception:
+		context = None
+	if context:
+		if context.get("overall_status") == "Waiting for Raw Material":
+			return "Material Production Pending"
+		if context.get("workflow_status") in {"Material Configuration Pending", "Material Production In Progress", "Material Production Planned"}:
+			return "Material Production Pending"
+	try:
+		from smart_edge_custom.manufacturing.planning import get_completed_parent_status, get_mandatory_route_operation_rows, get_route_plan_entries
+		rows = get_mandatory_route_operation_rows(doc.name)
+	except Exception:
+		rows = []
+	if not rows:
+		if context and context.get("workflow_status") in {"Materials Produced", "Stock Available"}:
+			return "Material Ready"
+		return "Material Planning Completed" if context and context.get("overall_status") == "Ready to Plan" else "Material Ready"
+	if get_completed_parent_status(doc.name) == "Completed":
+		return "Completed"
+	entries = []
+	for row in rows:
+		entries.extend(get_route_plan_entries(doc.name, row.name) or [])
+	if not entries:
+		return "Production Planning Pending"
+	statuses = {entry.get("status") for entry in entries}
+	jobs = frappe.get_all("SmartEdge Production Job", filters={"plan_entry": ["in", [entry.name for entry in entries]], "status": ["!=", "Cancelled"]}, fields=["status"], limit_page_length=500)
+	job_statuses = {job.status for job in jobs}
+	if "In Progress" in statuses or "In Progress" in job_statuses or "Paused" in job_statuses:
+		return "In Production"
+	if "Completed" in job_statuses or "Completed" in statuses:
+		return "In Production"
+	if statuses == {"Planned"}:
+		return "Fully Planned"
+	return "Partially Planned"
 
 
 def get_route_summary(doc, route_doc):

@@ -59,8 +59,11 @@ class FinalEBBOMGenerator(Document):
 
 	def on_update(self):
 		from smart_edge_custom.manufacturing.material_production import refresh_material_readiness
+		from smart_edge_custom.manufacturing.final_bom_generator import get_bom_generator_status
+		from smart_edge_custom.manufacturing.planning import set_generator_status
 
 		refresh_material_readiness(self.name)
+		set_generator_status(self.name, get_bom_generator_status(self))
 		if self.has_value_changed("priority"):
 			sync_planning_priority(self.name, self.priority)
 

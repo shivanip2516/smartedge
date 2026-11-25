@@ -122,12 +122,12 @@
    "reqd": 1
   },
   {
-   "default": "Draft",
+   "default": "Material Planning Pending",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nMaterial Configuration Pending\nMaterial Production In Progress\nMaterial Production Planned\nReady to Send to Planning\nSent to Planning\nMaterials Produced\nProduction Completed\nReady for Planning\nPartially Planned\nPlanned\nIn Production\nCompleted\nOn Hold\nCancelled",
+   "options": "Material Planning Pending\nMaterial Planning Completed\nMaterial Production Pending\nMaterial Ready\nProduction Planning Pending\nPartially Planned\nFully Planned\nIn Production\nCompleted",
    "read_only": 1
   },
   {

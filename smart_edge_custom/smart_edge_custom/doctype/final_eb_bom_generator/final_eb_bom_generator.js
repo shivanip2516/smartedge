@@ -635,12 +635,6 @@ async function refresh_material_planning(frm) {
 
 function apply_material_status(frm, context) {
 	frm.__material_workflow_status = context.workflow_status || frm.__material_workflow_status;
-	const lifecycle_statuses = new Set(["Draft", "Ready for Planning", "Partially Planned", "Planned", "In Progress", "Completed", "On Hold", "Cancelled"]);
-	const display_status = lifecycle_statuses.has(frm.doc.production_status)
-		? frm.doc.production_status : context.workflow_status;
-	if (display_status && frm.doc.status !== display_status) {
-		frm.doc.status = display_status;
-	}
 	frm.doc.material_readiness_status = context.overall_status;
 	for (const row of context.requirements || []) {
 		const prefix = row.material_type === "Compound" ? "compound" : "base_colour";

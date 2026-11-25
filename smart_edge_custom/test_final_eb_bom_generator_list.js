@@ -7,7 +7,7 @@ const context = vm.createContext({
 vm.runInContext(require("node:fs").readFileSync(
 	"smart_edge_custom/doctype/final_eb_bom_generator/final_eb_bom_generator_list.js", "utf8"), context);
 const settings = context.frappe.listview_settings["Final EB BOM Generator"];
-const doc = { status: "Material Production In Progress", production_status: "Completed" };
+const doc = { status: "Completed", production_status: "Completed" };
 assert.equal(settings.formatters.status(doc.status, null, doc), "Completed");
-assert.deepEqual(Array.from(settings.get_indicator(doc)), ["Completed", "green", "production_status,=,Completed"]);
+assert.deepEqual(Array.from(settings.get_indicator(doc)), ["Completed", "green", "status,=,Completed"]);
 console.log("Final EB BOM Generator list uses production lifecycle status");
